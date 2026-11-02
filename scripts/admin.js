@@ -1,5 +1,5 @@
 // Operator tasks from the command line (no panel for the operator yet).
-//   npm run admin -- crear-conjunto --slug jardines-de-ibiza --nombre "Jardines de Ibiza" --correo marta@ejemplo.com [--llave @llave] [--titular "Marta Rojas"] [--cuota 30000]
+//   npm run admin -- crear-conjunto --slug jardines-de-ibiza --nombre "Jardines de Ibiza" --correo marta@ejemplo.com [--tesorero "Marta Rojas"] [--llave @llave] [--titular "Marta Rojas"] [--cuota 30000]
 //   npm run admin -- agregar-casa --conjunto jardines-de-ibiza --codigo 14 --residente "Sandra Duque" [--telefono 3001234567]
 //   npm run admin -- generar-cuotas --conjunto jardines-de-ibiza [--periodo 2026-11]
 //   MASTER_KEY=... npm run admin -- configurar-pagoradar --conjunto jardines-de-ibiza --secreto <secreto del webhook de su app en pagoradar>
@@ -16,7 +16,7 @@ const { values: v } = parseArgs({
   options: {
     slug: { type: "string" }, nombre: { type: "string" }, correo: { type: "string" }, llave: { type: "string" },
     titular: { type: "string" }, cuota: { type: "string" }, conjunto: { type: "string" }, codigo: { type: "string" },
-    residente: { type: "string" }, telefono: { type: "string" }, periodo: { type: "string" }, secreto: { type: "string" },
+    residente: { type: "string" }, telefono: { type: "string" }, periodo: { type: "string" }, secreto: { type: "string" }, tesorero: { type: "string" },
   },
 });
 
@@ -37,7 +37,7 @@ if (command === "crear-conjunto") {
   const ledger = store.forTenant(tenant.id);
   ledger.concepts.create({ name: "Vigilancia", amountCents: Number(v.cuota ?? 30000) * 100 });
   const password = randomBytes(9).toString("base64url");
-  store.users.create({ tenantId: tenant.id, email: v.correo, passwordHash: await hashPassword(password) });
+  store.users.create({ tenantId: tenant.id, email: v.correo, passwordHash: await hashPassword(password), name: v.tesorero ?? null });
   console.log(`Conjunto creado: ${tenant.name}\n`);
   if (v.secreto) saveSecret(tenant, v.secreto);
   console.log(`  URL del webhook (en la app de este conjunto en pagoradar): ${webhookUrl(tenant)}`);

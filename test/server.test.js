@@ -314,11 +314,110 @@ test("login rechaza formularios de otro sitio", () => withServer(async (s) => {
 test("el residente ve su cuota con su enlace personal y nada más", () => withServer(async (s) => {
   s.A.dues.generate(currentPeriod());
   const page = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
+  assert.match(page, /Hola, Sandra/);
   assert.match(page, /Casa 14/);
   assert.match(page, /\$30\.000/);
-  assert.match(page, /@ibiza/, "muestra la llave Bre-B del conjunto");
+  assert.ok(page.includes(`/r/${s.a14.accessToken}/pagar`), "botón para pagar");
   assert.doesNotMatch(page, /Diana/, "no ve a otras casas");
   assert.equal((await fetch(`${s.base}/r/${"x".repeat(32)}`)).status, 404);
+}));
+
+test("pantalla de pagar: llave para copiar, monto exacto y se actualiza sola", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const res = await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`);
+  assert.equal(res.status, 200);
+  const page = await res.text();
+  assert.match(page, /@ibiza/, "muestra la llave Bre-B del conjunto");
+  assert.match(page, /Titular: <b>Marta Rojas<\/b>/);
+  assert.match(page, /\$30\.000/);
+  assert.match(page, /data-copy="@ibiza"/, "botón de copiar");
+  assert.match(page, /<meta http-equiv="refresh" content="20">/);
+  assert.doesNotMatch(page, /Diana|Carlos/);
+
+  // Once nothing is left to pay, the page sends the resident home.
+  s.A.payments.recordCash(s.a14.house.id);
+  const done = await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`, { redirect: "manual" });
+  assert.equal(done.status, 303);
+  assert.equal(done.headers.get("location"), `/r/${s.a14.accessToken}`);
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /Al día/);
+  assert.equal((await fetch(`${s.base}/r/${"x".repeat(32)}/pagar`)).status, 404);
+}));
+
+test("recibo: solo de una cuota pagada y de la propia casa", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  s.B.dues.generate(currentPeriod());
+  const mine = s.A.dues.listForHouse(s.a14.house.id)[0];
+  const other = s.A.dues.listForHouse(s.a03.house.id)[0];
+  const foreign = s.B.dues.listForHouse(s.b01.house.id)[0];
+  const url = (token, id) => `${s.base}/r/${token}/recibo/${id}`;
+
+  assert.equal((await fetch(url(s.a14.accessToken, mine.id))).status, 404, "una cuota sin pagar no tiene recibo");
+  s.A.payments.recordCash(s.a14.house.id);
+  s.A.payments.recordCash(s.a03.house.id);
+  s.B.payments.recordCash(s.b01.house.id);
+
+  const res = await fetch(url(s.a14.accessToken, mine.id));
+  assert.equal(res.status, 200);
+  const page = await res.text();
+  assert.match(page, /¡Pago confirmado!/);
+  assert.match(page, /Gracias, Sandra/);
+  assert.match(page, /Casa 14 · Sandra Duque Arias/);
+  assert.match(page, /Efectivo/);
+  assert.match(page, /N\.º \d{4}-\d{2}-[0-9A-F]{4}/);
+  assert.match(page, /data-print/);
+  assert.doesNotMatch(page, /<script(?![^>]*src=)/i, "sin scripts en línea");
+
+  assert.equal((await fetch(url(s.a14.accessToken, other.id))).status, 404, "ni el recibo de otra casa del mismo conjunto");
+  assert.equal((await fetch(url(s.a14.accessToken, foreign.id))).status, 404, "ni el de otro conjunto");
+  assert.equal((await fetch(url("x".repeat(32), mine.id))).status, 404);
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), new RegExp(`/recibo/${mine.id}`), "el inicio enlaza al recibo");
+}));
+
+test("el panel nuevo: saludo con el nombre, menú lateral, barra inferior y tarjetas del resumen", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  s.A.payments.recordCash(s.a14.house.id);
+  s.A.payments.record({ externalId: "p_x", payerName: "Pedro Duque", payerNorm: "PEDRO DUQUE", amountCents: 3_000_000, bank: "nequi", paidAt: new Date().toISOString() });
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const page = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
+  assert.match(page, /Hola, Marta/, "nombre sacado del correo cuando no hay uno");
+  assert.match(page, /class="side"/);
+  assert.match(page, /class="tabbar"/);
+  assert.match(page, /Jardines de Ibiza/);
+  assert.match(page, /2 casas · Vigilancia \$30\.000/);
+  assert.match(page, /class="badge"[^>]*>1</, "un pago por asignar en el menú");
+  assert.match(page, /Faltan por pagar/);
+  assert.match(page, /Recordar por WhatsApp/);
+  assert.match(page, /https:\/\/wa\.me\/\?text=[^"]*Casas%20pendientes%3A%2003/, "el recordatorio ya lleva las casas pendientes");
+  assert.match(page, /Últimos pagos/);
+  assert.match(page, /Pagó el/);
+  assert.doesNotMatch(page, /style="/, "sin estilos en línea");
+  assert.doesNotMatch(page, /<script(?![^>]*src=)/i);
+  assert.doesNotMatch(page, /fonts\.googleapis/);
+
+  // Filter chips narrow the table without scripts.
+  const pendientes = await (await fetch(`${s.base}/panel?f=pendientes`, { headers: { cookie } })).text();
+  const rows = (html) => (html.match(/<tbody>[\s\S]*?<\/tbody>/)?.[0].match(/<tr>/g) ?? []).length;
+  assert.equal(rows(page), 2);
+  assert.equal(rows(pendientes), 1);
+  assert.equal(rows(await (await fetch(`${s.base}/panel?f=pagadas`, { headers: { cookie } })).text()), 1);
+  assert.equal(rows(await (await fetch(`${s.base}/panel?f=raro`, { headers: { cookie } })).text()), 2, "un filtro desconocido se ignora");
+}));
+
+test("la tipografía propia y el script se sirven desde el propio servidor", () => withServer(async (s) => {
+  for (const path of ["/static/fonts/plus-jakarta-sans-latin.woff2", "/static/fonts/plus-jakarta-sans-latin-ext.woff2"]) {
+    const res = await fetch(`${s.base}${path}`);
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers.get("content-type"), "font/woff2");
+    const bytes = Buffer.from(await res.arrayBuffer());
+    assert.equal(bytes.subarray(0, 4).toString("latin1"), "wOF2", "el archivo llega intacto, no convertido a texto");
+    assert.ok(bytes.length > 10_000);
+  }
+  const js = await fetch(`${s.base}/static/app.js`);
+  assert.equal(js.status, 200);
+  assert.match(js.headers.get("content-type"), /javascript/);
+  const css = await (await fetch(`${s.base}/static/app.css`)).text();
+  assert.match(css, /@font-face[\s\S]*plus-jakarta-sans-latin\.woff2/);
+  assert.equal((await fetch(`${s.base}/static/fonts/OFL-plus-jakarta-sans.txt`)).status, 404, "solo los archivos de la lista");
 }));
 
 test("el CSS se sirve y no hay rutas fuera de la lista", () => withServer(async (s) => {
@@ -452,7 +551,7 @@ test("CSV: descarga para Excel, con cabeceras correctas y sin fórmulas peligros
 }));
 
 const setupForm = (over = {}) => ({
-  token: SETUP_TOKEN, nombre: "Jardines de Ibiza", cuota: "30.000", llave: "@ibiza", titular: "Marta Rojas",
+  token: SETUP_TOKEN, nombre: "Jardines de Ibiza", cuota: "30.000", llave: "@ibiza", titular: "Marta Rojas", tesorero: "Marta Rojas",
   correo: "Marta@Ejemplo.com", clave: "una-clave-bien-larga", clave2: "una-clave-bien-larga", ...over,
 });
 
@@ -475,6 +574,7 @@ test("configuración inicial: solo con el enlace privado, y se cierra al crear e
   assert.deepEqual(L.concepts.list().map((c) => [c.name, c.amountCents]), [["Vigilancia", 3_000_000]]);
   const user = s.store.users.byEmail("marta@ejemplo.com");
   assert.equal(user.tenantId, tenant.id);
+  assert.equal(user.name, "Marta", "el saludo usa el primer nombre que escribió");
   assert.ok(user.passwordHash.startsWith("scrypt$") && !user.passwordHash.includes("una-clave"));
 
   // Closed for good, even with the right token.
@@ -492,6 +592,7 @@ test("configuración inicial: solo con el enlace privado, y se cierra al crear e
 test("configuración inicial: valida los datos y no crea nada si algo está mal", () => withServer(async (s) => {
   for (const [over, mensaje] of [
     [{ nombre: "" }, /nombre del conjunto/],
+    [{ tesorero: "" }, /Escribe tu nombre/],
     [{ cuota: "abc" }, /cuota/],
     [{ cuota: "500" }, /cuota/],
     [{ correo: "sin-arroba" }, /correo válido/],

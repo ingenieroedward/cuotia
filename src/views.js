@@ -2,9 +2,22 @@ import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
 import { bankLabel, lastPeriods, peso, periodLabel, shortDate, shortDateTime } from "./text.js";
 
+const ICONS = {
+  home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  casas: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  pagos: '<rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18"/><circle cx="16.5" cy="15" r="1.2"/>',
+  asignar: '<path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 13h5l1 3h6l1-3h5"/>',
+  ajustes: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  back: '<path d="M15 6l-6 6 6 6"/>',
+};
+const icon = (name, size = 20, width = 2) => html`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${raw(ICONS[name])}</svg>`;
+
 const BRAND_MARK = html`<span class="brand"><span class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>cuotia</span>`;
 
-export function layout(title, body) {
+export function layout(title, body, { refresh = 0, bodyClass = "" } = {}) {
   return html`<!doctype html>
 <html lang="es">
 <head>
@@ -12,9 +25,12 @@ export function layout(title, body) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0B1B2B">
 <title>${title} · Cuotia</title>
+${refresh ? raw(`<meta http-equiv="refresh" content="${Number(refresh)}">`) : ""}
+<link rel="preload" href="/static/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
 </head>
-<body>${body}</body>
+<body${bodyClass ? raw(` class="${bodyClass}"`) : ""}>${body}</body>
 </html>`;
 }
 
@@ -80,6 +96,7 @@ export function setupPage({ token, error, values = {} }) {
     </fieldset>
     <fieldset>
       <legend>Tesorero (quien entra al panel)</legend>
+      <label>Tu nombre<input type="text" name="tesorero" maxlength="80" required autocomplete="name" value="${values.tesorero ?? ""}" placeholder="Marta Rojas"></label>
       <label>Correo<input type="email" name="correo" maxlength="120" required autocomplete="username" value="${values.correo ?? ""}"></label>
       <label>Contraseña (mínimo 10 caracteres)<input type="password" name="clave" minlength="10" maxlength="200" required autocomplete="new-password"></label>
       <label>Repite la contraseña<input type="password" name="clave2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
@@ -116,20 +133,64 @@ export function twoFaPage({ stage, error, secret, uri, email }) {
 </main>`);
 }
 
-function topbar({ user, csrf, active }) {
-  return html`<header class="topbar">
-  ${BRAND_MARK}
-  <nav class="tabs" aria-label="Principal">
-    <a href="/panel"${active === "resumen" ? raw(' aria-current="page"') : ""}>Resumen</a>
-    <a href="/panel/casas"${active === "casas" ? raw(' aria-current="page"') : ""}>Casas</a>
-    <a href="/panel/pagos"${active === "pagos" ? raw(' aria-current="page"') : ""}>Pagos</a>
-    <a href="/panel/ajustes"${active === "ajustes" ? raw(' aria-current="page"') : ""}>Ajustes</a>
-  </nav>
-  <div class="topbar-end">
-    <span class="muted small">${user.email}</span>
-    <form method="post" action="/logout">${csrfField(csrf)}<button class="btn ghost" type="submit">Salir</button></form>
+// ---------------------------------------------------------------------------------------------------------------
+// Treasurer panel. A dark sidebar on a computer, a bottom tab bar on a phone (as in the approved mockups).
+// ---------------------------------------------------------------------------------------------------------------
+
+const NAV = [
+  { key: "resumen", href: "/panel", label: "Resumen", icon: "home" },
+  { key: "casas", href: "/panel/casas", label: "Casas", icon: "casas" },
+  { key: "pagos", href: "/panel/pagos", label: "Pagos", icon: "pagos" },
+  { key: "ajustes", href: "/panel/ajustes", label: "Ajustes", icon: "ajustes" },
+];
+
+const BRAND_ON_DARK = html`<span class="brand on-dark"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span>`;
+
+/**
+ * The frame of every treasurer page. `ctx` carries who is signed in and what the sidebar shows:
+ * { tenant, user, csrf, active, badge (payments waiting to be assigned), houseCount, cuota }.
+ */
+export function panelLayout(title, ctx, content) {
+  const { tenant, user, csrf, active, badge = 0, houseCount = 0, cuota = "" } = ctx;
+  const current = (key) => (key === active ? raw(' aria-current="page"') : "");
+  const bubble = badge ? html`<span class="badge" aria-label="${badge} por asignar">${badge}</span>` : "";
+  const sideLink = (n) => html`<a class="nav-link" href="${n.href}"${current(n.key)}>${icon(n.icon)}<span>${n.label}</span></a>`;
+  return layout(title, html`
+<div class="app">
+  <aside class="side">
+    ${BRAND_ON_DARK}
+    <nav class="side-nav" aria-label="Principal">
+      ${sideLink(NAV[0])}
+      ${sideLink(NAV[1])}
+      ${sideLink(NAV[2])}
+      <a class="nav-link" href="/panel#por-asignar">${icon("asignar")}<span>Por asignar</span>${bubble}</a>
+      ${sideLink(NAV[3])}
+    </nav>
+    <div class="side-foot">
+      <div class="conj">
+        <span class="eyebrow">Conjunto</span>
+        <b>${tenant.name}</b>
+        <small>${houseCount} casa${houseCount === 1 ? "" : "s"}${cuota ? ` · Vigilancia ${cuota}` : ""}</small>
+      </div>
+      <div class="me">
+        <span class="small" title="${user.email}">${user.email}</span>
+        <form method="post" action="/logout">${csrfField(csrf)}<button class="btn ghost small on-dark" type="submit">Salir</button></form>
+      </div>
+    </div>
+  </aside>
+
+  <div class="stage">
+    <header class="mobilebar">
+      ${BRAND_MARK}
+      <form method="post" action="/logout">${csrfField(csrf)}<button class="btn ghost small" type="submit">Salir</button></form>
+    </header>
+    <main class="page">${content}</main>
   </div>
-</header>`;
+
+  <nav class="tabbar" aria-label="Principal">
+    ${NAV.map((n) => html`<a class="tab" href="${n.href}"${current(n.key)}>${icon(n.icon, 22)}<span>${n.label}</span>${n.key === "resumen" ? bubble : ""}</a>`)}
+  </nav>
+</div>`);
 }
 
 const STATUS = {
@@ -138,27 +199,77 @@ const STATUS = {
 };
 
 const houseOptions = (houses) => houses.map((h) => html`<option value="${h.id}">Casa ${h.code} · ${h.residentName}</option>`);
+const payMethod = (p) => (p.method === "cash" ? "Efectivo" : bankLabel(p.bank));
 
-export function panelPage({ tenant, user, csrf, flash, summary, dues, unassigned, houses }) {
+/** A WhatsApp link (no phone number: the treasurer picks the group) with the reminder already written. */
+function reminderLink({ tenant, dues, period }) {
+  const owing = dues.filter((d) => d.status === "pending");
+  if (owing.length === 0) return null;
+  const text = [
+    `Hola vecinos, les recordamos la cuota de vigilancia de ${periodLabel(period)} (${peso(owing[0].amountCents)}).`,
+    `Casas pendientes: ${owing.map((d) => d.houseCode).join(", ")}.`,
+    tenant.payKey ? `Pueden pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : "",
+    "¡Gracias!",
+  ].filter(Boolean).join(" ");
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
+}
+
+const FILTERS = [
+  { key: "", label: "Todas", test: () => true },
+  { key: "pagadas", label: "Pagadas", test: (d) => d.status === "paid" },
+  { key: "pendientes", label: "Pendientes", test: (d) => d.status === "pending" },
+];
+
+export function panelPage(args) {
+  const { tenant, user, csrf, flash, summary, dues, unassigned, houses, recent = [], filter = "" } = args;
   const pct = summary.expectedCents ? Math.round((summary.collectedCents / summary.expectedCents) * 100) : 0;
+  const owingCents = summary.expectedCents - summary.collectedCents;
   const owing = houses.filter((h) => dues.some((d) => d.houseId === h.id && d.status === "pending"));
-  return layout("Resumen", html`
-${topbar({ user, csrf, active: "resumen" })}
-<main class="page">
-  <div class="heading">
-    <h1>${tenant.name}</h1>
-    <span class="muted">${periodLabel(summary.period)}</span>
-  </div>
+  const shown = dues.filter((FILTERS.find((f) => f.key === filter) ?? FILTERS[0]).test);
+  const reminder = reminderLink({ tenant, dues, period: summary.period });
+
+  return panelLayout("Resumen", { ...args, active: "resumen" }, html`
+  <header class="head">
+    <div class="head-text">
+      <h1>Hola, ${user.name}</h1>
+      <span class="muted">Así va el recaudo de vigilancia de este mes.</span>
+    </div>
+    <div class="head-actions">
+      <span class="monthpill">${icon("calendar", 18)}${periodLabel(summary.period)}</span>
+      ${owing.length ? html`<a class="btn" href="#efectivo">+ Registrar pago en efectivo</a>` : ""}
+    </div>
+  </header>
   ${flashBox(flash)}
 
-  <section class="hero" aria-label="Resumen del mes">
-    <span class="eyebrow">Recaudado</span>
-    <span class="hero-number">${peso(summary.collectedCents)}</span>
-    <span class="hero-sub">de ${peso(summary.expectedCents)} esperados · ${pct} %</span>
-    <progress class="bar" max="100" value="${pct}" aria-label="Porcentaje recaudado">${pct} %</progress>
-    <div class="hero-stats">
-      <div><b>${summary.paidCount}</b><span>al día</span></div>
-      <div><b>${summary.pendingCount}</b><span>pendientes</span></div>
+  <section class="top" aria-label="Resumen del mes">
+    <div class="hero">
+      <div class="row wrap">
+        <span class="eyebrow">Recaudado en ${periodLabel(summary.period).split(" ")[0]}</span>
+        ${summary.weekCents > 0 ? html`<span class="chip-lime">+ ${peso(summary.weekCents)} esta semana</span>` : ""}
+      </div>
+      <span class="hero-number">${peso(summary.collectedCents)}</span>
+      <span class="hero-sub">de ${peso(summary.expectedCents)} esperados · ${pct} %</span>
+      <progress class="bar" max="100" value="${pct}" aria-label="Porcentaje recaudado">${pct} %</progress>
+      <div class="hero-stats">
+        <div><b>${summary.paidCount}</b><span>casas al día</span></div>
+        <div><b>${summary.pendingCount}</b><span>casas pendientes</span></div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="card stat">
+        <span class="eyebrow dim">Faltan por pagar</span>
+        <span class="stat-number">${peso(owingCents)}</span>
+        <span class="muted small">${summary.pendingCount} casa${summary.pendingCount === 1 ? "" : "s"}</span>
+        ${reminder ? html`<a class="btn ghost" href="${reminder}" target="_blank" rel="noopener noreferrer">Recordar por WhatsApp</a>` : html`<span class="small">¡Todas las casas están al día!</span>`}
+      </div>
+      <div class="stat info-card">
+        <span class="eyebrow">Por asignar</span>
+        <span class="stat-number">${summary.unassignedCount} pago${summary.unassignedCount === 1 ? "" : "s"}</span>
+        ${summary.unassignedCount
+          ? html`<span class="small">${peso(summary.unassignedCents)} entraron sin casa asociada</span><a class="stat-link" href="#por-asignar">Asignar ahora →</a>`
+          : html`<span class="small">Todo lo que entró ya tiene casa.</span>`}
+      </div>
     </div>
   </section>
 
@@ -178,37 +289,60 @@ ${topbar({ user, csrf, active: "resumen" })}
       </section>`
     : ""}
 
-  <section class="card">
-    <div class="row wrap">
-      <h2>Casas</h2>
-      <form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Generar cuotas de ${periodLabel(summary.period)}</button></form>
+  <section class="cols">
+    <div class="card table-card">
+      <div class="row wrap">
+        <h2>Casas · ${periodLabel(summary.period).split(" ")[0]}</h2>
+        <div class="chips" role="group" aria-label="Filtrar casas">
+          ${FILTERS.map((f) => html`<a class="chip-filter" href="/panel${f.key ? `?f=${f.key}` : ""}"${f.key === filter ? raw(' aria-current="true"') : ""}>${f.label} ${dues.filter(f.test).length}</a>`)}
+        </div>
+      </div>
+      ${dues.length === 0
+        ? html`<p class="muted">Aún no hay cuotas para este mes.</p>
+          <form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn" type="submit">Generar cuotas de ${periodLabel(summary.period)}</button></form>`
+        : html`<div class="table-wrap"><table>
+        <thead><tr><th>Casa</th><th>Residente</th><th>Estado</th><th>Pagó el</th><th class="num">Monto</th></tr></thead>
+        <tbody>${shown.map((d) => html`<tr>
+          <td><a class="rowlink" href="/panel/casas/${d.houseId}"><b>${d.houseCode}</b></a></td>
+          <td>${d.residentName}</td>
+          <td>${STATUS[d.status]}</td>
+          <td class="muted">${d.paidAt ? shortDate(d.paidAt) : "—"}</td>
+          <td class="num"><b>${peso(d.amountCents)}</b></td>
+        </tr>`)}</tbody>
+      </table></div>
+      <form class="regen" method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Generar cuotas de ${periodLabel(summary.period)}</button></form>`}
     </div>
-    ${dues.length === 0
-      ? html`<p class="muted">Aún no hay cuotas para este mes. Pulsa “Generar cuotas”.</p>`
-      : html`<div class="table-wrap"><table>
-      <thead><tr><th>Casa</th><th>Residente</th><th>Estado</th><th class="num">Monto</th></tr></thead>
-      <tbody>${dues.map((d) => html`<tr><td><b>${d.houseCode}</b></td><td>${d.residentName}</td><td>${STATUS[d.status]}</td><td class="num"><b>${peso(d.amountCents)}</b></td></tr>`)}</tbody>
-    </table></div>`}
-  </section>
 
-  ${owing.length
-    ? html`<section class="card">
-        <h2>Pago en efectivo</h2>
-        <p class="muted small">Si un vecino te pagó en mano, regístralo para dejar su cuota al día.</p>
-        <form class="assign" method="post" action="/panel/efectivo">
-          ${csrfField(csrf)}
-          <select name="house" required aria-label="Casa que pagó en efectivo"><option value="">Elegir casa…</option>${houseOptions(owing)}</select>
-          <button class="btn small" type="submit">Registrar efectivo</button>
-        </form>
-      </section>`
-    : ""}
-</main>`);
+    <div class="col-side">
+      <div class="card">
+        <div class="row"><h2>Últimos pagos</h2><a class="small" href="/panel/pagos">Ver todos →</a></div>
+        ${recent.length
+          ? html`<ul class="recent">${recent.map((p) => html`<li>
+              <span class="tile ${p.status === "assigned" ? "ok" : "info"}">${p.houseCode ?? "?"}</span>
+              <span class="who"><b>${p.method === "cash" ? p.residentName : p.payerName || "Sin nombre"}</b><small class="muted">${payMethod(p)} · ${shortDateTime(p.paidAt)}</small></span>
+              <b>+${peso(p.amountCents)}</b>
+            </li>`)}</ul>`
+          : html`<p class="muted small">Cuando llegue el primer pago aparecerá aquí.</p>`}
+      </div>
+
+      ${owing.length
+        ? html`<div class="card" id="efectivo">
+            <h2>Pago en efectivo</h2>
+            <p class="muted small">Si un vecino te pagó en mano, regístralo para dejar su cuota al día.</p>
+            <form class="assign" method="post" action="/panel/efectivo">
+              ${csrfField(csrf)}
+              <select name="house" required aria-label="Casa que pagó en efectivo"><option value="">Elegir casa…</option>${houseOptions(owing)}</select>
+              <button class="btn small" type="submit">Registrar efectivo</button>
+            </form>
+          </div>`
+        : ""}
+    </div>
+  </section>`);
 }
 
-export function casasPage({ tenant, user, csrf, flash, houses, inactive = [] }) {
-  return layout("Casas", html`
-${topbar({ user, csrf, active: "casas" })}
-<main class="page">
+export function casasPage(args) {
+  const { tenant, csrf, flash, houses, inactive = [] } = args;
+  return panelLayout("Casas", { ...args, active: "casas" }, html`
   <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}</span></div>
   ${flashBox(flash)}
 
@@ -248,14 +382,12 @@ ${topbar({ user, csrf, active: "casas" })}
           </span>
         </li>`)}</ul>
       </section>`
-    : ""}
-</main>`);
+    : ""}`);
 }
 
-export function ajustesPage({ tenant, user, csrf, flash, webhookUrl }) {
-  return layout("Ajustes", html`
-${topbar({ user, csrf, active: "ajustes" })}
-<main class="page">
+export function ajustesPage(args) {
+  const { tenant, csrf, flash, webhookUrl } = args;
+  return panelLayout("Ajustes", { ...args, active: "ajustes" }, html`
   <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
   ${flashBox(flash)}
 
@@ -282,12 +414,9 @@ ${topbar({ user, csrf, active: "ajustes" })}
     <h2>Cuenta para cobrar</h2>
     <p class="small">Llave Bre-B: <b>${tenant.payKey ?? "sin configurar"}</b>${tenant.payHolder ? html` · Titular: <b>${tenant.payHolder}</b>` : ""}</p>
     <p class="muted small">Es la que ven los residentes en su enlace personal.</p>
-  </section>
-</main>`);
+  </section>`);
 }
 
-
-const payMethod = (p) => (p.method === "cash" ? "Efectivo" : bankLabel(p.bank));
 const PAY_STATUS = {
   assigned: html`<span class="pill ok"><i></i>Asignado</span>`,
   unassigned: html`<span class="pill info"><i></i>Por asignar</span>`,
@@ -315,7 +444,8 @@ export function pagoItem(p, csrf) {
   </li>`;
 }
 
-export function pagosPage({ tenant, user, csrf, flash, result, filters, page, pages, period }) {
+export function pagosPage(args) {
+  const { tenant, csrf, flash, result, filters, page, pages, period } = args;
   const link = (extra = {}) => {
     const qs = new URLSearchParams();
     const all = { ...filters, ...extra };
@@ -323,9 +453,7 @@ export function pagosPage({ tenant, user, csrf, flash, result, filters, page, pa
     const text = qs.toString();
     return text ? `?${text}` : "";
   };
-  return layout("Pagos", html`
-${topbar({ user, csrf, active: "pagos" })}
-<main class="page">
+  return panelLayout("Pagos", { ...args, active: "pagos" }, html`
   <div class="heading"><h1>Pagos</h1><span class="muted">${tenant.name}</span></div>
   ${flashBox(flash)}
 
@@ -364,14 +492,12 @@ ${topbar({ user, csrf, active: "pagos" })}
           ${page < pages ? html`<a class="btn ghost small" href="/panel/pagos${link({ p: page + 1 })}">Siguiente →</a>` : html`<span></span>`}
         </nav>`
       : ""}
-  </section>
-</main>`);
+  </section>`);
 }
 
-export function casaPage({ tenant, user, csrf, flash, house, aliases, dues, payments }) {
-  return layout(`Casa ${house.code}`, html`
-${topbar({ user, csrf, active: "casas" })}
-<main class="page">
+export function casaPage(args) {
+  const { tenant, csrf, flash, house, aliases, dues, payments } = args;
+  return panelLayout(`Casa ${house.code}`, { ...args, active: "casas" }, html`
   <div class="heading">
     <h1>Casa ${house.code}</h1>
     <span class="muted">${tenant.name}${house.active ? "" : " · desactivada"}</span>
@@ -428,59 +554,129 @@ ${topbar({ user, csrf, active: "casas" })}
           <form method="post" action="/panel/casas/${house.id}/desactivar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, desactivar</button></form>
         </details>`
       : html`<form method="post" action="/panel/casas/${house.id}/reactivar">${csrfField(csrf)}<button class="btn" type="submit">Reactivar casa</button></form>`}
-  </section>
-</main>`);
+  </section>`);
 }
 
 /** Shown once after creating a house or rotating its link: only the token's hash is stored. */
-export function linkPage({ user, csrf, house, url, whatsapp }) {
-  return layout("Enlace personal", html`
-${topbar({ user, csrf, active: "casas" })}
-<main class="narrow">
-  <h1>Casa ${house.code}</h1>
-  <p class="muted">${house.residentName}</p>
+export function linkPage(args) {
+  const { house, url, whatsapp } = args;
+  return panelLayout("Enlace personal", { ...args, active: "casas" }, html`
+  <div class="heading"><h1>Casa ${house.code}</h1><span class="muted">${house.residentName}</span></div>
   <section class="card">
     <h2>Enlace personal</h2>
     <p class="small">Envíaselo al residente: ahí ve su cuota y cómo pagar. <b>Solo se muestra ahora</b>; si lo pierdes, genera uno nuevo (el anterior deja de servir).</p>
-    <p class="key url" translate="no">${url}</p>
-    ${whatsapp ? html`<a class="btn" href="${whatsapp}" rel="noopener noreferrer">Enviar por WhatsApp</a>` : ""}
-    <a class="btn ghost" href="/panel/casas">Volver a casas</a>
+    <p class="key url" translate="no" id="enlace">${url}</p>
+    <div class="actions">
+      <button class="btn" type="button" data-copy="${url}" data-copy-target="#enlace">Copiar enlace</button>
+      ${whatsapp ? html`<a class="btn ghost" href="${whatsapp}" rel="noopener noreferrer">Enviar por WhatsApp</a>` : ""}
+      <a class="btn ghost" href="/panel/casas">Volver a casas</a>
+    </div>
+  </section>`);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Resident pages (reached by the personal link, no sign-in): home, how to pay, receipt.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** "2026-11" -> "Noviembre". */
+const monthName = (period) => { const m = periodLabel(period).split(" ")[0]; return m[0].toUpperCase() + m.slice(1); };
+const firstName = (full) => String(full ?? "").trim().split(/\s+/)[0] || "vecino";
+
+export function residentPage({ tenant, house, dues, period, token }) {
+  const open = dues.filter((d) => d.period === period && d.status === "pending");
+  const behind = dues.filter((d) => d.period < period && d.status === "pending");
+  const owed = [...open, ...behind];
+  const total = owed.reduce((s, d) => s + d.amountCents, 0);
+  return layout("Mi cuota", html`
+<main class="narrow res">
+  <header class="res-top">${BRAND_MARK}<span class="chip">Casa ${house.code}</span></header>
+  <div class="res-hello"><h1>Hola, ${firstName(house.residentName)}</h1><span class="muted">${tenant.name}</span></div>
+
+  <section class="hero" aria-label="Tu cuota">
+    <div class="row">
+      <span class="eyebrow">${owed.length ? "Tu cuota" : "Vigilancia"} · ${periodLabel(period).split(" ")[0]}</span>
+      ${owed.length ? STATUS.pending : STATUS.paid}
+    </div>
+    ${owed.length
+      ? html`<span class="hero-number">${peso(total)}</span>
+        <span class="hero-sub">${behind.length ? `Incluye ${behind.length} mes${behind.length === 1 ? "" : "es"} anterior${behind.length === 1 ? "" : "es"}` : [...new Set(owed.map((d) => d.conceptName))].join(" + ")}</span>
+        <a class="btn lime big" href="/r/${token}/pagar">Pagar ahora ${icon("arrow", 20, 2.5)}</a>`
+      : html`<span class="hero-number">Al día</span><span class="hero-sub">No tienes cuotas pendientes. ¡Gracias!</span>`}
+  </section>
+
+  <section class="card">
+    <h2>Tus pagos</h2>
+    ${dues.length
+      ? html`<ul class="list">${dues.map((d) => html`<li class="due">
+          <span class="dot ${d.status === "paid" ? "ok" : "warn"}">${d.status === "paid" ? icon("check", 18, 3) : ""}</span>
+          <span class="due-text"><b>${monthName(d.period)}</b><small class="muted">${d.conceptName} · ${d.paidAt ? `Pagado el ${shortDate(d.paidAt)}` : "Pendiente"}</small></span>
+          ${d.status === "paid" ? html`<a class="small strong" href="/r/${token}/recibo/${d.id}">Recibo</a>` : html`<b>${peso(d.amountCents)}</b>`}
+        </li>`)}</ul>`
+      : html`<p class="muted small">Todavía no tienes cuotas.</p>`}
   </section>
 </main>`);
 }
 
-export function residentPage({ tenant, house, dues, period }) {
-  const current = dues.filter((d) => d.period === period);
-  const open = current.filter((d) => d.status === "pending");
-  const total = open.reduce((s, d) => s + d.amountCents, 0);
-  return layout("Mi cuota", html`
-<main class="narrow">
-  <header class="topbar plain">${BRAND_MARK}<span class="chip">Casa ${house.code}</span></header>
-  <h1>Hola, ${house.residentName.split(" ")[0]}</h1>
-  <p class="muted">${tenant.name}</p>
+/** How to pay: the Bre-B key to copy and the exact amount. It refreshes itself so it turns into "Al día" once the bank confirms. */
+export function residentPayPage({ tenant, house, dues, token }) {
+  const owed = dues.filter((d) => d.status === "pending");
+  const total = owed.reduce((s, d) => s + d.amountCents, 0);
+  return layout("Pagar", html`
+<main class="narrow res">
+  <header class="backbar"><a href="/r/${token}" aria-label="Volver">${icon("back", 24, 2.2)}</a><h1>Pagar vigilancia</h1></header>
 
-  <section class="hero" aria-label="Tu cuota">
-    <span class="eyebrow">${periodLabel(period)}</span>
-    ${open.length
-      ? html`<span class="hero-number">${peso(total)}</span><span class="hero-sub">${open.map((d) => d.conceptName).join(" + ")}</span>`
-      : html`<span class="hero-number">Al día</span><span class="hero-sub">No tienes cuotas pendientes este mes. ¡Gracias!</span>`}
+  <section class="hero center-text" aria-label="Total a pagar">
+    <span class="eyebrow">Total a pagar</span>
+    <span class="hero-number">${peso(total)}</span>
+    <span class="hero-sub">Casa ${house.code} · ${tenant.name}</span>
   </section>
 
-  ${open.length && tenant.payKey
+  ${tenant.payKey
     ? html`<section class="card">
-        <h2>Cómo pagar</h2>
-        <p>Paga <b>${peso(total)}</b> exactos por Bre-B a la llave:</p>
-        <p class="key">${tenant.payKey}</p>
-        ${tenant.payHolder ? html`<p class="muted small">Titular: ${tenant.payHolder}</p>` : ""}
-        <p class="muted small">Cuando el banco confirme, tu cuota se marca sola.</p>
+        <span class="eyebrow dim">Paga por Bre-B a la llave</span>
+        <p class="key" id="llave" translate="no">${tenant.payKey}</p>
+        ${tenant.payHolder ? html`<p class="muted small">Titular: <b>${tenant.payHolder}</b></p>` : ""}
+        <button class="btn" type="button" data-copy="${tenant.payKey}" data-copy-target="#llave">Copiar llave</button>
+        <ol class="steps small">
+          <li>Abre la app de tu banco o billetera.</li>
+          <li>Elige pagar o transferir con <b>llave Bre-B</b>.</li>
+          <li>Escribe la llave y el valor <b>exacto: ${peso(total)}</b>.</li>
+        </ol>
       </section>`
-    : ""}
+    : html`<section class="card"><p>El tesorero aún no ha configurado cómo pagar. Escríbele para que te indique.</p></section>`}
 
-  <section class="card">
-    <h2>Tus cuotas</h2>
-    <ul class="list">${dues.map((d) => html`<li><span><b>${d.conceptName}</b><small class="muted">${periodLabel(d.period)}</small></span>${STATUS[d.status]}</li>`)}</ul>
+  <p class="waiting" role="status"><span class="pulse"></span>Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme.</p>
+  <p class="muted small center-text">Paga siempre el valor exacto. Si pagas otro valor, el tesorero lo asignará a mano.</p>
+</main>`, { refresh: 20 });
+}
+
+export function receiptPage({ tenant, receipt, token }) {
+  const medium = receipt.method === "cash" ? "Efectivo" : `Bre-B · ${bankLabel(receipt.bank)}`;
+  return layout("Recibo", html`
+<main class="receipt">
+  <div class="okring">${icon("check", 36, 3)}</div>
+  <h1>¡Pago confirmado!</h1>
+  <p class="receipt-lead">Gracias, ${firstName(receipt.residentName)}. Tu cuota de ${receipt.conceptName.toLowerCase()} de ${periodLabel(receipt.period).split(" ")[0]} quedó al día.</p>
+
+  <section class="rcard" aria-label="Recibo">
+    <div><span class="eyebrow dim">Total pagado</span><span class="rtotal">${peso(receipt.amountCents)}</span></div>
+    <hr>
+    <dl>
+      <div><dt>Concepto</dt><dd>${receipt.conceptName} · ${periodLabel(receipt.period)}</dd></div>
+      <div><dt>Casa</dt><dd>Casa ${receipt.houseCode} · ${receipt.residentName}</dd></div>
+      <div><dt>Fecha</dt><dd>${shortDateTime(receipt.paidAt)}</dd></div>
+      <div><dt>Medio</dt><dd>${medium}</dd></div>
+      <div><dt>Recibo</dt><dd>N.º ${receipt.number}</dd></div>
+    </dl>
+    <hr>
+    <p class="muted small">${tenant.name} · Recibo emitido por Cuotia, no válido como factura.</p>
   </section>
-</main>`);
+
+  <div class="receipt-actions">
+    <button class="btn lime big" type="button" data-print>Descargar recibo en PDF</button>
+    <a class="btn outline big" href="/r/${token}">Volver al inicio</a>
+  </div>
+</main>`, { bodyClass: "receipt-page" });
 }
 
 export function notFoundPage() {
