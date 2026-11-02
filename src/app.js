@@ -14,7 +14,7 @@ import { createNotifier } from "./notifier.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
 import { MANUAL_LABELS, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
-import { ajustesPage, bitacoraPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, bitacoraPage, masPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -614,6 +614,8 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         prev: validPastPeriod(shiftPeriod(month, -1)) ? shiftPeriod(month, -1) : null, next: month < period ? shiftPeriod(month, 1) : null,
       }));
     }
+
+    if (method === "GET" && path === "/panel/mas") return send(res, 200, masPage({ ...base }));
 
     if (method === "GET" && path === "/panel/bitacora") {
       const action = String(url.searchParams.get("tipo") ?? "");

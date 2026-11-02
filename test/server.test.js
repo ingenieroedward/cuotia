@@ -1890,3 +1890,23 @@ test("bitácora: queda anotado quién hizo qué, sin secretos, con filtros, aisl
   s.A.team.remove(userId);
   assert.ok(s.A.audit.list({ q: "Ana" }).rows.some((r) => r.userName === "Ana" && r.summary === "Algo de Ana"));
 }));
+
+test("navegación: el celular tiene cinco pestañas (la quinta es Más) y el computador sigue mostrando todo, incluidos Cuentas y Ajustes", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const get = async (p) => (await fetch(`${s.base}${p}`, { headers: { cookie }, redirect: "manual" })).text();
+  const html = await get("/panel");
+  const tabbar = /<nav class="tabbar"[\s\S]*?<\/nav>/.exec(html)[0];
+  assert.equal((tabbar.match(/<a class="tab"/g) ?? []).length, 5, "cinco pestañas");
+  assert.match(tabbar, /href="\/panel\/mas"/);
+  assert.doesNotMatch(tabbar, /href="\/panel\/cuentas"|href="\/panel\/ajustes"/, "esas viven dentro de Más");
+  const side = /<nav class="side-nav"[\s\S]*?<\/nav>/.exec(html)[0];
+  for (const href of ["/panel", "/panel/cobros", "/panel/casas", "/panel/pagos", "/panel/cuentas", "/panel/ajustes"]) assert.ok(side.includes(`href="${href}"`), `el menú lateral tiene ${href}`);
+
+  const mas = await get("/panel/mas");
+  for (const href of ["/panel/cuentas", "/panel/ajustes", "/panel/bitacora"]) assert.ok(mas.includes(`href="${href}"`), href);
+  assert.match(/<nav class="tabbar"[\s\S]*?<\/nav>/.exec(mas)[0], /href="\/panel\/mas" aria-current="page"/, "Más queda marcada");
+  // Inside Cuentas or Ajustes the Más tab stays highlighted too.
+  assert.match(/<nav class="tabbar"[\s\S]*?<\/nav>/.exec(await get("/panel/cuentas"))[0], /href="\/panel\/mas" aria-current="page"/);
+  assert.match(/<nav class="tabbar"[\s\S]*?<\/nav>/.exec(await get("/panel/ajustes"))[0], /href="\/panel\/mas" aria-current="page"/);
+  assert.equal((await fetch(`${s.base}/panel/mas`, { redirect: "manual" })).headers.get("location"), "/login");
+}));
