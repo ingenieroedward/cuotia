@@ -7,7 +7,9 @@ const config = loadConfig();
 const store = openStore(config.databasePath);
 
 if (store.tenants.list().length === 0) {
-  console.log("Aún no hay conjuntos. Crea el primero con: npm run admin -- crear-conjunto --help");
+  // The first conjunto is created from this private, one-use link; it closes for good once a conjunto exists.
+  console.log(`Aún no hay conjuntos. Crea el primero en: ${config.publicUrl}/setup?token=${config.setupToken}`);
+  console.log("(o por terminal: npm run admin -- crear-conjunto --help)");
 }
 
 const server = createServer(createApp({ config, store }));

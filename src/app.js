@@ -3,12 +3,12 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseCookies, readBody, redirect, sameOrigin, send, sendJson } from "./http.js";
 import {
-  AttemptLimiter, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, matchTotp, newTotpSecret,
+  AttemptLimiter, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, hashPassword, matchTotp, newTotpSecret, safeEqual,
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
-import { bankLabel, bogotaDateTime, csvCell, currentPeriod, periodLabel } from "./text.js";
-import { ajustesPage, casaPage, casasPage, flashOf, pagosPage, linkPage, loginPage, notFoundPage, panelPage, residentPage, twoFaPage } from "./views.js";
+import { bankLabel, bogotaDateTime, csvCell, currentPeriod, periodLabel, slugify } from "./text.js";
+import { ajustesPage, casaPage, casasPage, flashOf, pagosPage, linkPage, loginPage, notFoundPage, panelPage, residentPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -22,6 +22,7 @@ const SETUP_TTL_MS = 30 * 60_000; // time to install an authenticator app
 /** Plain `(req, res)` router, no framework. Each branch answers and returns. */
 export function createApp({ config, store }) {
   const loginLimiter = new AttemptLimiter();
+  const setupLimiter = new AttemptLimiter({ max: 10, windowMs: 15 * 60_000 });
   const codeLimiter = new AttemptLimiter({ max: 5, windowMs: 10 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
@@ -49,10 +50,13 @@ export function createApp({ config, store }) {
     const hook = path.match(/^\/webhooks\/pagoradar\/(ten_[a-f0-9]+)$/);
     if (method === "POST" && hook) return pagoradarWebhook(req, res, hook[1]);
 
+    if (path === "/setup" && (method === "GET" || method === "POST")) return setup(req, res, url, method);
+
     if (path === "/login") {
       if (method === "GET") {
         const s = sessionOf(req);
-        return s ? redirect(res, s.stage === "full" ? "/panel" : "/2fa") : send(res, 200, loginPage());
+        if (s) return redirect(res, s.stage === "full" ? "/panel" : "/2fa");
+        return send(res, 200, loginPage({ notice: url.searchParams.get("m") === "creado" ? "Conjunto creado. Entra con tu correo y tu contraseña." : undefined }));
       }
       if (method === "POST") return login(req, res);
     }
@@ -103,6 +107,44 @@ export function createApp({ config, store }) {
     }
     store.tenants.touchPagoradar(tenant.id);
     return sendJson(res, 200, ingestEvent(store, event, tenant.id));
+  }
+
+  // ---------- first-run setup ----------
+
+  /** Open only while there is no conjunto AND the private token matches. Anything else looks like any other missing page. */
+  const setupOpen = (token) => store.tenants.list().length === 0 && safeEqual(String(token ?? ""), config.setupToken);
+
+  async function setup(req, res, url, method) {
+    const ip = req.socket.remoteAddress;
+    if (setupLimiter.blocked(ip)) return send(res, 429, "Demasiados intentos. Espera unos minutos.");
+    if (method === "GET") {
+      const token = url.searchParams.get("token");
+      if (!setupOpen(token)) { setupLimiter.fail(ip); return send(res, 404, notFoundPage()); }
+      return send(res, 200, setupPage({ token }));
+    }
+
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const form = new URLSearchParams(await readBody(req, 8 * 1024));
+    const token = String(form.get("token") ?? "");
+    if (!setupOpen(token)) { setupLimiter.fail(ip); return send(res, 404, notFoundPage()); }
+
+    const field = (k, max) => String(form.get(k) ?? "").trim().slice(0, max);
+    const values = { nombre: field("nombre", 80), cuota: field("cuota", 9).replace(/[.\s]/g, ""), llave: field("llave", 80), titular: field("titular", 80), correo: field("correo", 120).toLowerCase() };
+    const clave = String(form.get("clave") ?? "");
+    const again = (error) => send(res, 400, setupPage({ token, error, values }));
+    if (!values.nombre) return again("Escribe el nombre del conjunto.");
+    if (!/^\d+$/.test(values.cuota) || Number(values.cuota) < 1000 || Number(values.cuota) > 10_000_000) return again("La cuota debe ser un valor en pesos entre 1.000 y 10.000.000.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.correo)) return again("Escribe un correo válido.");
+    if (clave.length < 10) return again("La contraseña debe tener al menos 10 caracteres.");
+    if (clave !== String(form.get("clave2") ?? "")) return again("Las contraseñas no coinciden.");
+
+    const passwordHash = await hashPassword(clave);
+    // Hashing is slow and async: check again, synchronously, right before creating, so two submits can't make two conjuntos.
+    if (store.tenants.list().length > 0) return send(res, 404, notFoundPage());
+    const tenant = store.tenants.create({ slug: slugify(values.nombre), name: values.nombre, payKey: values.llave || null, payHolder: values.titular || null });
+    store.forTenant(tenant.id).concepts.create({ name: "Vigilancia", amountCents: Number(values.cuota) * 100 });
+    store.users.create({ tenantId: tenant.id, email: values.correo, passwordHash });
+    return redirect(res, "/login?m=creado");
   }
 
   // ---------- login ----------

@@ -29,7 +29,22 @@ npm test
 MASTER_KEY=$(openssl rand -hex 32) PUBLIC_URL=http://localhost:3000 npm start
 ```
 
-Crear el primer conjunto, una casa y las cuotas del mes:
+## Primer conjunto
+
+La primera vez, con la base vacía, Cuotia imprime en el **log** un enlace privado de un solo uso:
+
+```
+Aún no hay conjuntos. Crea el primero en: https://cuotia.tudominio.com/setup?token=…
+```
+
+Ábrelo: un formulario te deja crear el conjunto (nombre, cuota, llave Bre-B, titular) y la cuenta del tesorero con
+**su propia contraseña**. En cuanto existe un conjunto, ese enlace deja de funcionar para siempre. El token se genera
+en cada arranque; si prefieres uno fijo, define `SETUP_TOKEN` (mínimo 16 caracteres). En Dokploy, el enlace está en
+los **logs** del servicio.
+
+No hay registro abierto: los demás conjuntos los crea el operador (por ahora con el script).
+
+Por terminal, también se puede crear el conjunto, una casa y las cuotas del mes:
 
 ```bash
 npm run admin -- crear-conjunto --slug ibiza --nombre "Jardines de Ibiza" --correo tesorera@ejemplo.com --llave @llave --titular "Titular" --cuota 30000
@@ -62,7 +77,8 @@ Cuotia solo usa `payment.received`; los demás eventos solo confirman la conexi�
 ## Desplegar en Dokploy
 
 *Create Service → Docker Compose* con este repositorio. Variables:
-`MASTER_KEY` (`openssl rand -hex 32`; **guárdala**: cifra el doble factor y sin ella nadie puede entrar), `PUBLIC_URL`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
+`MASTER_KEY` (`openssl rand -hex 32`; **guárdala**: cifra el doble factor y sin ella nadie puede entrar), `PUBLIC_URL`, y
+opcionalmente `SETUP_TOKEN`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
 `cuotia-data` (`/app/data/cuotia.db`): respáldalo. Monitor a `/health`.
 
 Si el log dice `SQLITE_CANTOPEN` o `readonly database`, el volumen quedó con otro dueño (Cuotia corre como el usuario

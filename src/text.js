@@ -22,6 +22,14 @@ export function namesMatch(a, b) {
   return shared >= Math.min(2, x.size, y.size) && shared === Math.min(x.size, y.size);
 }
 
+/** "Jardines de Ibiza" -> "jardines-de-ibiza": a short, URL-friendly name for a conjunto. */
+export function slugify(name) {
+  const slug = String(name ?? "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
+  return slug || "conjunto";
+}
+
 /** 3000000 cents -> "$30.000" (Colombian pesos, thousands with a dot). */
 export function peso(cents) {
   const pesos = Math.round(Number(cents) / 100);

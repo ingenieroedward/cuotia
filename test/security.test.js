@@ -91,3 +91,28 @@ test("ayudas de fechas y CSV", () => {
   assert.equal(csvCell(null), '""');
   assert.equal(csvCell(30000), '"30000"');
 });
+
+import { loadConfig } from "../src/config.js";
+import { safeEqual } from "../src/security.js";
+import { slugify } from "../src/text.js";
+
+test("configuración: el token inicial se genera o se fija, y no puede ser débil", () => {
+  const env = { MASTER_KEY: "a".repeat(64) };
+  const a = loadConfig(env);
+  const b = loadConfig(env);
+  assert.ok(a.setupToken.length >= 30 && a.setupToken !== b.setupToken, "uno distinto en cada arranque");
+  assert.equal(loadConfig({ ...env, SETUP_TOKEN: "fijo-de-16-caracteres" }).setupToken, "fijo-de-16-caracteres");
+  assert.ok(loadConfig({ ...env, SETUP_TOKEN: "" }).setupToken.length >= 30, "vacío = generado");
+  assert.throws(() => loadConfig({ ...env, SETUP_TOKEN: "corto" }), /al menos 16/);
+  assert.throws(() => loadConfig({}), /MASTER_KEY/);
+});
+
+test("slugify y comparación segura", () => {
+  assert.equal(slugify("Jardines de Ibiza"), "jardines-de-ibiza");
+  assert.equal(slugify("  ¡Los Álamos, Etapa 2!  "), "los-alamos-etapa-2");
+  assert.equal(slugify("???"), "conjunto");
+  assert.ok(slugify("x".repeat(100)).length <= 40);
+  assert.equal(safeEqual("abc", "abc"), true);
+  assert.equal(safeEqual("abc", "abd"), false);
+  assert.equal(safeEqual("abc", "abcd"), false);
+});
