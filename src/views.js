@@ -60,8 +60,8 @@ const FLASH = {
   ed: () => ({ kind: "ok", text: "Datos de la casa guardados." }),
   aliasok: () => ({ kind: "ok", text: "Nombre agregado: los pagos con ese nombre se asignarán a esta casa." }),
   aliasdel: () => ({ kind: "ok", text: "Nombre quitado." }),
-  desact: () => ({ kind: "ok", text: "Casa desactivada. Su historial se conserva." }),
-  react: () => ({ kind: "ok", text: "Casa reactivada." }),
+  desact: () => ({ kind: "ok", text: "Casa dada de baja. Su historial se conserva y la puedes reactivar cuando quieras." }),
+  react: () => ({ kind: "ok", text: "Casa dada de alta otra vez: vuelve a recibir cuotas. Genera su enlace personal nuevo si lo necesita." }),
   undo: () => ({ kind: "ok", text: "Asignación deshecha: el pago volvió a “Por asignar” y la cuota a pendiente." }),
   undoc: () => ({ kind: "ok", text: "Pago anulado: las cuotas que cubría volvieron a pendiente." }),
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
@@ -607,13 +607,13 @@ export function casasPage(args) {
 
   ${inactive.length
     ? html`<section class="card">
-        <h2>Casas desactivadas</h2>
+        <h2>Casas dadas de baja</h2>
         <p class="muted small">Ya no reciben cuotas ni tienen enlace, pero su historial se conserva.</p>
         <ul class="list">${inactive.map((h) => html`<li>
           <span><b>Casa ${h.code}</b><small class="muted">${h.residentName}</small></span>
           <span class="actions">
             <a class="btn ghost small" href="/panel/casas/${h.id}">Ver</a>
-            <form method="post" action="/panel/casas/${h.id}/reactivar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Reactivar</button></form>
+            <form method="post" action="/panel/casas/${h.id}/reactivar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Dar de alta</button></form>
           </span>
         </li>`)}</ul>
       </section>`
@@ -904,10 +904,12 @@ export function casaPage(args) {
   return panelLayout(`Casa ${house.code}`, { ...args, active: "casas" }, html`
   <div class="heading">
     <h1>Casa ${house.code}</h1>
-    <span class="muted">${tenant.name}${house.active ? "" : " · desactivada"}</span>
+    <span class="muted">${tenant.name}${house.active ? "" : " · dada de baja"}</span>
   </div>
-  <p><a href="/panel/casas">← Volver a casas</a></p>
+  <p class="row wrap"><a href="/panel/casas">← Volver a casas</a>${house.active ? html`<a class="small" href="#baja">Dar de baja esta casa</a>` : ""}</p>
   ${flashBox(flash)}
+
+  ${house.active ? "" : html`<p class="flash info" role="status">Esta casa está dada de baja: no recibe cuotas ni tiene enlace. Su historial se conserva. <a href="#baja">Reactivarla</a></p>`}
 
   <section class="card">
     <h2>Datos</h2>
@@ -948,16 +950,16 @@ export function casaPage(args) {
       : html`<p class="muted small">Aún no hay pagos asignados a esta casa.</p>`}
   </section>
 
-  <section class="card">
+  <section class="card" id="baja">
     <h2>Acciones</h2>
     ${house.active
       ? html`<form method="post" action="/panel/casas/${house.id}/enlace">${csrfField(csrf)}<button class="btn ghost" type="submit">Generar enlace personal nuevo</button></form>
         <details class="undo">
-          <summary>Desactivar casa</summary>
-          <p class="muted small">Deja de recibir cuotas nuevas y su enlace personal deja de servir. Las cuotas que debía sin pagar ya no cuentan como pendientes. Todo su historial se conserva y la puedes reactivar.</p>
-          <form method="post" action="/panel/casas/${house.id}/desactivar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, desactivar</button></form>
+          <summary>Dar de baja esta casa</summary>
+          <p class="muted small">Úsalo cuando una familia se va o la casa deja de pagar cuota. Deja de recibir cuotas nuevas y su enlace personal deja de servir. Lo que debía sin pagar ya no cuenta como pendiente. Los pagos y el historial se conservan y la puedes reactivar.</p>
+          <form method="post" action="/panel/casas/${house.id}/desactivar">${csrfField(csrf)}<button class="btn small danger" type="submit">Sí, dar de baja</button></form>
         </details>`
-      : html`<form method="post" action="/panel/casas/${house.id}/reactivar">${csrfField(csrf)}<button class="btn" type="submit">Reactivar casa</button></form>`}
+      : html`<form method="post" action="/panel/casas/${house.id}/reactivar">${csrfField(csrf)}<button class="btn" type="submit">Dar de alta otra vez</button></form>`}
   </section>`);
 }
 

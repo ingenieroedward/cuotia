@@ -463,7 +463,7 @@ test("ficha de la casa: editar datos, nombres de pago, desactivar y reactivar", 
   const panel = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
   assert.doesNotMatch(panel, /Sandra Duque Restrepo/);
   const casas = await (await fetch(`${s.base}/panel/casas`, { headers: { cookie } })).text();
-  assert.match(casas, /Casas desactivadas/);
+  assert.match(casas, /Casas dadas de baja/);
   assert.equal((await form(`${s.base}${own}/enlace`, { _csrf: csrf }, cookie)).headers.get("location"), "/panel/casas?m=err", "no hay enlace para una casa desactivada");
   assert.match((await form(`${s.base}${own}/reactivar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=react/);
   assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}`)).status, 200);
