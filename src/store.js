@@ -211,6 +211,20 @@ const MIGRATIONS = [
     PRIMARY KEY (tenant_id, house_id, period, kind)
   );
   `,
+  /* V13: paz y salvo certificates. Each one has a short code anyone can check at /verificar (it shows only the conjunto,
+     the house number, the kind and the day: never a name). One per house, kind and day. */
+  `
+  CREATE TABLE certificates (
+    code TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    house_id TEXT NOT NULL REFERENCES houses(id),
+    kind TEXT NOT NULL,
+    issued_on TEXT NOT NULL,
+    issued_by TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (tenant_id, house_id, kind, issued_on)
+  );
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -323,6 +337,17 @@ export function openStore(path = ":memory:") {
     /** True once per time step: a code that was already used is refused, even inside its validity window. */
     claimTotpStep(userId, step) {
       return Number(db.prepare("UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?").run(step, userId, step).changes) === 1;
+    },
+  };
+
+  /** Checks a paz y salvo by its code. Global by design (the code is the credential) and it reveals no name. */
+  const certificates = {
+    byCode(code) {
+      const r = db.prepare(
+        `SELECT c.kind, c.issued_on, h.code AS house_code, t.name AS tenant_name FROM certificates c
+         JOIN houses h ON h.id = c.house_id JOIN tenants t ON t.id = c.tenant_id WHERE c.code = ?`,
+      ).get(String(code ?? "").trim().toUpperCase());
+      return r ? { kind: r.kind, issuedOn: r.issued_on, houseCode: r.house_code, tenantName: r.tenant_name } : null;
     },
   };
 
@@ -759,6 +784,22 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** Certificates issued for this conjunto's houses (see the global `certificates.byCode` to verify one). */
+    const certificates = {
+      /** The code of today's certificate for this house and kind, made on the first call and the same afterwards. */
+      issue({ houseId, kind, issuedOn, issuedBy = null }) {
+        ownHouse(houseId);
+        const existing = db.prepare("SELECT code FROM certificates WHERE tenant_id = ? AND house_id = ? AND kind = ? AND issued_on = ?").get(tenantId, houseId, kind, issuedOn);
+        if (existing) return existing.code;
+        const alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // no 0/O, 1/I/L: it is read aloud and typed
+        const bytes = randomBytes(10);
+        const raw = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+        const code = `${raw.slice(0, 5)}-${raw.slice(5)}`;
+        db.prepare("INSERT INTO certificates (code, tenant_id, house_id, kind, issued_on, issued_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(code, tenantId, houseId, kind, issuedOn, issuedBy, nowIso());
+        return code;
+      },
+    };
+
     /** What the conjunto spends. A mistake is voided (it stays visible as "anulado"), never erased. */
     const expenses = {
       create({ spentOn, amountCents, category, description, proof = null, userId = null }) {
@@ -865,8 +906,8 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, expenses, books, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, expenses, books, matchHouse, summary };
   }
 
-  return { db, tenants, users, invitations, settings, sessions, residentByToken, forTenant, close: () => db.close() };
+  return { db, tenants, users, invitations, certificates, settings, sessions, residentByToken, forTenant, close: () => db.close() };
 }

@@ -361,3 +361,17 @@ test("cuentas claras: el saldo suma lo recaudado y resta los gastos, y un gasto 
     assert.throws(() => A.expenses.create({ spentOn: "2026-11-05", amountCents: 100, category: "Otros", description: "x", ...bad }), undefined, JSON.stringify(bad).slice(0, 40));
   }
 });
+
+test("paz y salvo: el código se emite una vez por casa y día, otro conjunto no emite para casas ajenas y la verificación no muestra nombres", () => {
+  const { store, A, B, a14 } = twoConjuntos();
+  const code = A.certificates.issue({ houseId: a14.house.id, kind: "paz_y_salvo", issuedOn: "2026-11-03" });
+  assert.match(code, /^[2-9A-HJKMNP-Z]{5}-[2-9A-HJKMNP-Z]{5}$/);
+  assert.equal(A.certificates.issue({ houseId: a14.house.id, kind: "paz_y_salvo", issuedOn: "2026-11-03" }), code, "el mismo día, el mismo código");
+  assert.notEqual(A.certificates.issue({ houseId: a14.house.id, kind: "paz_y_salvo", issuedOn: "2026-11-04" }), code);
+  assert.throws(() => B.certificates.issue({ houseId: a14.house.id, kind: "paz_y_salvo", issuedOn: "2026-11-03" }), /no existe en este conjunto/);
+  const found = store.certificates.byCode(code.toLowerCase());
+  assert.deepEqual(found, { kind: "paz_y_salvo", issuedOn: "2026-11-03", houseCode: "14", tenantName: "Jardines de Ibiza" });
+  assert.ok(!JSON.stringify(found).includes("Sandra"), "no revela el nombre del residente");
+  assert.equal(store.certificates.byCode("AAAAA-AAAAA"), null);
+  assert.equal(store.certificates.byCode(""), null);
+});

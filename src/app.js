@@ -13,7 +13,7 @@ import { sendPush, validEndpoint, validKeys } from "./webpush.js";
 import { createNotifier } from "./notifier.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
 import { bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
-import { ajustesPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -53,6 +53,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   const codeLimiter = new AttemptLimiter({ max: 5, windowMs: 10 * 60_000 });
   const inviteLimiter = new AttemptLimiter({ max: 15, windowMs: 15 * 60_000 });
   const proofLimiter = new AttemptLimiter({ max: 12, windowMs: 60 * 60_000 });
+  const verifyLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
 
@@ -83,6 +84,14 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (method === "GET" && path === "/offline") return send(res, 200, offlinePage());
 
     if (path === "/setup" && (method === "GET" || method === "POST")) return setup(req, res, url, method);
+    if (method === "GET" && path === "/verificar") {
+      const ip = req.socket.remoteAddress;
+      const code = String(url.searchParams.get("codigo") ?? "").trim().toUpperCase().slice(0, 12);
+      if (!code) return send(res, 200, verificarPage({}));
+      if (verifyLimiter.blocked(ip)) return send(res, 429, verificarPage({ code, error: "Demasiados intentos. Espera unos minutos." }));
+      verifyLimiter.fail(ip);
+      return send(res, 200, verificarPage({ code, searched: true, found: store.certificates.byCode(code) }));
+    }
     const invite = (method === "GET" || method === "POST") && path.match(/^\/invitacion\/([A-Za-z0-9_-]{20,})$/);
     if (invite) return invitation(req, res, invite[1], method);
 
@@ -114,7 +123,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (upload) return residentUpload(req, res, upload[1]);
 
     // A resident's personal link: the unguessable token is the credential.
-    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar|comprobante|cuentas|manifest\.webmanifest)|\/recibo\/(du_[a-f0-9]+)|\/cuentas\/(gt_[a-f0-9]+)\/soporte)?$/);
+    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar|comprobante|cuentas|estado|paz-y-salvo|manifest\.webmanifest)|\/recibo\/(du_[a-f0-9]+)|\/cuentas\/(gt_[a-f0-9]+)\/soporte)?$/);
     if (r) {
       const [, token, extra, receiptId, expenseId] = r;
       const pay = extra === "pagar";
@@ -127,6 +136,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       if (receiptId) {
         const receipt = ledger.dues.receiptForHouse(found.house.id, receiptId);
         return receipt ? send(res, 200, receiptPage({ tenant: found.tenant, receipt, token })) : send(res, 404, notFoundPage());
+      }
+      if (extra === "estado" || extra === "paz-y-salvo") {
+        return serveDocument(res, extra, { tenant: found.tenant, house: found.house, ledger, backHref: `/r/${token}`, base: `/r/${token}`, issuedBy: "residente", manifest: `/r/${token}/manifest.webmanifest` });
       }
       if (extra === "cuentas" || expenseId) {
         // The treasurer decides whether residents see the accounts (Ajustes); otherwise it looks like the page doesn't exist.
@@ -225,6 +237,22 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (!validEndpoint(endpoint) || !validKeys(p256dh, auth)) return send(res, 400, "Suscripción inválida", text);
     ledger.housePush.add({ houseId: found.house.id, endpoint, p256dh, auth });
     return send(res, 200, "ok", text);
+  }
+
+  /** Estado de cuenta or paz y salvo of one house, for the resident (their link) or the treasurer. A certificate is only
+   *  issued while the house has no overdue dues, and each one gets a code that /verificar can check. */
+  function serveDocument(res, kind, { tenant, house, ledger, backHref, base, issuedBy, manifest }) {
+    if (!house.active) return send(res, 404, notFoundPage());
+    const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+    const all = ledger.dues.listForHouse(house.id);
+    const grouped = groupDebts(all.filter((d) => d.status === "pending"), [house], currentPeriod(), { dueDay: tenant.dueDay });
+    const late = new Set((grouped[0]?.dues ?? []).filter((d) => d.late).map((d) => d.id));
+    const rows = all.map((d) => ({ ...d, late: late.has(d.id) }));
+    const sum = (list) => list.reduce((n, d) => n + d.amountCents, 0);
+    const doc = { today, rows, paidCents: sum(rows.filter((d) => d.status === "paid")), pendingCents: sum(rows.filter((d) => d.status === "pending")), lateCents: sum(rows.filter((d) => d.late)) };
+    if (kind === "estado") return send(res, 200, estadoPage({ tenant, house, doc, backHref, manifest }));
+    const code = late.size === 0 ? ledger.certificates.issue({ houseId: house.id, kind: "paz_y_salvo", issuedOn: today, issuedBy }) : null;
+    return send(res, 200, pazYSalvoPage({ tenant, house, doc, code, verifyUrl: `${config.publicUrl}/verificar`, backHref, estadoHref: `${base}/estado`, manifest }));
   }
 
   /** "35.000", "$ 35000" or "35,000" -> cents, or null when it is not a plain amount of pesos. */
@@ -577,6 +605,13 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         categories: EXPENSE_CATEGORIES, today: bogotaDateTime(new Date().toISOString()).slice(0, 10),
         prev: validPastPeriod(shiftPeriod(month, -1)) ? shiftPeriod(month, -1) : null, next: month < period ? shiftPeriod(month, 1) : null,
       }));
+    }
+
+    const houseDoc = method === "GET" && path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/(estado|paz-y-salvo)$/);
+    if (houseDoc) {
+      const house = ledger.houses.get(houseDoc[1]);
+      if (!house) return send(res, 404, notFoundPage());
+      return serveDocument(res, houseDoc[2], { tenant: s.tenant, house, ledger, backHref: `/panel/casas/${house.id}`, base: `/panel/casas/${house.id}`, issuedBy: s.user.id });
     }
 
     const expenseFile = method === "GET" && path.match(/^\/panel\/gastos\/(gt_[a-f0-9]+)\/soporte$/);
