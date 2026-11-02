@@ -93,7 +93,7 @@ Cloudflare: con el proxy activo, pon SSL/TLS en **Full (strict)**.
 ## El panel del tesorero
 
 Entra con correo y contraseña y luego con un **código de 6 dígitos** de una app (Google Authenticator,
-Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra la clave para agregarla. Desde el panel:
+Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra un **código QR** para escanear con la cámara de la app (y, debajo, la misma clave escrita por si no se puede escanear). Desde el panel:
 
 - **Resumen** del mes: recaudado, al día, pendientes.
 - **Por asignar:** elige la casa de cada pago desconocido; Cuotia recuerda el nombre.

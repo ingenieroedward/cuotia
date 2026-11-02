@@ -187,3 +187,7 @@ details.undo summary { min-height: 44px; display: flex; align-items: center; cur
 details.undo[open] { padding-bottom: .9rem; }
 details.undo form { margin-top: .5rem; }
 li.pay > a.small { align-self: flex-start; min-height: 44px; display: inline-flex; align-items: center; }
+
+/* ---- two-step setup QR: dark on white always, with its own quiet zone, in light and dark mode ---- */
+.qr { width: min(100%, 240px); margin: 0 auto; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: #fff; }
+.qr svg { display: block; width: 100%; height: auto; }

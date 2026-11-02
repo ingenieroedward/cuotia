@@ -5,6 +5,7 @@ import { createApp } from "../src/app.js";
 import { encryptSecret, hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
 import { currentPeriod } from "../src/text.js";
 import { openStore } from "../src/store.js";
+import { qrSvg } from "../src/qr.js";
 import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
 
 const MASTER_KEY = "a".repeat(64);
@@ -524,3 +525,18 @@ test("configuración inicial: no se puede adivinar el token a golpes", () => wit
   assert.equal(last, 429);
   assert.equal((await fetch(`${s.base}/setup?token=${SETUP_TOKEN}`)).status, 429, "ni siquiera el correcto mientras dure el bloqueo");
 }, { empty: true }));
+
+test("al activar el doble factor se muestra el QR de la misma clave que se escribe", () => withServer(async (s) => {
+  const { cookie } = await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const page = await (await fetch(`${s.base}/2fa`, { headers: { cookie } })).text();
+  const key = page.match(/class="key secret" translate="no">([A-Z2-7 ]+)</)[1].replace(/ /g, "");
+  const uri = `otpauth://totp/${encodeURIComponent("Cuotia:marta@ejemplo.com")}?secret=${key}&issuer=Cuotia`;
+  assert.ok(page.includes(qrSvg(uri, { label: "Código QR para agregar Cuotia a tu app de códigos" })), "el QR codifica el mismo secreto que la clave escrita");
+  assert.match(page, /¿No puedes escanearlo\?/, "queda la clave escrita como alternativa");
+  // Once enrolled, later sign-ins ask only for the code: no QR, no key.
+  const { cookie: full } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta", { step: totpStep() });
+  assert.ok(full);
+  const { cookie: again } = await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const later = await (await fetch(`${s.base}/2fa`, { headers: { cookie: again } })).text();
+  assert.doesNotMatch(later, /class="qr"|class="key secret"/);
+}));
