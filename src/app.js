@@ -10,7 +10,7 @@ import { ingestEvent } from "./pagoradar.js";
 import { debtTotals, groupDebts } from "./debts.js";
 import { MAX_PROOF_BYTES, parseMultipart, sniffProof } from "./upload.js";
 import { bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
-import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -46,6 +46,7 @@ export function createApp({ config, store }) {
   const loginLimiter = new AttemptLimiter();
   const setupLimiter = new AttemptLimiter({ max: 10, windowMs: 15 * 60_000 });
   const codeLimiter = new AttemptLimiter({ max: 5, windowMs: 10 * 60_000 });
+  const inviteLimiter = new AttemptLimiter({ max: 15, windowMs: 15 * 60_000 });
   const proofLimiter = new AttemptLimiter({ max: 12, windowMs: 60 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
@@ -77,12 +78,14 @@ export function createApp({ config, store }) {
     if (method === "GET" && path === "/offline") return send(res, 200, offlinePage());
 
     if (path === "/setup" && (method === "GET" || method === "POST")) return setup(req, res, url, method);
+    const invite = (method === "GET" || method === "POST") && path.match(/^\/invitacion\/([A-Za-z0-9_-]{20,})$/);
+    if (invite) return invitation(req, res, invite[1], method);
 
     if (path === "/login") {
       if (method === "GET") {
         const s = sessionOf(req);
         if (s) return redirect(res, s.stage === "full" ? "/panel" : "/2fa");
-        return send(res, 200, loginPage({ notice: url.searchParams.get("m") === "creado" ? "Conjunto creado. Entra con tu correo y tu contraseña." : undefined }));
+        return send(res, 200, loginPage({ notice: { creado: "Conjunto creado. Entra con tu correo y tu contraseña.", invitado: "Tu cuenta está lista. Entra con tu correo y tu contraseña." }[url.searchParams.get("m")] }));
       }
       if (method === "POST") return login(req, res);
     }
@@ -225,6 +228,34 @@ export function createApp({ config, store }) {
     store.forTenant(tenant.id).concepts.create({ name: "Vigilancia", amountCents: Number(values.cuota) * 100 });
     store.users.create({ tenantId: tenant.id, email: values.correo, passwordHash, name: values.tesorero });
     return redirect(res, "/login?m=creado");
+  }
+
+  // ---------- invitation to join a conjunto ----------
+
+  /** The link a treasurer sends: the person picks their password here, then signs in (and enrolls 2-step) as usual. */
+  async function invitation(req, res, token, method) {
+    const ip = req.socket.remoteAddress;
+    if (inviteLimiter.blocked(ip)) return send(res, 429, "Demasiados intentos. Espera unos minutos.");
+    const inv = store.invitations.byToken(token);
+    if (!inv) { inviteLimiter.fail(ip); return send(res, 404, notFoundPage()); }
+    if (method === "GET") return send(res, 200, inviteAcceptPage({ inv, token }));
+
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const form = new URLSearchParams(await readBody(req, 8 * 1024));
+    const name = String(form.get("nombre") ?? "").trim().slice(0, 80);
+    const clave = String(form.get("clave") ?? "");
+    const again = (error) => send(res, 400, inviteAcceptPage({ inv, token, error, name }));
+    if (!name) return again("Escribe tu nombre.");
+    if (clave.length < 10) return again("La contraseña debe tener al menos 10 caracteres.");
+    if (clave !== String(form.get("clave2") ?? "")) return again("Las contraseñas no coinciden.");
+    const passwordHash = await hashPassword(clave);
+    try {
+      store.invitations.accept(token, { passwordHash, name }); // re-checks after the slow hash: one link, one account
+    } catch {
+      inviteLimiter.fail(ip);
+      return send(res, 404, notFoundPage());
+    }
+    return redirect(res, "/login?m=invitado");
   }
 
   // ---------- login ----------
@@ -416,7 +447,7 @@ export function createApp({ config, store }) {
     if (method === "GET" && path === "/panel/casas/importar") return send(res, 200, importPage({ ...base }));
 
     if (method === "GET" && path === "/panel/ajustes") {
-      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
+      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
 
     if (method !== "POST") return send(res, 404, notFoundPage());
@@ -433,6 +464,26 @@ export function createApp({ config, store }) {
         if (secret.length < 8 || secret.length > 200 || /\s/.test(secret)) return redirect(res, "/panel/ajustes?m=secbad");
         store.tenants.setPagoradarSecret(s.tenant.id, encryptSecret(secret, config.masterKey));
         return redirect(res, "/panel/ajustes?m=sec");
+      }
+
+      if (path === "/panel/equipo/invitar") {
+        try {
+          const { token, email } = ledger.team.invite({ email: form.get("correo"), name: form.get("nombre"), invitedBy: s.user.id });
+          return send(res, 200, inviteLinkPage({ ...base, url: `${config.publicUrl}/invitacion/${token}`, email, name: String(form.get("nombre") ?? "").trim().slice(0, 80) }));
+        } catch (e) {
+          return redirect(res, `/panel/ajustes?m=${/ya tiene/.test(e.message) ? "eqexiste" : "eqbad"}`);
+        }
+      }
+      const cancelInvite = path.match(/^\/panel\/equipo\/invitaciones\/(inv_[a-f0-9]+)\/cancelar$/);
+      if (cancelInvite) {
+        ledger.team.cancelInvitation(cancelInvite[1]);
+        return redirect(res, "/panel/ajustes?m=eqcanc");
+      }
+      const removeUser = path.match(/^\/panel\/equipo\/(usr_[a-f0-9]+)\/quitar$/);
+      if (removeUser) {
+        if (removeUser[1] === s.user.id) return redirect(res, "/panel/ajustes?m=eqyo");
+        try { ledger.team.remove(removeUser[1]); } catch { return redirect(res, "/panel/ajustes?m=equltimo"); }
+        return redirect(res, "/panel/ajustes?m=eqquit");
       }
 
       if (path === "/panel/ajustes/fechas") {
