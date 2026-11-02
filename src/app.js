@@ -709,7 +709,7 @@ export function createApp({ config, store }) {
     return {
       id: base, name: `Cuotia · Casa ${house.code}`, short_name: `Casa ${house.code}`,
       description: `Tu cuota de vigilancia en ${tenant.name}.`, lang: "es-CO", dir: "ltr",
-      start_url: base, scope: base, display: "standalone", background_color: "#f3f5f8", theme_color: "#0b1b2b",
+      start_url: base, scope: base, display: "standalone", background_color: "#f3f8f6", theme_color: "#0b4a3a",
       icons: [
         icon("/static/icons/icon-192.png", "192x192", "image/png"), icon("/static/icons/icon-512.png", "512x512", "image/png"),
         icon("/static/icons/maskable-512.png", "512x512", "image/png", "maskable"), icon("/static/icons/icon.svg", "any", "image/svg+xml"),

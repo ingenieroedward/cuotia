@@ -25,7 +25,7 @@ export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0B1B2B">
+<meta name="theme-color" content="#0B4A3A">
 <meta name="color-scheme" content="light">
 <meta name="application-name" content="Cuotia">
 <meta name="apple-mobile-web-app-capable" content="yes">
