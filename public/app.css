@@ -506,3 +506,22 @@ input[type="date"], input[type="number"] { -webkit-appearance: none; appearance:
 input[type="date"] { min-height: 48px; text-align: left; }
 input[type="date"]::-webkit-date-and-time-value { text-align: left; min-width: 0; margin: 0; }
 input[type="date"]::-webkit-datetime-edit { padding: 0; }
+
+/* ---- cuentas claras ---- */
+.share-text { margin: 0; padding: .9rem 1rem; background: var(--ground); border: 1px solid var(--line); border-radius: 14px; font: inherit; font-size: .9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.catbars { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; }
+.catbars li { display: grid; gap: .25rem; }
+progress.bar.slim { height: 8px; margin-top: 0; background: var(--ground); }
+progress.bar.slim::-webkit-progress-bar { background: var(--ground); }
+li.expense { display: grid; gap: .4rem; }
+li.expense.voided { opacity: .55; }
+li.expense.voided b { text-decoration: line-through; }
+.cuentas-link { display: flex; align-items: center; justify-content: space-between; gap: .75rem; text-decoration: none; color: var(--text); }
+.cuentas-link span { display: grid; }
+
+/* Three figures side by side (recaudado, gastado, saldo) must wrap on a phone instead of pushing the page wider. */
+.hero-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: .6rem 1.25rem; }
+.hero-stats div { min-width: 0; }
+.hero-stats b { overflow-wrap: anywhere; }
+@media (max-width: 480px) { .hero-stats b { font-size: 1.25rem; } }
+li.expense .amount { margin-left: auto; text-align: right; white-space: nowrap; }

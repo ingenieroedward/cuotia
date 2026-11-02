@@ -1635,3 +1635,86 @@ test("registrar pago: el banco solo se guarda en una transferencia, aunque el fo
   assert.equal(rows.find((p) => p.houseCode === "14").bank, null, "efectivo no guarda banco");
   assert.equal(rows.find((p) => p.houseCode === "03").bank, "Nequi");
 }));
+
+const expenseForm = (fields, { file, csrf, name = "soporte.png", type = "image/png" } = {}) => {
+  const fd = new FormData();
+  if (csrf) fd.append("_csrf", csrf);
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  if (file) fd.append("soporte", new Blob([file], { type }), name);
+  return fd;
+};
+
+test("cuentas claras: el tesorero registra gastos con soporte, ve el saldo, anula, y decide si los residentes ven las cuentas", () => withServer(async (s) => {
+  const month = currentPeriod();
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+  s.A.dues.generate(month);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/cuentas");
+  const get = async (path, c = cookie) => (await fetch(`${s.base}${path}`, { headers: { cookie: c }, redirect: "manual" }));
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("soporte de prueba")]);
+  const add = (fields, opts = {}) => fetch(`${s.base}/panel/gastos`, { method: "POST", body: expenseForm(fields, { csrf, ...opts }), redirect: "manual", headers: { cookie } });
+  const ok = { descripcion: "Pago del vigilante", valor: "1.200.000", categoria: "Vigilancia", fecha: today };
+
+  assert.match(await (await get("/panel/cuentas")).text(), /Cuentas claras/);
+  assert.equal((await fetch(`${s.base}/panel/gastos`, { method: "POST", body: expenseForm(ok), headers: { cookie } })).status, 403, "sin token no se registra");
+
+  // Bad data is refused with a message and nothing is stored.
+  for (const bad of [{ valor: "mucho" }, { valor: "0" }, { descripcion: "" }, { categoria: "Cripto" }, { fecha: "2999-01-01" }]) {
+    assert.match((await add({ ...ok, ...bad })).headers.get("location"), /m=gastobad/, JSON.stringify(bad));
+  }
+  assert.match((await add(ok, { file: "<svg onload=alert(1)>", name: "x.png" })).headers.get("location"), /m=gastoarchivo/);
+  assert.equal(s.A.expenses.list({ period: month }).length, 0);
+
+  assert.match((await add(ok, { file: png })).headers.get("location"), /m=gastook/);
+  const [gasto] = s.A.expenses.list({ period: month });
+  assert.deepEqual([gasto.amountCents, gasto.category, gasto.hasProof], [120_000_000, "Vigilancia", true]);
+  assert.equal(s.B.expenses.list({ period: month }).length, 0);
+
+  // Money in comes from the payments: pay one house by hand and the numbers add up.
+  const due = s.A.dues.listForHouse(s.a14.house.id)[0];
+  s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: [due.id], method: "cash" });
+  const page = await (await get("/panel/cuentas")).text();
+  assert.match(page, /\$30\.000<\/b><span>recaudado/);
+  assert.match(page, /\$1\.200\.000<\/b><span>gastado/);
+  assert.match(page, /Pago del vigilante/);
+  assert.match(page, /Cuentas de /, "texto para compartir por WhatsApp");
+  const csv = Buffer.from(await (await get(`/panel/cuentas.csv?mes=${month}`)).arrayBuffer());
+  assert.equal(csv.subarray(0, 3).toString("hex"), "efbbbf", "BOM para Excel");
+  assert.match(csv.toString("utf8"), /Pago del vigilante";"?1200000/);
+
+  // The receipt is served locked down, only to the signed-in treasurer of that conjunto.
+  const file = await get(`/panel/gastos/${gasto.id}/soporte`);
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get("content-type"), "image/png");
+  assert.match(file.headers.get("content-security-policy"), /default-src 'none'/);
+  assert.ok(Buffer.from(await file.arrayBuffer()).equals(png));
+  assert.equal((await get(`/panel/gastos/${gasto.id}/soporte`, "")).headers.get("location"), "/login");
+  const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  assert.equal((await get(`/panel/gastos/${gasto.id}/soporte`, other.cookie)).status, 404);
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/cuentas");
+  const cross = await form(`${s.base}/panel/gastos/${gasto.id}/anular`, { _csrf: otherCsrf }, other.cookie);
+  assert.ok([302, 303, 404, 500].includes(cross.status));
+  assert.equal(s.A.expenses.get(gasto.id).voided, false, "Luis no pudo anularlo");
+
+  // Residents see nothing until the treasurer opts in; then they see the totals and the receipt, never a voided expense.
+  const resident = (p = "") => fetch(`${s.base}/r/${s.a14.accessToken}/cuentas${p}`, { redirect: "manual" });
+  assert.equal((await resident()).status, 404);
+  assert.doesNotMatch(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /Cuentas del conjunto/);
+  assert.match((await form(`${s.base}/panel/ajustes/cuentas`, { _csrf: csrf, saldo: "250.000", mostrar: "1" }, cookie)).headers.get("location"), /m=cuentasok/);
+  assert.deepEqual([s.store.tenants.get(s.a.id).openingCents, s.store.tenants.get(s.a.id).showAccounts], [25_000_000, true]);
+  assert.equal(s.store.tenants.get(s.b.id).showAccounts, false);
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /Cuentas del conjunto/);
+  const seen = await (await resident()).text();
+  assert.match(seen, /Pago del vigilante/);
+  assert.match(seen, /Saldo en caja/);
+  assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}/cuentas/${gasto.id}/soporte`)).status, 200);
+  assert.equal((await fetch(`${s.base}/r/${s.b01.accessToken}/cuentas`, { redirect: "manual" })).status, 404, "el otro conjunto no las comparte");
+  assert.equal((await fetch(`${s.base}/r/${s.b01.accessToken}/cuentas/${gasto.id}/soporte`)).status, 404);
+  assert.match((await form(`${s.base}/panel/ajustes/cuentas`, { _csrf: csrf, saldo: "mucho" }, cookie)).headers.get("location"), /m=saldobad/);
+
+  // Voiding keeps it in the treasurer's list, marked, and hides it from residents.
+  assert.match((await form(`${s.base}/panel/gastos/${gasto.id}/anular`, { _csrf: csrf }, cookie)).headers.get("location"), /m=gastoanul/);
+  assert.match(await (await get("/panel/cuentas")).text(), /anulado/);
+  assert.doesNotMatch(await (await resident()).text(), /Pago del vigilante/);
+  assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}/cuentas/${gasto.id}/soporte`)).status, 404);
+}));
