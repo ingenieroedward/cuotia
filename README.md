@@ -74,6 +74,20 @@ Cuotia solo usa `payment.received`; los demás eventos solo confirman la conexi�
 (reintento del webhook) se registra una sola vez. Mientras un conjunto no tenga secreto, su URL responde
 503 y pagoradar reintenta.
 
+## Cada mes: cobrar
+
+Las cuotas son mensuales y Cuotia lleva la cuenta mes a mes:
+
+- **Por cobrar** (menú): quién debe, **desde cuándo** (chips `oct`, `nov`… en rojo si son de meses anteriores), cuánto, y dos
+  botones por casa: **Registrar pago** y **WhatsApp** (un recordatorio personal ya escrito, con sus meses y la llave Bre-B).
+  Se filtra por *Atrasadas* o *Solo este mes* y se busca por casa o nombre. El menú muestra cuántas casas deben.
+- **Resumen:** el mes se cambia con las flechas (‹ noviembre 2026 ›). Cada casa que no ha pagado tiene su botón **Registrar pago**
+  en la propia fila (ya con esa cuota marcada). Una casa que debe meses anteriores dice **"Debe 2 meses"**, y una tarjeta roja
+  suma lo **atrasado**. "Para cobrar primero" lista las cinco casas con la deuda más vieja.
+- **Casas:** cada casa muestra si está **al día** o cuánto **debe**, con el botón de cobrar; se puede buscar.
+- **Registrar pago:** eliges la casa tocándola (solo salen las que deben algo), marcas qué meses cubre (o *Marcar todas*) y listo;
+  al terminar vuelves a *Por cobrar* para seguir con la siguiente.
+
 ## Operación diaria
 
 - **Las cuotas del mes se crean solas.** Cuotia las genera al arrancar y revisa cada hora (no duplica nada), así que el día 1

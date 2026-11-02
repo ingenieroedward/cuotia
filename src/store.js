@@ -349,6 +349,8 @@ export function openStore(path = ":memory:") {
       // A deactivated house's unpaid dues don't show; its paid ones keep counting.
       listByPeriod: (period) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.period = ? AND (h.active = 1 OR d.status = 'paid') ORDER BY h.code, c.name`).all(tenantId, period).map(dueRow),
       listForHouse: (houseId) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.house_id = ? ORDER BY d.period DESC, c.name`).all(tenantId, houseId).map(dueRow),
+      /** The months that have dues, newest first ("2026-11", "2026-10"…): what the month selector offers. */
+      periods: () => db.prepare("SELECT DISTINCT period FROM dues WHERE tenant_id = ? ORDER BY period DESC LIMIT 36").all(tenantId).map((r) => r.period),
       /** Unpaid dues of active houses, oldest first: what a manual payment can settle. */
       listPending: () => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.status = 'pending' AND h.active = 1 ORDER BY h.code, d.period, c.name`).all(tenantId).map(dueRow),
       /** The oldest unpaid due of this house for exactly this amount. */

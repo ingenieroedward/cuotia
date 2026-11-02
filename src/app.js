@@ -7,8 +7,9 @@ import {
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
-import { bogotaDateTime, csvCell, currentPeriod, parseHouseLines, paymentMedium, periodLabel, peso, slugify } from "./text.js";
-import { ajustesPage, casaPage, casasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
+import { debtTotals, groupDebts } from "./debts.js";
+import { bogotaDateTime, csvCell, currentPeriod, parseHouseLines, paymentMedium, periodLabel, peso, slugify, whatsappNumber } from "./text.js";
+import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -265,27 +266,51 @@ export function createApp({ config, store }) {
     const csrf = csrfToken(s.token);
     const period = currentPeriod();
     const houses = ledger.houses.list();
+    // Who owes what, across months: the sidebar badge, "Por cobrar", the dashboard and the payment form all read this.
+    const groups = groupDebts(ledger.dues.listPending(), houses, period);
+    const debts = { groups, totals: debtTotals(groups) };
     // What the sidebar and tab bar show on every page.
     const base = {
       tenant: s.tenant, user: s.user, csrf,
-      badge: ledger.payments.countUnassigned(), houseCount: houses.length,
+      badge: ledger.payments.countUnassigned(), owing: groups.length, houseCount: houses.length,
       cuota: ledger.concepts.list()[0] ? peso(ledger.concepts.list()[0].amountCents) : "",
     };
 
     if (method === "GET" && (path === "/" || path === "/panel")) {
+      // Any month that has dues can be looked at; "mes" outside that list falls back to the current one.
+      const months = [...new Set([period, ...ledger.dues.periods()])].sort().reverse();
+      const asked = url.searchParams.get("mes");
+      const selected = months.includes(asked) ? asked : period;
+      const at = months.indexOf(selected);
       return send(res, 200, panelPage({
         ...base,
         flash: flashOf(url.searchParams),
-        summary: ledger.summary(period),
-        dues: ledger.dues.listByPeriod(period),
+        summary: ledger.summary(selected),
+        dues: ledger.dues.listByPeriod(selected),
         unassigned: ledger.payments.listUnassigned(),
-        houses,
+        houses, debts, current: period,
+        prevPeriod: months[at + 1] ?? null, nextPeriod: months[at - 1] ?? null,
         recent: ledger.payments.list({ limit: 4 }).rows,
         filter: ["pagadas", "pendientes"].includes(url.searchParams.get("f")) ? url.searchParams.get("f") : "",
       }));
     }
+
+    // Who owes what, across months, with the buttons to act on each.
+    if (method === "GET" && path === "/panel/cobros") {
+      const filter = ["atrasadas", "mes"].includes(url.searchParams.get("f")) ? url.searchParams.get("f") : "";
+      const q = String(url.searchParams.get("q") ?? "").trim().slice(0, 60);
+      const needle = q.toLowerCase();
+      const shown = groups
+        .filter((g) => (filter === "atrasadas" ? g.overdueCount > 0 : filter === "mes" ? g.overdueCount === 0 : true))
+        .filter((g) => !needle || `${g.house.code} ${g.house.residentName}`.toLowerCase().includes(needle));
+      return send(res, 200, cobrosPage({ ...base, flash: flashOf(url.searchParams), groups, shown, totals: debts.totals, filter, q, current: period }));
+    }
+
     if (method === "GET" && path === "/panel/casas") {
-      return send(res, 200, casasPage({ ...base, flash: flashOf(url.searchParams), houses, inactive: ledger.houses.listInactive() }));
+      return send(res, 200, casasPage({
+        ...base, flash: flashOf(url.searchParams), houses, inactive: ledger.houses.listInactive(), debts, current: period,
+        q: String(url.searchParams.get("q") ?? "").trim().slice(0, 60),
+      }));
     }
 
     const casa = method === "GET" && path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)$/);
@@ -301,15 +326,12 @@ export function createApp({ config, store }) {
     }
 
     if (method === "GET" && path === "/panel/pagos/nuevo") {
-      // Houses with something to pay, in house order, each with its pending dues.
-      const byHouse = new Map();
-      for (const d of ledger.dues.listPending()) {
-        if (!byHouse.has(d.houseId)) byHouse.set(d.houseId, { house: { id: d.houseId, code: d.houseCode, residentName: d.residentName }, dues: [] });
-        byHouse.get(d.houseId).dues.push(d);
-      }
+      // ?casa= opens that house's form; ?cuota= ticks one due (the row's button), ?todas=1 ticks them all.
       return send(res, 200, pagoManualPage({
-        ...base, flash: flashOf(url.searchParams), groups: [...byHouse.values()],
-        selected: byHouse.get(url.searchParams.get("casa")) ?? null,
+        ...base, flash: flashOf(url.searchParams), debts, current: period,
+        selected: groups.find((g) => g.house.id === url.searchParams.get("casa")) ?? null,
+        preselect: url.searchParams.getAll("cuota"), all: url.searchParams.get("todas") === "1",
+        q: String(url.searchParams.get("q") ?? "").trim().slice(0, 60),
         today: bogotaDateTime(new Date().toISOString()).slice(0, 10),
       }));
     }
@@ -385,7 +407,7 @@ export function createApp({ config, store }) {
           houseId, dueIds, method: String(form.get("medio") ?? "cash"), paidAt,
           bank: String(form.get("banco") ?? ""), note: String(form.get("nota") ?? ""),
         });
-        return redirect(res, "/panel/pagos?m=manual");
+        return redirect(res, "/panel/cobros?m=manual");
       }
 
       if (path === "/panel/casas/importar") {
@@ -532,8 +554,7 @@ export function createApp({ config, store }) {
 
   /** A WhatsApp link to this resident with their personal link already written, or null without a usable phone. */
   function whatsappLink(house, linkUrl) {
-    const digits = (house.phone ?? "").replace(/\D/g, "");
-    const to = digits.length === 10 ? `57${digits}` : digits.length >= 11 ? digits : "";
+    const to = whatsappNumber(house.phone);
     if (!to) return null;
     const text = `Hola ${house.residentName.split(" ")[0]}, este es tu enlace personal de Cuotia para ver y pagar tu cuota de vigilancia: ${linkUrl}`;
     return `https://wa.me/${to}?text=${encodeURIComponent(text)}`;

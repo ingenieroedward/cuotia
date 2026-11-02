@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { createApp } from "../src/app.js";
 import { encryptSecret, hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
-import { bogotaDateTime, currentPeriod } from "../src/text.js";
+import { bogotaDateTime, currentPeriod, shiftPeriod } from "../src/text.js";
 import { openStore } from "../src/store.js";
 import { qrSvg } from "../src/qr.js";
 import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
@@ -391,7 +391,7 @@ test("el panel nuevo: saludo con el nombre, menú lateral, barra inferior y tarj
   assert.match(page, /2 casas · Vigilancia \$30\.000/);
   assert.match(page, /class="badge"[^>]*>1</, "un pago por asignar en el menú");
   assert.match(page, /Faltan por pagar/);
-  assert.match(page, /Recordar por WhatsApp/);
+  assert.match(page, /Recordar a todos por WhatsApp/);
   assert.match(page, /https:\/\/wa\.me\/\?text=[^"]*Casas%20pendientes%3A%2003/, "el recordatorio ya lleva las casas pendientes");
   assert.match(page, /Últimos pagos/);
   assert.match(page, /Pagó el/);
@@ -774,7 +774,9 @@ test("pago manual: varios meses de una vez, con medio, fecha y nota; aparece en 
 
   // Step 1: only houses with something pending, each with its count.
   const pick = await (await fetch(`${s.base}/panel/pagos/nuevo`, { headers: { cookie } })).text();
-  assert.match(pick, /Casa 14 · Sandra Duque Arias · 3 cuotas/);
+  assert.match(pick, /Sandra Duque Arias/);
+  assert.match(pick, /3 cuotas/);
+  assert.ok(pick.includes(`/panel/pagos/nuevo?casa=${s.a14.house.id}`), "cada casa es un botón que abre su formulario");
   assert.doesNotMatch(pick, /Carlos Mejía/, "ni casas de otro conjunto");
 
   // Step 2: the dues of that house, the oldest already ticked.
@@ -796,7 +798,7 @@ test("pago manual: varios meses de una vez, con medio, fecha y nota; aparece en 
   body.append("cuota", dues[0].id);
   body.append("cuota", dues[1].id);
   const ok = await post(`${s.base}/panel/pagos/nuevo`, body, { ...FORM, cookie });
-  assert.match(ok.headers.get("location"), /\/panel\/pagos\?m=manual/);
+  assert.match(ok.headers.get("location"), /\/panel\/cobros\?m=manual/, "vuelve a la lista de quién aún debe");
 
   const after = s.A.dues.listForHouse(s.a14.house.id).sort((a, b) => a.period.localeCompare(b.period));
   assert.deepEqual(after.map((d) => d.status), ["paid", "paid", "pending"]);
@@ -1056,4 +1058,154 @@ test("el service worker y el manifiesto se sirven de forma que las actualizacion
   const js = await (await fetch(`${s.base}/static/app.js`)).text();
   assert.match(js, /serviceWorker\.register\("\/sw\.js"\)/);
   assert.match((await fetch(`${s.base}/manifest.webmanifest`)).headers.get("cache-control"), /max-age=3600/);
+}));
+
+/** Two months of life: Sandra (14) owes last month AND this one; Diana (03) paid last month and owes this one. */
+function twoMonths(s) {
+  const now = currentPeriod();
+  const before = shiftPeriod(now, -1);
+  s.A.dues.generate(before);
+  s.A.dues.generate(now);
+  const due = (house, period) => s.A.dues.listForHouse(house).find((d) => d.period === period);
+  s.A.payments.recordManual({ houseId: s.a03.house.id, dueIds: [due(s.a03.house.id, before).id], method: "cash" });
+  return { now, before, due };
+}
+
+test("Por cobrar: quién debe, desde cuándo y cuánto, con los botones para actuar", () => withServer(async (s) => {
+  const { now, before } = twoMonths(s);
+  s.A.houses.update(s.a14.house.id, { code: "14", residentName: "Sandra Duque Arias", phone: "300 123 4567" });
+  s.B.dues.generate(now);
+  assert.equal((await fetch(`${s.base}/panel/cobros`, { redirect: "manual" })).status, 303, "pide iniciar sesión");
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const page = await (await fetch(`${s.base}/panel/cobros`, { headers: { cookie } })).text();
+
+  assert.match(page, /<h1>Por cobrar<\/h1>/);
+  assert.match(page, /\$90\.000/, "total: 60.000 de Sandra + 30.000 de Diana");
+  assert.match(page, /2 casas con cuotas pendientes/);
+  assert.match(page, /1 casa deben meses anteriores/);
+  assert.ok(page.indexOf("Sandra Duque Arias") < page.indexOf("Diana Pérez"), "quien arrastra meses va primero");
+  assert.doesNotMatch(page, /Carlos Mejía/, "ni casas de otro conjunto");
+  const sandra = page.slice(page.indexOf("Sandra Duque Arias"), page.indexOf("Diana Pérez"));
+  assert.match(sandra, /mchip bad/, "el mes anterior se ve en rojo");
+  assert.match(sandra, /\$60\.000/);
+  assert.ok(sandra.includes(`/panel/pagos/nuevo?casa=${s.a14.house.id}`), "botón Registrar pago de esa casa");
+  assert.match(sandra, /wa\.me\/573001234567\?text=[^"]*Hola%20Sandra/, "WhatsApp directo con el mensaje ya escrito");
+  const diana = page.slice(page.indexOf("Diana Pérez"));
+  assert.match(diana, /wa\.me\/\?text=/, "sin celular, WhatsApp deja elegir a quién");
+  assert.match(page, /Recordar a todos por WhatsApp/);
+  assert.match(page, /class="badge warn"[^>]*>2</, "el menú cuenta las casas con deuda");
+  assert.match(page, /Por cobrar<\/span><span class="badge warn"/);
+
+  // Filters and search narrow the list without scripts.
+  const names = (html) => ["Sandra Duque Arias", "Diana Pérez"].filter((n) => html.includes(`<b>${n}</b>`));
+  assert.deepEqual(names(await (await fetch(`${s.base}/panel/cobros?f=atrasadas`, { headers: { cookie } })).text()), ["Sandra Duque Arias"]);
+  assert.deepEqual(names(await (await fetch(`${s.base}/panel/cobros?f=mes`, { headers: { cookie } })).text()), ["Diana Pérez"]);
+  assert.deepEqual(names(await (await fetch(`${s.base}/panel/cobros?q=diana`, { headers: { cookie } })).text()), ["Diana Pérez"]);
+  assert.match(await (await fetch(`${s.base}/panel/cobros?q=zzz`, { headers: { cookie } })).text(), /Ninguna casa coincide/);
+  assert.deepEqual(names(await (await fetch(`${s.base}/panel/cobros?f=raro`, { headers: { cookie } })).text()), ["Sandra Duque Arias", "Diana Pérez"], "un filtro desconocido se ignora");
+
+  // When everyone has paid, a friendly empty state.
+  for (const g of s.A.dues.listPending()) s.A.payments.recordManual({ houseId: g.houseId, dueIds: [g.id], method: "cash" });
+  assert.match(await (await fetch(`${s.base}/panel/cobros`, { headers: { cookie } })).text(), /¡Todo al día!/);
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel/cobros`, { headers: { cookie } })).text(), /class="badge warn"/);
+  assert.ok(before < now);
+}));
+
+test("Resumen: elegir el mes, ver lo atrasado y registrar el pago desde la propia fila", () => withServer(async (s) => {
+  const { now, before, due } = twoMonths(s);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const get = async (path) => (await fetch(`${s.base}${path}`, { headers: { cookie } })).text();
+  const page = await get("/panel");
+
+  // The month navigator: back one month, no "next" beyond the current one.
+  assert.ok(page.includes(`href="/panel?mes=${before}"`), "mes anterior");
+  assert.match(page, /class="mn-btn off"/, "no hay un mes siguiente al actual");
+  assert.match(page, /aria-label="Elegir mes"/);
+
+  // This month's rows: each pending one has its own button, already pointing at that due; paid ones don't.
+  const rows = page.match(/<tbody>[\s\S]*?<\/tbody>/)[0].split("</tr>").filter((r) => r.includes("<tr>"));
+  assert.equal(rows.length, 2);
+  for (const r of rows) assert.match(r, /Registrar pago/, "las dos deben este mes");
+  const sandraRow = rows.find((r) => r.includes("Sandra"));
+  assert.ok(sandraRow.includes(`/panel/pagos/nuevo?casa=${s.a14.house.id}&amp;cuota=${due(s.a14.house.id, now).id}`), "el botón de la fila abre el formulario con esa cuota marcada");
+  assert.match(sandraRow, /Debe 2 meses/, "quien arrastra meses lo dice, no solo 'Pendiente'");
+  assert.match(rows.find((r) => r.includes("Diana")), /Pendiente/);
+
+  // The arrears card and the "collect first" list.
+  assert.match(page, /Atrasadas/);
+  assert.match(page, /\$30\.000<\/span>\s*<span class="small">1 casa deben meses anteriores/);
+  assert.match(page, /href="\/panel\/cobros\?f=atrasadas"/);
+  assert.match(page, /Para cobrar primero/);
+  assert.match(page, /Ver quién debe/);
+
+  // Last month: banner, "Atrasada" for who still owes it, and a way back.
+  const old = await get(`/panel?mes=${before}`);
+  assert.match(old, /Estás viendo/);
+  assert.match(old, /href="\/panel">Volver a este mes/);
+  assert.match(old, /Atrasada/);
+  assert.match(old, /Pagado/);
+  assert.ok(old.includes(`/panel/pagos/nuevo?casa=${s.a14.house.id}&amp;cuota=${due(s.a14.house.id, before).id}`), "se puede cobrar un mes atrasado desde su propia vista");
+  assert.ok(old.includes(`href="/panel"`) || old.includes("mn-btn off"), "ya no hay más meses atrás");
+  assert.doesNotMatch(old, /Generar cuotas de/, "no se generan cuotas de un mes que ya pasó");
+
+  // Anything that isn't a month with dues falls back to the current one.
+  for (const bad of ["2020-01", "basura", "2026-13", ""]) assert.doesNotMatch(await get(`/panel?mes=${bad}`), /Estás viendo/, bad);
+}));
+
+test("Casas: dice quién está al día y quién debe, con el botón para cobrar, y se puede buscar", () => withServer(async (s) => {
+  twoMonths(s);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const page = await (await fetch(`${s.base}/panel/casas`, { headers: { cookie } })).text();
+  assert.match(page, /1 con deuda|2 con deuda/);
+  const row = (html, name) => html.split('<li class="house-row">').find((r) => r.includes(name));
+  assert.match(row(page, "Sandra Duque Arias"), /Debe 2 meses/);
+  assert.match(row(page, "Sandra Duque Arias"), /Registrar pago/);
+  assert.match(row(page, "Diana Pérez"), /Pendiente/);
+  s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: s.A.dues.listPending().filter((d) => d.houseId === s.a14.house.id).map((d) => d.id), method: "cash" });
+  const after = await (await fetch(`${s.base}/panel/casas`, { headers: { cookie } })).text();
+  assert.match(row(after, "Sandra Duque Arias"), /Al día/);
+  assert.doesNotMatch(row(after, "Sandra Duque Arias"), /Registrar pago/, "quien no debe nada no tiene botón de cobrar");
+
+  const found = await (await fetch(`${s.base}/panel/casas?q=sandra`, { headers: { cookie } })).text();
+  assert.match(found, /Sandra Duque Arias/);
+  assert.doesNotMatch(found, /<b>Diana Pérez<\/b>/);
+  assert.match(await (await fetch(`${s.base}/panel/casas?q=zzz`, { headers: { cookie } })).text(), /Ninguna casa coincide/);
+}));
+
+test("Registrar pago: elegir la casa con un toque, marcar la cuota que se pide o todas, y volver a la lista", () => withServer(async (s) => {
+  const { now, before, due } = twoMonths(s);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const get = async (path) => (await fetch(`${s.base}${path}`, { headers: { cookie } })).text();
+  const checked = (html) => (html.match(/name="cuota" value="(du_[a-f0-9]+)"( checked)?/g) ?? []).filter((m) => m.endsWith("checked")).map((m) => m.match(/du_[a-f0-9]+/)[0]);
+  const sandra = s.a14.house.id;
+  const [old, current] = [due(sandra, before).id, due(sandra, now).id];
+
+  const picker = await get("/panel/pagos/nuevo");
+  assert.match(picker, /Toca la casa que pagó/);
+  assert.doesNotMatch(picker, /<select name="casa"/, "ya no es una lista desplegable");
+  assert.match(await get("/panel/pagos/nuevo?q=diana"), /Diana Pérez/);
+  assert.doesNotMatch(await get("/panel/pagos/nuevo?q=diana"), /Sandra/);
+
+  assert.deepEqual(checked(await get(`/panel/pagos/nuevo?casa=${sandra}`)), [old], "sin pedir nada, la cuota más antigua");
+  assert.deepEqual(checked(await get(`/panel/pagos/nuevo?casa=${sandra}&cuota=${current}`)), [current], "la que pidió el botón de la fila");
+  assert.deepEqual(checked(await get(`/panel/pagos/nuevo?casa=${sandra}&todas=1`)).sort(), [old, current].sort(), "marcar todas");
+  assert.deepEqual(checked(await get(`/panel/pagos/nuevo?casa=${sandra}&cuota=du_inventada`)), [], "una cuota que no existe no marca nada");
+  const form = await get(`/panel/pagos/nuevo?casa=${sandra}`);
+  assert.match(form, /Atrasada/, "el mes viejo se marca como atrasado");
+  assert.match(form, /Marcar todas \(\$60\.000\)/);
+  assert.match(form, /Debe <\/small> <b>\$60\.000|<b>\$60\.000<\/b>/);
+
+  // A house that owes nothing (or another conjunto's) opens the picker, not a form.
+  assert.doesNotMatch(await get(`/panel/pagos/nuevo?casa=${s.b01.house.id}`), /name="casa"/);
+}));
+
+test("Primeros pasos: aparecen mientras falte lo esencial y desaparecen al tenerlo", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const fresh = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
+  assert.match(fresh, /Primeros pasos/, "todavía no hay ningún pago");
+  assert.match(fresh, /Registra el primer pago/);
+  assert.match(fresh, /Agrega las casas[\s\S]{0,200}<\/li>/);
+  twoMonths(s);
+  s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: [s.A.dues.listPending().find((d) => d.houseId === s.a14.house.id).id], method: "cash" });
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text(), /Primeros pasos/, "con casas, llave y un pago, ya no estorba");
 }));
