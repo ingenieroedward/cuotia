@@ -8,15 +8,30 @@ import {
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
 import { bogotaDateTime, csvCell, currentPeriod, parseHouseLines, paymentMedium, periodLabel, peso, slugify } from "./text.js";
-import { ajustesPage, casaPage, casasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, casaPage, casasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
+const DAY = 86400;
 const STATIC = {
-  "/static/app.css": ["app.css", "text/css; charset=utf-8"],
-  "/static/app.js": ["app.js", "text/javascript; charset=utf-8"],
-  "/static/fonts/plus-jakarta-sans-latin.woff2": ["fonts/plus-jakarta-sans-latin-wght-normal.woff2", "font/woff2"],
-  "/static/fonts/plus-jakarta-sans-latin-ext.woff2": ["fonts/plus-jakarta-sans-latin-ext-wght-normal.woff2", "font/woff2"],
+  "/static/app.css": ["app.css", "text/css; charset=utf-8", 300],
+  "/static/app.js": ["app.js", "text/javascript; charset=utf-8", 300],
+  "/static/fonts/plus-jakarta-sans-latin.woff2": ["fonts/plus-jakarta-sans-latin-wght-normal.woff2", "font/woff2", 7 * DAY],
+  "/static/fonts/plus-jakarta-sans-latin-ext.woff2": ["fonts/plus-jakarta-sans-latin-ext-wght-normal.woff2", "font/woff2", 7 * DAY],
+  // Icons, favicon and the installable app (PWA). The service worker must live at the root to control every page, and
+  // must never be cached by the browser, or a fixed worker would not reach people.
+  "/static/icons/icon.svg": ["icons/icon.svg", "image/svg+xml", DAY],
+  "/static/icons/maskable.svg": ["icons/maskable.svg", "image/svg+xml", DAY],
+  "/static/icons/favicon-32.png": ["icons/favicon-32.png", "image/png", DAY],
+  "/static/icons/favicon-48.png": ["icons/favicon-48.png", "image/png", DAY],
+  "/static/icons/apple-touch-icon.png": ["icons/apple-touch-icon.png", "image/png", DAY],
+  "/static/icons/icon-192.png": ["icons/icon-192.png", "image/png", DAY],
+  "/static/icons/icon-512.png": ["icons/icon-512.png", "image/png", DAY],
+  "/static/icons/maskable-512.png": ["icons/maskable-512.png", "image/png", DAY],
+  "/favicon.ico": ["favicon.ico", "image/x-icon", DAY],
+  "/favicon.svg": ["favicon.svg", "image/svg+xml", DAY],
+  "/manifest.webmanifest": ["manifest.webmanifest", "application/manifest+json; charset=utf-8", 3600],
+  "/sw.js": ["sw.js", "text/javascript; charset=utf-8", 0],
 };
 const COOKIE = "cuotia_sid";
 const PAGE_SIZE = 50;
@@ -47,13 +62,16 @@ export function createApp({ config, store }) {
     if (path === "/health") return sendJson(res, 200, { ok: true });
 
     if (method === "GET" && STATIC[path]) {
-      const [file, type] = STATIC[path];
-      return send(res, 200, readFileSync(join(PUBLIC_DIR, file)), { "Content-Type": type, "Cache-Control": `public, max-age=${type === "font/woff2" ? 604800 : 300}` });
+      const [file, type, maxAge] = STATIC[path];
+      return send(res, 200, readFileSync(join(PUBLIC_DIR, file)), { "Content-Type": type, "Cache-Control": maxAge ? `public, max-age=${maxAge}` : "no-cache" });
     }
 
     // pagoradar → Cuotia, one URL and one secret per conjunto. The signature covers the exact body: verify before parsing.
     const hook = path.match(/^\/webhooks\/pagoradar\/(ten_[a-f0-9]+)$/);
     if (method === "POST" && hook) return pagoradarWebhook(req, res, hook[1]);
+
+    // Shown by the service worker when there is no connection (it is cached at install, so it must need no sign-in).
+    if (method === "GET" && path === "/offline") return send(res, 200, offlinePage());
 
     if (path === "/setup" && (method === "GET" || method === "POST")) return setup(req, res, url, method);
 
@@ -79,11 +97,14 @@ export function createApp({ config, store }) {
     }
 
     // A resident's personal link: the unguessable token is the credential.
-    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar)|\/recibo\/(du_[a-f0-9]+))?$/);
+    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar|manifest\.webmanifest)|\/recibo\/(du_[a-f0-9]+))?$/);
     if (r) {
-      const [, token, pay, receiptId] = r;
+      const [, token, extra, receiptId] = r;
+      const pay = extra === "pagar";
       const found = store.residentByToken(token);
       if (!found) return send(res, 404, notFoundPage());
+      // Each resident installs their own app: "Cuotia · Casa 14", which opens on their personal link.
+      if (extra === "manifest.webmanifest") return send(res, 200, JSON.stringify(residentManifest(found, token)), { "Content-Type": "application/manifest+json; charset=utf-8" });
       const ledger = store.forTenant(found.tenant.id);
       const dues = ledger.dues.listForHouse(found.house.id);
       if (receiptId) {
@@ -493,6 +514,20 @@ export function createApp({ config, store }) {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="pagos-${f.period ?? "todos"}.csv"`,
     });
+  }
+
+  function residentManifest({ tenant, house }, token) {
+    const base = `/r/${token}`;
+    const icon = (src, sizes, type, purpose = "any") => ({ src, sizes, type, purpose });
+    return {
+      id: base, name: `Cuotia · Casa ${house.code}`, short_name: `Casa ${house.code}`,
+      description: `Tu cuota de vigilancia en ${tenant.name}.`, lang: "es-CO", dir: "ltr",
+      start_url: base, scope: base, display: "standalone", background_color: "#f3f5f8", theme_color: "#0b1b2b",
+      icons: [
+        icon("/static/icons/icon-192.png", "192x192", "image/png"), icon("/static/icons/icon-512.png", "512x512", "image/png"),
+        icon("/static/icons/maskable-512.png", "512x512", "image/png", "maskable"), icon("/static/icons/icon.svg", "any", "image/svg+xml"),
+      ],
+    };
   }
 
   /** A WhatsApp link to this resident with their personal link already written, or null without a usable phone. */

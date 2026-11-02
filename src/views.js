@@ -17,7 +17,7 @@ const icon = (name, size = 20, width = 2) => html`<svg width="${size}" height="$
 
 const BRAND_MARK = html`<span class="brand"><span class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>cuotia</span>`;
 
-export function layout(title, body, { refresh = 0, bodyClass = "" } = {}) {
+export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/manifest.webmanifest" } = {}) {
   return html`<!doctype html>
 <html lang="es">
 <head>
@@ -25,6 +25,16 @@ export function layout(title, body, { refresh = 0, bodyClass = "" } = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0B1B2B">
 <meta name="color-scheme" content="light">
+<meta name="application-name" content="Cuotia">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cuotia">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/icons/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="/static/icons/favicon-48.png" type="image/png" sizes="48x48">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="manifest" href="${manifest}">
 <title>${title} · Cuotia</title>
 ${refresh ? raw(`<meta http-equiv="refresh" content="${Number(refresh)}">`) : ""}
 <link rel="preload" href="/static/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -722,7 +732,7 @@ export function residentPage({ tenant, house, dues, period, token }) {
         </li>`)}</ul>`
       : html`<p class="muted small">Todavía no tienes cuotas.</p>`}
   </section>
-</main>`);
+</main>`, { manifest: `/r/${token}/manifest.webmanifest` });
 }
 
 /** How to pay: the Bre-B key to copy and the exact amount. It refreshes itself so it turns into "Al día" once the bank confirms. */
@@ -757,7 +767,7 @@ export function residentPayPage({ tenant, house, dues, token }) {
     ? "Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme."
     : "Cuando pagues, avísale al tesorero para que registre tu pago. Esta pantalla se actualiza cuando lo haga."}</p>
   <p class="muted small center-text">Paga siempre el valor exacto. Si pagas otro valor, el tesorero lo asignará a mano.</p>
-</main>`, { refresh: 20 });
+</main>`, { refresh: 20, manifest: `/r/${token}/manifest.webmanifest` });
 }
 
 export function receiptPage({ tenant, receipt, token }) {
@@ -786,7 +796,20 @@ export function receiptPage({ tenant, receipt, token }) {
     <button class="btn lime big" type="button" data-print>Descargar recibo en PDF</button>
     <a class="btn outline big" href="/r/${token}">Volver al inicio</a>
   </div>
-</main>`, { bodyClass: "receipt-page" });
+</main>`, { bodyClass: "receipt-page", manifest: `/r/${token}/manifest.webmanifest` });
+}
+
+/** Shown by the service worker when the phone has no connection. Static and public: it is cached when the app is first opened. */
+export function offlinePage() {
+  return layout("Sin conexión", html`
+<main class="center">
+  <div class="card login">
+    ${BRAND_MARK}
+    <h1>Sin conexión</h1>
+    <p class="muted">Cuotia necesita internet para mostrar tus pagos. Revisa tu conexión e inténtalo de nuevo.</p>
+    <button class="btn" type="button" data-reload>Reintentar</button>
+  </div>
+</main>`);
 }
 
 export function notFoundPage() {

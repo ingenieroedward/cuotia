@@ -19,3 +19,13 @@ document.addEventListener("click", async (event) => {
   }
   if (event.target.closest("[data-print]")) window.print();
 });
+
+// "Reintentar" on the offline page.
+document.addEventListener("click", (event) => {
+  if (event.target.closest("[data-reload]")) location.reload();
+});
+
+// Installable app: the service worker (see /sw.js) only keeps the look when offline; it never stores pages.
+if ("serviceWorker" in navigator) {
+  addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}

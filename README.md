@@ -150,6 +150,21 @@ cuando el banco confirma) y su **recibo** (descargable en PDF desde el navegador
 
 La tipografía (Plus Jakarta Sans, licencia OFL) se sirve desde el propio servidor.
 
+## Instalar como app (PWA)
+
+Cuotia se puede instalar en el celular como una app, con su ícono y a pantalla completa. Hace falta abrirla por **https**.
+
+- **Android (Chrome):** menú ⋮ → **Instalar app** (o "Agregar a la pantalla de inicio").
+- **iPhone (Safari):** botón Compartir → **Agregar a inicio**.
+- **Computador (Chrome/Edge):** el ícono de instalar en la barra de direcciones.
+
+El **tesorero** instala desde el panel y abre directo en `/panel`, con accesos directos a *Registrar pago*, *Pagos* y *Casas*.
+Cada **residente** instala desde su enlace personal y obtiene "Cuotia · Casa 14", que abre en su propia cuota.
+
+El ícono es el mismo logo del diseño (`public/icons/`, con versión recortable para Android y para iPhone). Sin conexión se
+muestra un aviso con el estilo de la app. El service worker **nunca guarda páginas**: llevan pagos y nombres, así que siempre
+vienen del servidor; solo guarda estilos, tipografía e íconos.
+
 ## Estado
 
 Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
