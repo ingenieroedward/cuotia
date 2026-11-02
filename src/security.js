@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 const scrypt = promisify(scryptCb);
 
 export const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+/** Constant-time string comparison (hashes first, so lengths don't leak). */
+export const safeEqual = (a, b) => timingSafeEqual(createHash("sha256").update(String(a)).digest(), createHash("sha256").update(String(b)).digest());
 export const newToken = (bytes = 32) => randomBytes(bytes).toString("base64url");
 
 /** "scrypt$salt$key" (hex). */

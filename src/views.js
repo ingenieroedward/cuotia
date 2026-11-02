@@ -44,17 +44,47 @@ const flashBox = (f) => (f ? html`<p class="flash ${f.kind}" role="status">${f.t
 
 const csrfField = (csrf) => html`<input type="hidden" name="_csrf" value="${csrf}">`;
 
-export function loginPage({ error } = {}) {
+export function loginPage({ error, notice } = {}) {
   return layout("Entrar", html`
 <main class="center">
   <form class="card login" method="post" action="/login">
     ${BRAND_MARK}
     <h1>Entrar</h1>
     <p class="muted">Panel del tesorero</p>
+    ${notice ? html`<p class="flash ok" role="status">${notice}</p>` : ""}
     ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
     <label>Correo<input type="email" name="email" autocomplete="username" required autofocus></label>
     <label>Contraseña<input type="password" name="password" autocomplete="current-password" required></label>
     <button class="btn" type="submit">Continuar</button>
+  </form>
+</main>`);
+}
+
+/** First-run form: creates the first conjunto and its treasurer. Reached only through the private setup link. */
+export function setupPage({ token, error, values = {} }) {
+  return layout("Configuración inicial", html`
+<main class="center">
+  <form class="card setup" method="post" action="/setup">
+    ${BRAND_MARK}
+    <h1>Bienvenido a Cuotia</h1>
+    <p class="muted">Crea tu primer conjunto y la cuenta de quien lo administrará. Este formulario solo funciona una vez.</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    <input type="hidden" name="token" value="${token}">
+    <fieldset>
+      <legend>Conjunto</legend>
+      <label>Nombre<input type="text" name="nombre" maxlength="80" required value="${values.nombre ?? ""}" placeholder="Jardines de Ibiza"></label>
+      <label>Cuota mensual de vigilancia (pesos)<input type="text" name="cuota" inputmode="numeric" maxlength="9" required value="${values.cuota ?? "30000"}"></label>
+      <label>Llave Bre-B para cobrar<input type="text" name="llave" maxlength="80" value="${values.llave ?? ""}" placeholder="@mi.llave"></label>
+      <label>Titular de la cuenta<input type="text" name="titular" maxlength="80" value="${values.titular ?? ""}" placeholder="Quien recibe el dinero"></label>
+    </fieldset>
+    <fieldset>
+      <legend>Tesorero (quien entra al panel)</legend>
+      <label>Correo<input type="email" name="correo" maxlength="120" required autocomplete="username" value="${values.correo ?? ""}"></label>
+      <label>Contraseña (mínimo 10 caracteres)<input type="password" name="clave" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+      <label>Repite la contraseña<input type="password" name="clave2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+    </fieldset>
+    <button class="btn" type="submit">Crear conjunto</button>
+    <p class="muted small">Después te pediremos activar el código de verificación en tu celular.</p>
   </form>
 </main>`);
 }

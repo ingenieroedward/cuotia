@@ -4,20 +4,24 @@ import { createServer } from "node:http";
 import { createApp } from "../src/app.js";
 import { encryptSecret, hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
 import { currentPeriod } from "../src/text.js";
+import { openStore } from "../src/store.js";
 import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
 
 const MASTER_KEY = "a".repeat(64);
+const SETUP_TOKEN = "token-de-configuracion-inicial-123";
 const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
 
 /** Runs `fn` against a real server and always closes it, so a failed assertion can't leave the test run hanging. */
-async function withServer(fn) {
-  const ctx = twoConjuntos();
-  const config = { publicUrl: "http://localhost:3000", secureCookies: false, masterKey: MASTER_KEY };
-  await ctx.store.users.create({ tenantId: ctx.a.id, email: "marta@ejemplo.com", passwordHash: await hashPassword("clave-de-marta") });
-  await ctx.store.users.create({ tenantId: ctx.b.id, email: "luis@ejemplo.com", passwordHash: await hashPassword("clave-de-luis") });
-  // Each conjunto has its own pagoradar secret, stored encrypted.
-  ctx.store.tenants.setPagoradarSecret(ctx.a.id, encryptSecret(SECRET_A, MASTER_KEY));
-  ctx.store.tenants.setPagoradarSecret(ctx.b.id, encryptSecret(SECRET_B, MASTER_KEY));
+async function withServer(fn, { empty = false } = {}) {
+  const ctx = empty ? { store: openStore(":memory:") } : twoConjuntos();
+  const config = { publicUrl: "http://localhost:3000", secureCookies: false, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN };
+  if (!empty) {
+    await ctx.store.users.create({ tenantId: ctx.a.id, email: "marta@ejemplo.com", passwordHash: await hashPassword("clave-de-marta") });
+    await ctx.store.users.create({ tenantId: ctx.b.id, email: "luis@ejemplo.com", passwordHash: await hashPassword("clave-de-luis") });
+    // Each conjunto has its own pagoradar secret, stored encrypted.
+    ctx.store.tenants.setPagoradarSecret(ctx.a.id, encryptSecret(SECRET_A, MASTER_KEY));
+    ctx.store.tenants.setPagoradarSecret(ctx.b.id, encryptSecret(SECRET_B, MASTER_KEY));
+  }
   const server = createServer(createApp({ config, store: ctx.store }));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -445,3 +449,78 @@ test("CSV: descarga para Excel, con cabeceras correctas y sin fórmulas peligros
   assert.match(text, /"Sandra; Duque";"Bancolombia";"14";"Sandra Duque Arias";"Vigilancia noviembre 2026";"30000";"Asignado"/);
   assert.equal((await fetch(`${s.base}/panel/pagos.csv`, { redirect: "manual" })).status, 303, "exige sesión");
 }));
+
+const setupForm = (over = {}) => ({
+  token: SETUP_TOKEN, nombre: "Jardines de Ibiza", cuota: "30.000", llave: "@ibiza", titular: "Marta Rojas",
+  correo: "Marta@Ejemplo.com", clave: "una-clave-bien-larga", clave2: "una-clave-bien-larga", ...over,
+});
+
+test("configuración inicial: solo con el enlace privado, y se cierra al crear el primer conjunto", () => withServer(async (s) => {
+  assert.equal((await fetch(`${s.base}/setup`)).status, 404, "sin token");
+  assert.equal((await fetch(`${s.base}/setup?token=otro`)).status, 404, "token equivocado");
+  const open = await fetch(`${s.base}/setup?token=${SETUP_TOKEN}`);
+  assert.equal(open.status, 200);
+  assert.match(await open.text(), /Crear conjunto/);
+
+  assert.equal((await form(`${s.base}/setup`, setupForm({ token: "otro" }))).status, 404, "tampoco se puede enviar sin el token");
+  assert.equal(s.store.tenants.list().length, 0);
+
+  const ok = await form(`${s.base}/setup`, setupForm());
+  assert.equal(ok.status, 303);
+  assert.equal(ok.headers.get("location"), "/login?m=creado");
+  const [tenant] = s.store.tenants.list();
+  assert.deepEqual([tenant.name, tenant.slug, tenant.payKey, tenant.payHolder], ["Jardines de Ibiza", "jardines-de-ibiza", "@ibiza", "Marta Rojas"]);
+  const L = s.store.forTenant(tenant.id);
+  assert.deepEqual(L.concepts.list().map((c) => [c.name, c.amountCents]), [["Vigilancia", 3_000_000]]);
+  const user = s.store.users.byEmail("marta@ejemplo.com");
+  assert.equal(user.tenantId, tenant.id);
+  assert.ok(user.passwordHash.startsWith("scrypt$") && !user.passwordHash.includes("una-clave"));
+
+  // Closed for good, even with the right token.
+  assert.equal((await fetch(`${s.base}/setup?token=${SETUP_TOKEN}`)).status, 404);
+  assert.equal((await form(`${s.base}/setup`, setupForm({ nombre: "Otro", correo: "otro@ejemplo.com" }))).status, 404);
+  assert.equal(s.store.tenants.list().length, 1);
+
+  // The login page greets the new treasurer, and the chosen password works through the 2-step flow.
+  assert.match(await (await fetch(`${s.base}/login?m=creado`)).text(), /Conjunto creado/);
+  const { res, cookie } = await signIn(s.base, "marta@ejemplo.com", "una-clave-bien-larga");
+  assert.equal(res.headers.get("location"), "/panel");
+  assert.match(await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text(), /Jardines de Ibiza/);
+}, { empty: true }));
+
+test("configuración inicial: valida los datos y no crea nada si algo está mal", () => withServer(async (s) => {
+  for (const [over, mensaje] of [
+    [{ nombre: "" }, /nombre del conjunto/],
+    [{ cuota: "abc" }, /cuota/],
+    [{ cuota: "500" }, /cuota/],
+    [{ correo: "sin-arroba" }, /correo válido/],
+    [{ clave: "corta", clave2: "corta" }, /10 caracteres/],
+    [{ clave2: "otra-clave-distinta" }, /no coinciden/],
+  ]) {
+    const res = await form(`${s.base}/setup`, setupForm(over));
+    assert.equal(res.status, 400, JSON.stringify(over));
+    const page = await res.text();
+    assert.match(page, mensaje);
+    assert.doesNotMatch(page, /una-clave-bien-larga/, "nunca devuelve la contraseña");
+  }
+  assert.equal(s.store.tenants.list().length, 0);
+  const again = await (await form(`${s.base}/setup`, setupForm({ correo: "malo", nombre: "Mi Conjunto" }))).text();
+  assert.match(again, /value="Mi Conjunto"/, "conserva lo que ya escribiste");
+  assert.equal((await form(`${s.base}/setup`, setupForm(), null, { Origin: "https://malo.example" })).status, 403);
+}, { empty: true }));
+
+test("configuración inicial: dos envíos a la vez crean un solo conjunto", () => withServer(async (s) => {
+  const results = await Promise.all([
+    form(`${s.base}/setup`, setupForm({ nombre: "Uno", correo: "uno@ejemplo.com" })),
+    form(`${s.base}/setup`, setupForm({ nombre: "Dos", correo: "dos@ejemplo.com" })),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [303, 404]);
+  assert.equal(s.store.tenants.list().length, 1);
+}, { empty: true }));
+
+test("configuración inicial: no se puede adivinar el token a golpes", () => withServer(async (s) => {
+  let last;
+  for (let i = 0; i < 12; i++) last = (await fetch(`${s.base}/setup?token=intento-${i}`)).status;
+  assert.equal(last, 429);
+  assert.equal((await fetch(`${s.base}/setup?token=${SETUP_TOKEN}`)).status, 429, "ni siquiera el correcto mientras dure el bloqueo");
+}, { empty: true }));

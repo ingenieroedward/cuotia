@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     environment:
       MASTER_KEY: ${MASTER_KEY:?falta MASTER_KEY (openssl rand -hex 32)}
+      SETUP_TOKEN: ${SETUP_TOKEN:-}
       PUBLIC_URL: ${PUBLIC_URL:?falta la URL pública, ej. https://cuotia.tudominio.com}
       PORT: "3000"
       DATABASE_PATH: /app/data/cuotia.db
