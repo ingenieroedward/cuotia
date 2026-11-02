@@ -168,7 +168,30 @@ const MIGRATIONS = [
   );
   CREATE INDEX push_by_tenant ON push_subscriptions (tenant_id);
   `,
+  /* V11: "cuentas claras": what the conjunto spends (with the receipt) and the balance it starts from.
+     `show_accounts` lets the treasurer decide whether residents may see the accounts. Expenses are voided, never deleted. */
+  `
+  ALTER TABLE tenants ADD COLUMN opening_cents INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tenants ADD COLUMN show_accounts INTEGER NOT NULL DEFAULT 0;
+  CREATE TABLE expenses (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    spent_on TEXT NOT NULL,
+    period TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    proof_mime TEXT,
+    proof BLOB,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    voided_at TEXT
+  );
+  CREATE INDEX expenses_by_tenant ON expenses (tenant_id, period);
+  `,
 ];
+
+export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
 
 const nowIso = () => new Date().toISOString();
 
@@ -181,6 +204,7 @@ const tenantRow = (r) => !r ? null : {
   openDay: r.open_day ?? null, dueDay: r.due_day ?? null,
   // What residents are told: payments confirmed by the bank, or registered by the treasurer.
   payMode: r.pay_mode ?? (r.pagoradar_secret ? "auto" : "manual"),
+  openingCents: Number(r.opening_cents ?? 0), showAccounts: !!r.show_accounts,
 };
 const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active };
 const dueRow = (r) => ({
@@ -250,6 +274,7 @@ export function openStore(path = ":memory:") {
     pagoradarSecret: (id) => db.prepare("SELECT pagoradar_secret FROM tenants WHERE id = ?").get(id)?.pagoradar_secret ?? null,
     setPagoradarSecret: (id, encrypted) => void db.prepare("UPDATE tenants SET pagoradar_secret = ? WHERE id = ?").run(encrypted, id),
     /** The Bre-B key and holder residents see. Empty means "not set". */
+    setAccounts: (id, { openingCents, showAccounts }) => void db.prepare("UPDATE tenants SET opening_cents = ?, show_accounts = ? WHERE id = ?").run(openingCents, showAccounts ? 1 : 0, id),
     setPayMode: (id, mode) => void db.prepare("UPDATE tenants SET pay_mode = ? WHERE id = ?").run(mode === "auto" || mode === "manual" ? mode : null, id),
     setDates: (id, { openDay, dueDay }) => void db.prepare("UPDATE tenants SET open_day = ?, due_day = ? WHERE id = ?").run(openDay ?? null, dueDay ?? null, id),
     setPayment: (id, { payKey, payHolder }) => void db.prepare("UPDATE tenants SET pay_key = ?, pay_holder = ? WHERE id = ?").run(String(payKey ?? "").trim() || null, String(payHolder ?? "").trim() || null, id),
@@ -689,6 +714,56 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** What the conjunto spends. A mistake is voided (it stays visible as "anulado"), never erased. */
+    const expenses = {
+      create({ spentOn, amountCents, category, description, proof = null, userId = null }) {
+        if (!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(String(spentOn)) || spentOn < "2024-01-01") throw new Error("La fecha del gasto no es válida");
+        if (!Number.isSafeInteger(amountCents) || amountCents <= 0 || amountCents > 100_000_000_00) throw new Error("El valor del gasto no es válido");
+        if (!EXPENSE_CATEGORIES.includes(category)) throw new Error("Esa categoría no existe");
+        const text = String(description ?? "").trim().slice(0, 120);
+        if (!text) throw new Error("Escribe en qué se gastó");
+        if (proof && (!proof.mime || !proof.data?.length || proof.data.length > 5 * 1024 * 1024)) throw new Error("El soporte no es válido");
+        const id = newId("gt");
+        db.prepare("INSERT INTO expenses (id, tenant_id, spent_on, period, amount_cents, category, description, proof_mime, proof, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(id, tenantId, spentOn, spentOn.slice(0, 7), amountCents, category, text, proof?.mime ?? null, proof?.data ?? null, userId, nowIso());
+        return { id };
+      },
+      /** The month's expenses (voided ones included, marked), newest first. No file bytes. */
+      list: ({ period }) => db.prepare("SELECT id, spent_on, period, amount_cents, category, description, proof_mime, voided_at FROM expenses WHERE tenant_id = ? AND period = ? ORDER BY spent_on DESC, created_at DESC").all(tenantId, period)
+        .map((r) => ({ id: r.id, spentOn: r.spent_on, period: r.period, amountCents: r.amount_cents, category: r.category, description: r.description, hasProof: !!r.proof_mime, voided: !!r.voided_at })),
+      get(id) {
+        const r = db.prepare("SELECT id, spent_on, period, amount_cents, category, description, proof_mime, voided_at FROM expenses WHERE id = ? AND tenant_id = ?").get(id, tenantId);
+        return r ? { id: r.id, spentOn: r.spent_on, period: r.period, amountCents: r.amount_cents, category: r.category, description: r.description, hasProof: !!r.proof_mime, voided: !!r.voided_at } : null;
+      },
+      file(id) {
+        const r = db.prepare("SELECT proof_mime, proof FROM expenses WHERE id = ? AND tenant_id = ? AND proof_mime IS NOT NULL").get(id, tenantId);
+        return r ? { mime: r.proof_mime, data: Buffer.from(r.proof) } : null;
+      },
+      void(id) {
+        const r = db.prepare("UPDATE expenses SET voided_at = ? WHERE id = ? AND tenant_id = ? AND voided_at IS NULL").run(nowIso(), id, tenantId);
+        if (Number(r.changes) !== 1) throw new Error("Ese gasto no existe en este conjunto o ya está anulado");
+      },
+    };
+
+    /**
+     * The books of one month: money in (payments assigned to a house, by the day they were paid, Colombia time), money out
+     * (expenses not voided) and the cash balance up to the end of that month: the opening balance + everything in - everything out.
+     */
+    function books(period) {
+      const [from, to] = periodRange(period);
+      const income = (a, b) => Number(db.prepare(`SELECT COALESCE(SUM(amount_cents), 0) AS c FROM payments WHERE tenant_id = ? AND status = 'assigned' AND paid_at >= ? AND paid_at < ?`).get(tenantId, a, b).c);
+      const out = (clause, ...args) => Number(db.prepare(`SELECT COALESCE(SUM(amount_cents), 0) AS c FROM expenses WHERE tenant_id = ? AND voided_at IS NULL AND ${clause}`).get(tenantId, ...args).c);
+      const byCategory = db.prepare("SELECT category, SUM(amount_cents) AS c FROM expenses WHERE tenant_id = ? AND period = ? AND voided_at IS NULL GROUP BY category ORDER BY c DESC").all(tenantId, period)
+        .map((r) => ({ category: r.category, cents: Number(r.c) }));
+      const opening = Number(db.prepare("SELECT opening_cents FROM tenants WHERE id = ?").get(tenantId).opening_cents);
+      const incomeMonth = income(from, to);
+      const spentMonth = out("period = ?", period);
+      return {
+        period, incomeCents: incomeMonth, spentCents: spentMonth, monthBalanceCents: incomeMonth - spentMonth, byCategory,
+        openingCents: opening, cashCents: opening + income("0000", to) - out("period <= ?", period),
+      };
+    }
+
     /** Devices of this conjunto's people that get phone notifications. */
     const push = {
       /** A browser re-subscribing (even under another account of the same device) replaces its earlier row. */
@@ -745,7 +820,7 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, expenses, books, matchHouse, summary };
   }
 
   return { db, tenants, users, invitations, settings, sessions, residentByToken, forTenant, close: () => db.close() };

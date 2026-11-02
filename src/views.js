@@ -13,6 +13,7 @@ const ICONS = {
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   back: '<path d="M15 6l-6 6 6 6"/>',
   next: '<path d="M9 6l6 6-6 6"/>',
+  cuentas: '<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M9 9h6M9 13h6"/>',
   cobrar: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6.5l1 1 2-2M4 12.5l1 1 2-2M4 18.5l1 1 2-2"/>',
 };
 const icon = (name, size = 20, width = 2) => html`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${raw(ICONS[name])}</svg>`;
@@ -69,6 +70,13 @@ const FLASH = {
   comprech: () => ({ kind: "ok", text: "Comprobante rechazado. El residente verá que no se pudo confirmar." }),
   pushprobe: () => ({ kind: "ok", text: "Te enviamos un aviso de prueba. Si no lo ves en unos segundos, revisa que las notificaciones de Cuotia estén permitidas en tu teléfono." }),
   pushsin: () => ({ kind: "err", text: "Primero activa los avisos en este dispositivo." }),
+  gastook: () => ({ kind: "ok", text: "Gasto registrado." }),
+  gastobad: () => ({ kind: "err", text: "Revisa el gasto: escribe el valor en pesos, en qué se gastó, la categoría y una fecha que no sea futura." }),
+  gastoarchivo: () => ({ kind: "err", text: "El soporte debe ser una foto (JPG, PNG, WebP) o un PDF de máximo 5 MB." }),
+  gastogrande: () => ({ kind: "err", text: "El soporte pesa más de 5 MB." }),
+  gastoanul: () => ({ kind: "ok", text: "Gasto anulado: sigue visible como anulado y ya no cuenta en el saldo." }),
+  cuentasok: () => ({ kind: "ok", text: "Guardado." }),
+  saldobad: () => ({ kind: "err", text: "El saldo inicial debe ser un valor en pesos, por ejemplo 250.000." }),
   eqbad: () => ({ kind: "err", text: "Escribe un correo válido para la invitación." }),
   eqexiste: () => ({ kind: "err", text: "Ese correo ya tiene una cuenta en Cuotia." }),
   eqcanc: () => ({ kind: "ok", text: "Invitación cancelada: su enlace ya no sirve." }),
@@ -176,6 +184,7 @@ const NAV = [
   { key: "cobros", href: "/panel/cobros", label: "Por cobrar", icon: "cobrar" },
   { key: "casas", href: "/panel/casas", label: "Casas", icon: "casas" },
   { key: "pagos", href: "/panel/pagos", label: "Pagos", icon: "pagos" },
+  { key: "cuentas", href: "/panel/cuentas", label: "Cuentas", icon: "cuentas" },
   { key: "ajustes", href: "/panel/ajustes", label: "Ajustes", icon: "ajustes" },
 ];
 
@@ -1005,6 +1014,136 @@ export function linkPage(args) {
   </section>`);
 }
 
+/** "noviembre 2026" navigation shared by the treasurer's and the residents' accounts pages. */
+const monthNav = (base, period, prev, next) => html`<nav class="monthnav" aria-label="Elegir mes">
+  ${prev ? html`<a class="mn-btn" href="${base}?mes=${prev}" aria-label="Mes anterior: ${periodLabel(prev)}">${icon("back", 18, 2.4)}</a>` : html`<span class="mn-btn off" aria-hidden="true">${icon("back", 18, 2.4)}</span>`}
+  <span class="mn-label">${icon("calendar", 18)}${periodLabel(period)}</span>
+  ${next ? html`<a class="mn-btn" href="${base}?mes=${next}" aria-label="Mes siguiente: ${periodLabel(next)}">${icon("next", 18, 2.4)}</a>` : html`<span class="mn-btn off" aria-hidden="true">${icon("next", 18, 2.4)}</span>`}
+</nav>`;
+
+/** The month's accounts as plain text, ready to paste in the neighbours' WhatsApp group. */
+function accountsText(tenant, period, books) {
+  const lines = [
+    `Cuentas de ${periodLabel(period)} · ${tenant.name}`,
+    `Recaudado: ${peso(books.incomeCents)}`,
+    `Gastado: ${peso(books.spentCents)}`,
+    `Saldo del mes: ${peso(books.monthBalanceCents)}`,
+    `Saldo en caja: ${peso(books.cashCents)}`,
+  ];
+  if (books.byCategory.length) lines.push("", "En qué se gastó:", ...books.byCategory.map((c) => `- ${c.category}: ${peso(c.cents)}`));
+  return lines.join("\n");
+}
+
+const booksHero = (books, period) => html`<section class="hero" aria-label="Cuentas de ${periodLabel(period)}">
+  <span class="eyebrow">Saldo en caja · fin de ${periodLabel(period).split(" ")[0]}</span>
+  <span class="hero-number">${peso(books.cashCents)}</span>
+  <div class="hero-stats">
+    <div><b>${peso(books.incomeCents)}</b><span>recaudado</span></div>
+    <div><b>${peso(books.spentCents)}</b><span>gastado</span></div>
+    <div><b>${peso(books.monthBalanceCents)}</b><span>saldo del mes</span></div>
+  </div>
+</section>`;
+
+const categoryBars = (books) => books.byCategory.length
+  ? html`<ul class="catbars">${books.byCategory.map((c) => html`<li>
+      <span class="row"><span>${c.category}</span><b>${peso(c.cents)}</b></span>
+      <progress class="bar slim" max="${books.spentCents}" value="${c.cents}"></progress>
+    </li>`)}</ul>`
+  : "";
+
+/** The treasurer's accounts: what came in, what went out, with the receipts, and who may see it. */
+export function cuentasPage(args) {
+  const { tenant, csrf, flash, period, current, books, expenses, categories, today, prev, next } = args;
+  const text = accountsText(tenant, period, books);
+  return panelLayout("Cuentas", { ...args, active: "cuentas" }, html`
+  <div class="head">
+    <div class="head-text"><h1>Cuentas claras</h1><span class="muted">Lo que entra, lo que sale y el saldo en caja</span></div>
+    <div class="head-actions">${monthNav("/panel/cuentas", period, prev, next)}</div>
+  </div>
+  ${flashBox(flash)}
+  ${period !== current ? html`<p class="flash info" role="status">Estás viendo ${periodLabel(period)}. <a href="/panel/cuentas">Volver a este mes</a></p>` : ""}
+
+  ${booksHero(books, period)}
+
+  <section class="card">
+    <div class="row wrap"><h2>Para compartir</h2></div>
+    <p class="muted small">Pega este resumen en el grupo de vecinos de WhatsApp.</p>
+    <pre class="share-text" id="resumen-cuentas">${text}</pre>
+    <div class="actions">
+      <button class="btn" type="button" data-copy="${text}" data-copy-target="#resumen-cuentas">Copiar resumen</button>
+      <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(text)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row wrap"><h2>Gastos de ${periodLabel(period).split(" ")[0]}</h2><a class="small" href="/panel/cuentas.csv?mes=${period}">Descargar para Excel (CSV)</a></div>
+    ${categoryBars(books)}
+    ${expenses.length
+      ? html`<ul class="list stack">${expenses.map((e) => html`<li class="expense${e.voided ? " voided" : ""}">
+          <div class="row">
+            <span><b>${e.description}</b><small class="muted">${shortDate(`${e.spentOn}T17:00:00.000Z`)} · ${e.category}${e.voided ? " · anulado" : ""}</small></span>
+            <b class="amount">${peso(e.amountCents)}</b>
+          </div>
+          <div class="actions">
+            ${e.hasProof ? html`<a class="small" href="/panel/gastos/${e.id}/soporte" target="_blank" rel="noopener">Ver soporte</a>` : html`<span class="muted small">Sin soporte</span>`}
+            ${e.voided ? "" : html`<details class="undo"><summary>Anular</summary>
+              <p class="muted small">El gasto no se borra: queda marcado como anulado y deja de contar en el saldo.</p>
+              <form method="post" action="/panel/gastos/${e.id}/anular">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, anular</button></form>
+            </details>`}
+          </div>
+        </li>`)}</ul>`
+      : html`<p class="muted">Aún no hay gastos en ${periodLabel(period)}.</p>`}
+  </section>
+
+  <section class="card" id="nuevo-gasto">
+    <h2>Registrar un gasto</h2>
+    <form class="stack-form" method="post" action="/panel/gastos" enctype="multipart/form-data">
+      ${csrfField(csrf)}
+      <div class="grid-form">
+        <label>¿En qué se gastó?<input type="text" name="descripcion" maxlength="120" required placeholder="Pago del vigilante de noviembre"></label>
+        <label>Valor (pesos)<input type="text" name="valor" inputmode="numeric" maxlength="14" required placeholder="1.200.000"></label>
+        <label>Categoría<select name="categoria">${categories.map((c) => html`<option value="${c}">${c}</option>`)}</select></label>
+        <label>Fecha<input type="date" name="fecha" value="${today}" max="${today}" required></label>
+      </div>
+      <label>Foto o PDF del soporte <span class="muted small">(opcional, máximo 5 MB)</span><input type="file" name="soporte" accept="image/jpeg,image/png,image/webp,application/pdf"></label>
+      <button class="btn" type="submit">Registrar gasto</button>
+    </form>
+  </section>
+
+  <section class="card" id="ajustes">
+    <h2>Saldo inicial y quién lo ve</h2>
+    <form class="stack-form" method="post" action="/panel/ajustes/cuentas">
+      ${csrfField(csrf)}
+      <label>Saldo con el que empiezas (pesos)<input type="text" name="saldo" inputmode="numeric" maxlength="14" value="${(tenant.openingCents / 100).toLocaleString("es-CO")}" placeholder="0"></label>
+      <p class="muted small">Es el dinero que ya había en la cuenta antes de usar Cuotia. El saldo en caja es este valor, más todo lo recaudado, menos todos los gastos.</p>
+      <label class="check"><input type="checkbox" name="mostrar" value="1"${tenant.showAccounts ? raw(" checked") : ""}><span><b>Mostrar las cuentas a los residentes.</b> Cada uno las ve desde su enlace personal: recaudado, gastado, saldo y los gastos con su soporte.</span></label>
+      <button class="btn" type="submit">Guardar</button>
+    </form>
+  </section>`);
+}
+
+/** What a resident sees when the treasurer shares the accounts: totals and the expenses with their receipts. */
+export function residentCuentasPage({ tenant, token, period, current, books, expenses, prev, next }) {
+  const base = `/r/${token}/cuentas`;
+  return layout("Cuentas del conjunto", html`
+<main class="narrow res">
+  <header class="backbar"><a href="/r/${token}" aria-label="Volver">${icon("back", 24, 2.2)}</a><h1>Cuentas del conjunto</h1></header>
+  <div class="row wrap"><span class="muted">${tenant.name}</span>${monthNav(base, period, prev, next)}</div>
+  ${booksHero(books, period)}
+  <section class="card">
+    <h2>En qué se gastó</h2>
+    ${categoryBars(books)}
+    ${expenses.length
+      ? html`<ul class="list stack">${expenses.map((e) => html`<li class="expense">
+          <div class="row"><span><b>${e.description}</b><small class="muted">${shortDate(`${e.spentOn}T17:00:00.000Z`)} · ${e.category}</small></span><b class="amount">${peso(e.amountCents)}</b></div>
+          ${e.hasProof ? html`<a class="small" href="${base}/${e.id}/soporte" target="_blank" rel="noopener">Ver soporte</a>` : ""}
+        </li>`)}</ul>`
+      : html`<p class="muted">Aún no hay gastos registrados en ${periodLabel(period)}.</p>`}
+  </section>
+  <p class="muted small center-text">${period === current ? "Estas cuentas se actualizan cada vez que el tesorero registra un pago o un gasto." : ""}</p>
+</main>`, { manifest: `/r/${token}/manifest.webmanifest` });
+}
+
 /** Shown once to the treasurer after inviting: the link to send. */
 export function inviteLinkPage(args) {
   const { url, email, name } = args;
@@ -1111,6 +1250,8 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
 
   ${proofs.some((p) => p.status === "pending") ? html`<p class="flash info" role="status">Enviaste un comprobante y está en revisión. <a href="/r/${token}/comprobante">Ver</a></p>` : ""}
   ${proofs[0]?.status === "rejected" && owed.length ? html`<p class="flash err" role="status">El tesorero no pudo confirmar tu último comprobante. Revisa el valor o <a href="/r/${token}/comprobante">súbelo de nuevo</a>.</p>` : ""}
+
+  ${tenant.showAccounts ? html`<a class="card cuentas-link" href="/r/${token}/cuentas"><span><b>Cuentas del conjunto</b><small class="muted">Qué se recaudó y en qué se gastó</small></span>${icon("next", 20, 2.4)}</a>` : ""}
 
   <section class="card">
     <h2>Tus pagos</h2>

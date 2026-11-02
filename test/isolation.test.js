@@ -320,3 +320,44 @@ test("equipo: un conjunto no ve, no quita ni cancela invitaciones de otro, y la 
   assert.equal(store.users.byId(userId), null);
   assert.ok(B.team.list().some((u) => u.id === ub));
 });
+
+test("cuentas claras: los gastos, su soporte y el saldo de un conjunto no los ve ni los toca otro", () => {
+  const { A, B, a } = twoConjuntos();
+  const data = Buffer.from("soporte");
+  const { id } = A.expenses.create({ spentOn: "2026-11-03", amountCents: 120_000_000, category: "Vigilancia", description: "Vigilante de noviembre", proof: { mime: "image/png", data } });
+  assert.equal(B.expenses.get(id), null);
+  assert.equal(B.expenses.file(id), null);
+  assert.deepEqual(B.expenses.list({ period: "2026-11" }), []);
+  assert.throws(() => B.expenses.void(id), /no existe en este conjunto/);
+  assert.equal(B.books("2026-11").spentCents, 0);
+  assert.equal(A.books("2026-11").spentCents, 120_000_000);
+  assert.ok(A.expenses.file(id).data.equals(data));
+  assert.equal(A.expenses.get(id).voided, false, "el intento de otro conjunto no anuló nada");
+  assert.ok(a.id);
+});
+
+test("cuentas claras: el saldo suma lo recaudado y resta los gastos, y un gasto anulado ya no cuenta", () => {
+  const { store, A, a, a14 } = twoConjuntos();
+  store.tenants.setAccounts(a.id, { openingCents: 50_000_000, showAccounts: false });
+  A.dues.generate("2026-11");
+  const due = A.dues.listForHouse(a14.house.id)[0];
+  A.payments.recordManual({ houseId: a14.house.id, dueIds: [due.id], method: "cash", paidAt: "2026-11-04T17:00:00.000Z" });
+  const g = A.expenses.create({ spentOn: "2026-11-05", amountCents: 1_000_000, category: "Servicios públicos", description: "Luz de la portería" });
+  A.expenses.create({ spentOn: "2026-10-20", amountCents: 700_000, category: "Mantenimiento", description: "Arreglo del portón" });
+  let b = A.books("2026-11");
+  assert.deepEqual([b.incomeCents, b.spentCents, b.monthBalanceCents], [3_000_000, 1_000_000, 2_000_000]);
+  assert.equal(b.cashCents, 50_000_000 + 3_000_000 - 1_000_000 - 700_000, "saldo inicial + todo lo recaudado - todos los gastos hasta fin de mes");
+  assert.deepEqual(b.byCategory, [{ category: "Servicios públicos", cents: 1_000_000 }]);
+  assert.equal(A.books("2026-10").cashCents, 50_000_000 - 700_000, "octubre no ve lo de noviembre");
+  A.expenses.void(g.id);
+  b = A.books("2026-11");
+  assert.deepEqual([b.spentCents, b.cashCents], [0, 50_000_000 + 3_000_000 - 700_000]);
+  assert.equal(A.expenses.list({ period: "2026-11" })[0].voided, true, "sigue visible, marcado");
+  assert.throws(() => A.expenses.void(g.id), /ya está anulado/);
+  for (const bad of [
+    { spentOn: "2026-13-01" }, { spentOn: "2023-01-01" }, { amountCents: 0 }, { amountCents: 1.5 }, { category: "Cripto" }, { description: "   " },
+    { proof: { mime: "image/png", data: Buffer.alloc(6 * 1024 * 1024) } },
+  ]) {
+    assert.throws(() => A.expenses.create({ spentOn: "2026-11-05", amountCents: 100, category: "Otros", description: "x", ...bad }), undefined, JSON.stringify(bad).slice(0, 40));
+  }
+});

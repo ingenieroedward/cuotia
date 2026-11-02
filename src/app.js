@@ -10,8 +10,9 @@ import { ingestEvent } from "./pagoradar.js";
 import { debtTotals, groupDebts } from "./debts.js";
 import { MAX_PROOF_BYTES, parseMultipart, sniffProof } from "./upload.js";
 import { newVapidKeys, sendPush, validEndpoint, validKeys } from "./webpush.js";
+import { EXPENSE_CATEGORIES } from "./store.js";
 import { bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
-import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -140,9 +141,9 @@ export function createApp({ config, store, pushSend = sendPush }) {
     if (upload) return residentUpload(req, res, upload[1]);
 
     // A resident's personal link: the unguessable token is the credential.
-    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar|comprobante|manifest\.webmanifest)|\/recibo\/(du_[a-f0-9]+))?$/);
+    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar|comprobante|cuentas|manifest\.webmanifest)|\/recibo\/(du_[a-f0-9]+)|\/cuentas\/(gt_[a-f0-9]+)\/soporte)?$/);
     if (r) {
-      const [, token, extra, receiptId] = r;
+      const [, token, extra, receiptId, expenseId] = r;
       const pay = extra === "pagar";
       const found = store.residentByToken(token);
       if (!found) return send(res, 404, notFoundPage());
@@ -153,6 +154,22 @@ export function createApp({ config, store, pushSend = sendPush }) {
       if (receiptId) {
         const receipt = ledger.dues.receiptForHouse(found.house.id, receiptId);
         return receipt ? send(res, 200, receiptPage({ tenant: found.tenant, receipt, token })) : send(res, 404, notFoundPage());
+      }
+      if (extra === "cuentas" || expenseId) {
+        // The treasurer decides whether residents see the accounts (Ajustes); otherwise it looks like the page doesn't exist.
+        if (!found.tenant.showAccounts) return send(res, 404, notFoundPage());
+        if (expenseId) {
+          const own = ledger.expenses.get(expenseId);
+          const file = own && !own.voided ? ledger.expenses.file(expenseId) : null;
+          return file ? sendExpenseFile(res, file) : send(res, 404, notFoundPage());
+        }
+        const asked = url.searchParams.get("mes");
+        const month = validPastPeriod(asked) ? asked : currentPeriod();
+        return send(res, 200, residentCuentasPage({
+          ...found, token, period: month, current: currentPeriod(), books: ledger.books(month),
+          expenses: ledger.expenses.list({ period: month }).filter((e) => !e.voided),
+          prev: validPastPeriod(shiftPeriod(month, -1)) ? shiftPeriod(month, -1) : null, next: month < currentPeriod() ? shiftPeriod(month, 1) : null,
+        }));
       }
       if (extra === "comprobante") {
         return send(res, 200, residentProofPage({ ...found, dues, token, proofs: ledger.proofs.listForHouse(found.house.id), sent: url.searchParams.get("m") === "enviado" }));
@@ -202,6 +219,52 @@ export function createApp({ config, store, pushSend = sendPush }) {
     }
     void notify(found.tenant.id, { title: "Comprobante nuevo", body: `La casa ${found.house.code} subió un comprobante`, url: "/panel#comprobantes", tag: "comprobante" });
     return redirect(res, `/r/${token}/comprobante?m=enviado`);
+  }
+
+  /** "35.000", "$ 35000" or "35,000" -> cents, or null when it is not a plain amount of pesos. */
+  function parsePesos(text) {
+    const digits = String(text).replace(/[\s$.,]/g, "");
+    return /^\d{1,10}$/.test(digits) ? Number(digits) * 100 : null;
+  }
+
+  /** An expense's receipt (photo or PDF): only what it was verified to be, never executed; a PDF is downloaded. */
+  function sendExpenseFile(res, file) {
+    return send(res, 200, file.data, {
+      "Content-Type": file.mime,
+      "Content-Disposition": file.mime === "application/pdf" ? 'attachment; filename="soporte.pdf"' : "inline",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Cache-Control": "private, no-store",
+    });
+  }
+
+  async function addExpense(req, res, s, ledger, period) {
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    let body;
+    try {
+      body = await readBuffer(req, MAX_PROOF_BYTES + 64 * 1024);
+    } catch (e) {
+      if (e.status === 413) return redirect(res, "/panel/cuentas?m=gastogrande");
+      throw e;
+    }
+    const parsed = parseMultipart(body, req.headers["content-type"]);
+    if (!parsed || !csrfValid(s.token, parsed.fields._csrf)) return send(res, 403, "Formulario vencido. Recarga la página e inténtalo de nuevo.");
+    const amountCents = parsePesos(parsed.fields.valor ?? "");
+    const file = parsed.files.soporte;
+    let proof = null;
+    if (file && file.data.length > 0) {
+      const mime = sniffProof(file.data);
+      if (!mime || file.data.length > MAX_PROOF_BYTES) return redirect(res, "/panel/cuentas?m=gastoarchivo");
+      proof = { mime, data: file.data };
+    }
+    const spentOn = String(parsed.fields.fecha ?? "");
+    const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+    if (!amountCents || spentOn > today) return redirect(res, "/panel/cuentas?m=gastobad");
+    try {
+      ledger.expenses.create({ spentOn, amountCents, category: String(parsed.fields.categoria ?? ""), description: parsed.fields.descripcion, proof, userId: s.user.id });
+    } catch {
+      return redirect(res, "/panel/cuentas?m=gastobad");
+    }
+    return redirect(res, `/panel/cuentas?${spentOn.slice(0, 7) !== period ? `mes=${spentOn.slice(0, 7)}&` : ""}m=gastook`);
   }
 
   async function pagoradarWebhook(req, res, tenantId) {
@@ -491,7 +554,34 @@ export function createApp({ config, store, pushSend = sendPush }) {
       return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
 
+    if (method === "GET" && (path === "/panel/cuentas" || path === "/panel/cuentas.csv")) {
+      const asked = url.searchParams.get("mes");
+      const month = validPastPeriod(asked) ? asked : period;
+      const list = ledger.expenses.list({ period: month });
+      if (path === "/panel/cuentas.csv") {
+        const head = ["Fecha", "Categoría", "Descripción", "Valor (COP)", "Soporte", "Estado"];
+        const lines = list.map((e) => [e.spentOn, e.category, e.description, Math.round(e.amountCents / 100), e.hasProof ? "Sí" : "No", e.voided ? "Anulado" : "Vigente"].map(csvCell).join(";"));
+        return send(res, 200, `\uFEFF${[head.map(csvCell).join(";"), ...lines].join("\r\n")}\r\n`, {
+          "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="gastos-${month}.csv"`,
+        });
+      }
+      return send(res, 200, cuentasPage({
+        ...base, flash: flashOf(url.searchParams), period: month, current: period, books: ledger.books(month), expenses: list,
+        categories: EXPENSE_CATEGORIES, today: bogotaDateTime(new Date().toISOString()).slice(0, 10),
+        prev: validPastPeriod(shiftPeriod(month, -1)) ? shiftPeriod(month, -1) : null, next: month < period ? shiftPeriod(month, 1) : null,
+      }));
+    }
+
+    const expenseFile = method === "GET" && path.match(/^\/panel\/gastos\/(gt_[a-f0-9]+)\/soporte$/);
+    if (expenseFile) {
+      const file = ledger.expenses.file(expenseFile[1]);
+      return file ? sendExpenseFile(res, file) : send(res, 404, notFoundPage());
+    }
+
     if (method !== "POST") return send(res, 404, notFoundPage());
+
+    // A new expense carries a file, so it is multipart; the form token travels as a field.
+    if (path === "/panel/gastos") return addExpense(req, res, s, ledger, period);
 
     // Every state change: same origin AND the session's form token.
     if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
@@ -543,6 +633,20 @@ export function createApp({ config, store, pushSend = sendPush }) {
         if (removeUser[1] === s.user.id) return redirect(res, "/panel/ajustes?m=eqyo");
         try { ledger.team.remove(removeUser[1]); } catch { return redirect(res, "/panel/ajustes?m=equltimo"); }
         return redirect(res, "/panel/ajustes?m=eqquit");
+      }
+
+      const voidExpense = path.match(/^\/panel\/gastos\/(gt_[a-f0-9]+)\/anular$/);
+      if (voidExpense) {
+        const e = ledger.expenses.get(voidExpense[1]);
+        ledger.expenses.void(voidExpense[1]);
+        return redirect(res, `/panel/cuentas?${e && e.period !== period ? `mes=${e.period}&` : ""}m=gastoanul`);
+      }
+
+      if (path === "/panel/ajustes/cuentas") {
+        const opening = parsePesos(String(form.get("saldo") || "0"));
+        if (opening === null) return redirect(res, "/panel/cuentas?m=saldobad#ajustes");
+        store.tenants.setAccounts(s.tenant.id, { openingCents: opening, showAccounts: form.get("mostrar") === "1" });
+        return redirect(res, "/panel/cuentas?m=cuentasok");
       }
 
       if (path === "/panel/ajustes/modo") {
