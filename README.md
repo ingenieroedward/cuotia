@@ -1,1 +1,81 @@
-# cuotia
+# Cuotia
+
+Cobro de cuotas de **vigilancia** (y luego administración) para urbanizaciones y conjuntos. Cada vecino
+paga por **Bre-B** y **pagoradar** confirma el pago leyendo el aviso del banco; Cuotia lleva el libro:
+casas, cuotas, quién pagó y quién falta. Cada conjunto ve solo sus datos.
+
+```
+Residente ──Bre-B──▶ cuenta del conjunto ──aviso del banco──▶ pagoradar ──webhook firmado──▶ Cuotia
+                                                                                              │
+                                                       cuota marcada como pagada ◀────────────┘
+```
+
+## Cómo reconoce cada pago
+
+La cuota se cobra **exacta** (ej. $30.000). Cuando llega el pago:
+
+1. Si el nombre del pagador ya está asociado a una casa (por **alias** o por coincidencia única con el
+   nombre del residente) **y** esa casa tiene una cuota abierta por ese monto → se marca pagada sola.
+2. Si no, queda en **Por asignar**. El tesorero la asigna a una casa una vez y Cuotia **recuerda el nombre**:
+   la próxima vez es automática.
+3. Nunca adivina: un monto distinto, una casa dudosa o un nombre compartido esperan al tesorero.
+
+## Desarrollo
+
+Requiere Node ≥ 22.5. No tiene dependencias.
+
+```bash
+npm test
+MASTER_KEY=$(openssl rand -hex 32) PUBLIC_URL=http://localhost:3000 npm start
+```
+
+Crear el primer conjunto, una casa y las cuotas del mes:
+
+```bash
+npm run admin -- crear-conjunto --slug ibiza --nombre "Jardines de Ibiza" --correo tesorera@ejemplo.com --llave @llave --titular "Titular" --cuota 30000
+npm run admin -- agregar-casa --conjunto ibiza --codigo 14 --residente "Sandra Duque" --telefono 3001234567
+npm run admin -- generar-cuotas --conjunto ibiza
+```
+
+`crear-conjunto` imprime la **URL del webhook** de ese conjunto (ver abajo).
+
+## Conectar con pagoradar (una conexión por conjunto)
+
+Cada conjunto tiene **su propia app en pagoradar, su propia URL de webhook y su propio secreto**; nada se
+comparte entre conjuntos.
+
+1. Cuotia da a cada conjunto una URL: `https://cuotia.tudominio.com/webhooks/pagoradar/<id-del-conjunto>`
+   (la imprime `crear-conjunto` y aparece en **Ajustes** del panel).
+2. En el panel de pagoradar de ese conjunto: **Apps → Nueva app** con esa URL como webhook, y una **cuenta
+   receptora** con el Gmail del titular reenviando los avisos del banco (como ya hace pagoradar).
+3. Copia el **secreto del webhook** de esa app y pégalo en **Ajustes** de Cuotia (o usa
+   `MASTER_KEY=… npm run admin -- configurar-pagoradar --conjunto ibiza --secreto …`). Se guarda **cifrado** y
+   no se vuelve a mostrar.
+4. Envía el **evento de prueba** desde pagoradar: Ajustes pasa a **Conectado · último aviso …**.
+
+La firma de cada aviso se verifica con el secreto del conjunto de la URL: el secreto de un conjunto no sirve en
+la URL de otro. Si la cuenta de pagoradar lleva un `tenantRef`, debe ser el id del conjunto (opcional).
+Cuotia solo usa `payment.received`; los demás eventos solo confirman la conexión. Un pago repetido
+(reintento del webhook) se registra una sola vez. Mientras un conjunto no tenga secreto, su URL responde
+503 y pagoradar reintenta.
+
+## Desplegar en Dokploy
+
+*Create Service → Docker Compose* con este repositorio. Variables:
+`MASTER_KEY` (`openssl rand -hex 32`; **guárdala**: cifra el doble factor y sin ella nadie puede entrar), `PUBLIC_URL`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
+`cuotia-data` (`/app/data/cuotia.db`): respáldalo. Monitor a `/health`.
+
+## El panel del tesorero
+
+Entra con correo y contraseña y luego con un **código de 6 dígitos** de una app (Google Authenticator,
+Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra la clave para agregarla. Desde el panel:
+
+- **Resumen** del mes: recaudado, al día, pendientes.
+- **Por asignar:** elige la casa de cada pago desconocido; Cuotia recuerda el nombre.
+- **Generar cuotas** del mes, **pago en efectivo** y **Casas** (agregar, enlace personal por WhatsApp).
+
+## Estado
+
+Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
+alias, doble factor, panel completo y página del residente (responsive, claro y oscuro). Pendiente: passkeys,
+editar casas, historial y CSV, tipografía propia, panel del operador, transparencia. Ver `CLAUDE.md`.
