@@ -263,3 +263,20 @@ test("agregar un mes a una sola casa: solo a esa casa, sin duplicar, y no en cas
   assert.throws(() => A.dues.generateForHouse(a03.house.id, "2026-10"), /desactivada/);
   assert.equal(B.dues.listForHouse(b01.house.id).length, 0, "nada quedó a medias en el otro conjunto");
 });
+
+test("comprobantes: un conjunto no los ve, no los baja, no los rechaza y no los usa en un pago", () => {
+  const { A, B, a14, b01 } = twoConjuntos();
+  const data = Buffer.from("datos");
+  const { id } = A.proofs.create({ houseId: a14.house.id, mime: "image/png", data });
+  assert.throws(() => B.proofs.create({ houseId: a14.house.id, mime: "image/png", data }), /casa/i);
+  assert.equal(B.proofs.meta(id), null);
+  assert.equal(B.proofs.file(id), null);
+  assert.deepEqual(B.proofs.listPending(), []);
+  assert.equal(B.proofs.countPending(), 0);
+  assert.throws(() => B.proofs.listForHouse(a14.house.id));
+  assert.throws(() => B.proofs.reject(id), /pendiente/);
+  B.dues.generate("2026-11");
+  assert.throws(() => B.payments.recordManual({ houseId: b01.house.id, dueIds: [B.dues.listForHouse(b01.house.id)[0].id], proofId: id }), /comprobante/);
+  assert.equal(A.proofs.meta(id).status, "pending", "nada cambió");
+  assert.ok(A.proofs.file(id).data.equals(data));
+});

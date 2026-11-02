@@ -111,6 +111,29 @@ const MIGRATIONS = [
   `
   ALTER TABLE payments ADD COLUMN note TEXT;
   `,
+  /* V6: the payment window of each conjunto: pay from day open_day to day due_day of the month (NULL = not set). */
+  `
+  ALTER TABLE tenants ADD COLUMN open_day INTEGER;
+  ALTER TABLE tenants ADD COLUMN due_day INTEGER;
+  `,
+  /* V7: proofs of payment (photo or PDF) that a resident uploads; the treasurer confirms them by recording the payment. */
+  `
+  CREATE TABLE proofs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    house_id TEXT NOT NULL REFERENCES houses(id),
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    note TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+    payment_id TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+  CREATE INDEX proofs_by_tenant ON proofs (tenant_id, status, created_at);
+  CREATE INDEX proofs_by_house ON proofs (house_id, created_at);
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
@@ -121,6 +144,7 @@ const tenantRow = (r) => !r ? null : {
   id: r.id, slug: r.slug, name: r.name, payKey: r.pay_key, payHolder: r.pay_holder,
   // The secret itself never travels in the DTO: views get only whether it is set.
   pagoradarConfigured: !!r.pagoradar_secret, pagoradarLastAt: r.pagoradar_last_at,
+  openDay: r.open_day ?? null, dueDay: r.due_day ?? null,
 };
 const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active };
 const dueRow = (r) => ({
@@ -190,6 +214,7 @@ export function openStore(path = ":memory:") {
     pagoradarSecret: (id) => db.prepare("SELECT pagoradar_secret FROM tenants WHERE id = ?").get(id)?.pagoradar_secret ?? null,
     setPagoradarSecret: (id, encrypted) => void db.prepare("UPDATE tenants SET pagoradar_secret = ? WHERE id = ?").run(encrypted, id),
     /** The Bre-B key and holder residents see. Empty means "not set". */
+    setDates: (id, { openDay, dueDay }) => void db.prepare("UPDATE tenants SET open_day = ?, due_day = ? WHERE id = ?").run(openDay ?? null, dueDay ?? null, id),
     setPayment: (id, { payKey, payHolder }) => void db.prepare("UPDATE tenants SET pay_key = ?, pay_holder = ? WHERE id = ?").run(String(payKey ?? "").trim() || null, String(payHolder ?? "").trim() || null, id),
     /** A correctly signed event arrived (even a test one): the panel shows the connection as alive. */
     touchPagoradar: (id) => void db.prepare("UPDATE tenants SET pagoradar_last_at = ? WHERE id = ?").run(nowIso(), id),
@@ -409,9 +434,10 @@ export function openStore(path = ":memory:") {
        * It settles exactly the chosen dues of one house (one payment can cover several months) for their total, so a
        * resident can't end up half-paid. All or nothing: a due that isn't this house's, or isn't pending, aborts it.
        */
-      recordManual({ houseId, dueIds, method = "cash", bank = null, paidAt = nowIso(), note = null }) {
+      recordManual({ houseId, dueIds, method = "cash", bank = null, paidAt = nowIso(), note = null, proofId = null }) {
         return tx(() => {
           const house = houseRow(ownHouse(houseId));
+          if (proofId && !db.prepare("SELECT 1 FROM proofs WHERE id = ? AND tenant_id = ? AND house_id = ? AND status = 'pending'").get(proofId, tenantId, houseId)) throw new Error("Ese comprobante no está pendiente en esa casa");
           const ids = [...new Set(dueIds ?? [])];
           if (ids.length === 0) throw new Error("Elige al menos una cuota");
           if (!MANUAL_LABELS[method]) throw new Error("Medio de pago desconocido");
@@ -425,6 +451,7 @@ export function openStore(path = ":memory:") {
           ).run(id, tenantId, `manual_${id}`, `${MANUAL_LABELS[method]} · ${house.residentName}`, MANUAL_LABELS[method].toUpperCase(), total,
             String(bank ?? "").trim().slice(0, 40) || null, method, paidAt, houseId, String(note ?? "").trim().slice(0, 120) || null, nowIso());
           for (const r of rows) dues.settle(r.id, id, paidAt);
+          if (proofId) db.prepare("UPDATE proofs SET status = 'accepted', payment_id = ?, resolved_at = ? WHERE id = ? AND tenant_id = ?").run(id, nowIso(), proofId, tenantId);
           return { paymentId: id, dueIds: ids, amountCents: total };
         });
       },
@@ -490,6 +517,8 @@ export function openStore(path = ":memory:") {
           if (!p) throw new Error("Ese pago no existe en este conjunto");
           if (p.status !== "assigned") throw new Error("Ese pago no está asignado");
           db.prepare("UPDATE dues SET status = 'pending', payment_id = NULL, paid_at = NULL WHERE tenant_id = ? AND payment_id = ?").run(tenantId, paymentId);
+          // A proof that backed this payment goes back to the queue so the treasurer can review it again.
+          db.prepare("UPDATE proofs SET status = 'pending', payment_id = NULL, resolved_at = NULL WHERE tenant_id = ? AND payment_id = ?").run(tenantId, paymentId);
           if (p.manual) {
             db.prepare("DELETE FROM payments WHERE id = ? AND tenant_id = ?").run(paymentId, tenantId);
             return { deleted: true };
@@ -498,6 +527,15 @@ export function openStore(path = ":memory:") {
           db.prepare("UPDATE payments SET house_id = NULL, status = 'unassigned' WHERE id = ? AND tenant_id = ?").run(paymentId, tenantId);
           return { deleted: false };
         });
+      },
+      /** The proof (id, kind) that backs each of these payments: one query for a whole page of the history. */
+      proofsByPayment(paymentIds) {
+        const out = new Map();
+        for (const pid of paymentIds) {
+          const r = db.prepare("SELECT id, mime FROM proofs WHERE tenant_id = ? AND payment_id = ?").get(tenantId, pid);
+          if (r) out.set(pid, { id: r.id, mime: r.mime });
+        }
+        return out;
       },
       countUnassigned: () => Number(db.prepare("SELECT COUNT(*) AS n FROM payments WHERE tenant_id = ? AND status = 'unassigned'").get(tenantId).n),
       listUnassigned: () => db.prepare("SELECT * FROM payments WHERE tenant_id = ? AND status = 'unassigned' ORDER BY paid_at DESC").all(tenantId).map(paymentRow),
@@ -548,7 +586,50 @@ export function openStore(path = ":memory:") {
       };
     }
 
-    return { tenantId, houses, aliases, concepts, dues, payments, matchHouse, summary };
+
+    /** Proofs of payment uploaded by residents. The file bytes are only returned by `get`; lists never carry them. */
+    const MAX_PENDING_PER_HOUSE = 3;
+    const proofMeta = (r) => ({
+      id: r.id, houseId: r.house_id, houseCode: r.code, residentName: r.resident_name, mime: r.mime, size: r.size,
+      note: r.note, status: r.status, paymentId: r.payment_id, createdAt: r.created_at,
+    });
+    const PROOF_COLS = "p.id, p.house_id, p.mime, p.size, p.note, p.status, p.payment_id, p.created_at, h.code, h.resident_name";
+    const proofs = {
+      create({ houseId, mime, data, note = null }) {
+        return tx(() => {
+          ownHouse(houseId);
+          const pending = Number(db.prepare("SELECT COUNT(*) AS n FROM proofs WHERE tenant_id = ? AND house_id = ? AND status = 'pending'").get(tenantId, houseId).n);
+          if (pending >= MAX_PENDING_PER_HOUSE) throw new Error("Ya tienes comprobantes esperando revisión");
+          const id = newId("pf");
+          db.prepare("INSERT INTO proofs (id, tenant_id, house_id, mime, size, data, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            .run(id, tenantId, houseId, mime, data.length, data, String(note ?? "").trim().slice(0, 200) || null, nowIso());
+          return { id };
+        });
+      },
+      /** Waiting for the treasurer, oldest first. */
+      listPending: () => db.prepare(`SELECT ${PROOF_COLS} FROM proofs p JOIN houses h ON h.id = p.house_id WHERE p.tenant_id = ? AND p.status = 'pending' AND h.active = 1 ORDER BY p.created_at`).all(tenantId).map(proofMeta),
+      countPending: () => Number(db.prepare("SELECT COUNT(*) AS n FROM proofs p JOIN houses h ON h.id = p.house_id WHERE p.tenant_id = ? AND p.status = 'pending' AND h.active = 1").get(tenantId).n),
+      /** What a resident sees about their own recent uploads (no bytes). */
+      listForHouse(houseId) {
+        ownHouse(houseId);
+        return db.prepare(`SELECT ${PROOF_COLS} FROM proofs p JOIN houses h ON h.id = p.house_id WHERE p.tenant_id = ? AND p.house_id = ? ORDER BY p.created_at DESC LIMIT 5`).all(tenantId, houseId).map(proofMeta);
+      },
+      meta(id) {
+        const r = db.prepare(`SELECT ${PROOF_COLS} FROM proofs p JOIN houses h ON h.id = p.house_id WHERE p.id = ? AND p.tenant_id = ?`).get(id, tenantId);
+        return r ? proofMeta(r) : null;
+      },
+      /** The file itself, for the treasurer. */
+      file(id) {
+        const r = db.prepare("SELECT mime, data FROM proofs WHERE id = ? AND tenant_id = ?").get(id, tenantId);
+        return r ? { mime: r.mime, data: Buffer.from(r.data) } : null;
+      },
+      reject(id) {
+        const r = db.prepare("UPDATE proofs SET status = 'rejected', resolved_at = ? WHERE id = ? AND tenant_id = ? AND status = 'pending'").run(nowIso(), id, tenantId);
+        if (Number(r.changes) !== 1) throw new Error("Ese comprobante no está pendiente en este conjunto");
+      },
+    };
+
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, matchHouse, summary };
   }
 
   return { db, tenants, users, sessions, residentByToken, forTenant, close: () => db.close() };

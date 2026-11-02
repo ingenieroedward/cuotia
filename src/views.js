@@ -1,6 +1,6 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { MANUAL_LABELS, bankLabel, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
+import { MANUAL_LABELS, bankLabel, bogotaDay, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -66,6 +66,9 @@ const FLASH = {
   undoc: () => ({ kind: "ok", text: "Pago anulado: las cuotas que cubría volvieron a pendiente." }),
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
+  comprech: () => ({ kind: "ok", text: "Comprobante rechazado. El residente verá que no se pudo confirmar." }),
+  fechas: () => ({ kind: "ok", text: "Fechas de pago guardadas. Los residentes ya las ven y las cuotas se marcan vencidas después del último día." }),
+  fechasbad: () => ({ kind: "err", text: "Escribe días entre 1 y 28, y el último día no puede ser antes del primero." }),
   cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
   clave: () => ({ kind: "ok", text: "Contraseña cambiada. En los demás dispositivos tendrás que entrar de nuevo." }),
   clavemal: () => ({ kind: "err", text: "La contraseña actual no es correcta." }),
@@ -219,6 +222,11 @@ const STATUS = {
   pending: html`<span class="pill warn"><i></i>Pendiente</span>`,
 };
 
+/** A proof of payment as the treasurer sees it: the photo inline, a PDF as a link. */
+const proofView = (p) => p.mime === "application/pdf"
+  ? html`<a class="btn ghost small" href="/panel/comprobantes/${p.id}/archivo">Descargar el PDF</a>`
+  : html`<a href="/panel/comprobantes/${p.id}/archivo" target="_blank" rel="noopener"><img class="proof-img" src="/panel/comprobantes/${p.id}/archivo" alt="Comprobante de la casa ${p.houseCode}" loading="lazy"></a>`;
+
 const houseOptions = (houses) => houses.map((h) => html`<option value="${h.id}">Casa ${h.code} · ${h.residentName}</option>`);
 const payMethod = paymentMedium;
 
@@ -268,7 +276,7 @@ const PILLS = {
 };
 
 /** "oct", "nov"… with the year only when it isn't this year: the months a house owes, as small chips. */
-const monthChips = (group, period) => group.months.map((m) => html`<span class="mchip${m < period ? " bad" : ""}">${monthShort(m)}${m.slice(0, 4) === period.slice(0, 4) ? "" : ` ${m.slice(2, 4)}`}</span>`);
+const monthChips = (group, period) => group.months.map((m) => html`<span class="mchip${group.lateMonths.includes(m) ? " bad" : ""}">${monthShort(m)}${m.slice(0, 4) === period.slice(0, 4) ? "" : ` ${m.slice(2, 4)}`}</span>`);
 
 /** The state of a house in one pill: up to date, owes this month only, or owes earlier months. */
 function houseStatus(group, period) {
@@ -303,7 +311,7 @@ const panelHref = ({ mes, f, current }) => {
 };
 
 export function panelPage(args) {
-  const { tenant, user, csrf, flash, summary, dues, unassigned, houses, recent = [], filter = "", current, prevPeriod, nextPeriod, debts, addable = [] } = args;
+  const { tenant, user, csrf, flash, summary, dues, unassigned, proofs = [], houses, recent = [], filter = "", current, prevPeriod, nextPeriod, debts, addable = [] } = args;
   const { groups, totals } = debts;
   const byHouse = new Map(groups.map((g) => [g.house.id, g]));
   const selected = summary.period;
@@ -321,8 +329,8 @@ export function panelPage(args) {
 
   const rowPill = (d) => {
     if (d.status === "paid") return STATUS.paid;
-    if (d.period < current) return PILLS.late;
     const g = byHouse.get(d.houseId);
+    if (g?.dues.find((x) => x.id === d.id)?.late) return PILLS.late;
     return g?.overdueCount ? PILLS.debt(g.months.length) : STATUS.pending;
   };
 
@@ -393,12 +401,33 @@ export function panelPage(args) {
         ? html`<a class="stat late-card" href="/panel/cobros?f=atrasadas">
             <span class="eyebrow">Atrasadas</span>
             <span class="stat-number">${peso(totals.overdueCents)}</span>
-            <span class="small">${totals.overdueHouses} casa${totals.overdueHouses === 1 ? "" : "s"} deben meses anteriores</span>
+            <span class="small">${totals.overdueHouses} casa${totals.overdueHouses === 1 ? " tiene" : "s tienen"} cuotas vencidas</span>
             <span class="stat-link">Ver las atrasadas →</span>
           </a>`
         : ""}
     </div>
   </section>
+
+  ${proofs.length
+    ? html`<section class="card" id="comprobantes">
+        <h2>Comprobantes por revisar <span class="count">${proofs.length}</span></h2>
+        <p class="muted small">Los residentes los suben desde su enlace. Revisa que el valor y el banco coincidan y registra el pago: la cuota queda pagada con el comprobante guardado.</p>
+        <ul class="list stack">${proofs.map((pf) => {
+          const g = byHouse.get(pf.houseId);
+          return html`<li class="proof">
+            <div class="row"><span><b>Casa ${pf.houseCode} · ${pf.residentName}</b><small class="muted">${shortDateTime(pf.createdAt)}${pf.note ? ` · “${pf.note}”` : ""}</small></span>${g ? html`<b>Debe ${peso(g.totalCents)}</b>` : html`<span class="pill ok"><i></i>Al día</span>`}</div>
+            ${proofView(pf)}
+            <div class="actions">
+              ${g ? html`<a class="btn small" href="/panel/pagos/nuevo?casa=${pf.houseId}&amp;comprobante=${pf.id}&amp;todas=1">Registrar pago</a>` : html`<span class="muted small">Esta casa no debe nada: no hay cuota que pagar.</span>`}
+              <details class="undo"><summary>Rechazar</summary>
+                <p class="muted small">El comprobante no se borra, pero sale de esta lista y el residente verá que no se pudo confirmar.</p>
+                <form method="post" action="/panel/comprobantes/${pf.id}/rechazar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, rechazar</button></form>
+              </details>
+            </div>
+          </li>`;
+        })}</ul>
+      </section>`
+    : ""}
 
   ${unassigned.length
     ? html`<section class="card" id="por-asignar">
@@ -428,8 +457,8 @@ export function panelPage(args) {
         </div>
       </div>
       ${dues.length === 0
-        ? html`<p class="muted">Aún no hay cuotas para este mes.</p>
-          ${selected === current ? html`<form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn" type="submit">Generar cuotas de ${periodLabel(selected)}</button></form>` : ""}`
+        ? html`<p class="muted">Aún no hay cuotas para ${periodLabel(selected)}.${selected === current ? "" : " Si en ese mes ya se cobraba, créalas y luego registra los pagos con su fecha."}</p>
+          <form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<input type="hidden" name="mes" value="${selected}"><button class="btn" type="submit">Generar cuotas de ${periodLabel(selected)}</button></form>`
         : html`${selected === current && addable.length && dues.length
           ? html`<details class="undo addmonth-all">
               <summary>¿Falta un mes anterior (por ejemplo octubre)?</summary>
@@ -502,7 +531,7 @@ export function cobrosPage(args) {
     <div class="stat late-card grow${totals.overdueDues ? "" : " calm"}">
       <span class="eyebrow">Atrasadas</span>
       <span class="stat-number big">${peso(totals.overdueCents)}</span>
-      <span class="small">${totals.overdueHouses ? `${totals.overdueHouses} casa${totals.overdueHouses === 1 ? "" : "s"} deben meses anteriores` : "Nadie debe meses anteriores."}</span>
+      <span class="small">${totals.overdueHouses ? `${totals.overdueHouses} casa${totals.overdueHouses === 1 ? " tiene" : "s tienen"} cuotas vencidas` : "Nadie tiene cuotas vencidas."}</span>
     </div>
   </section>
 
@@ -533,6 +562,17 @@ export function casasPage(args) {
   <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}${debts.groups.length ? ` · ${debts.groups.length} con deuda` : ""}</span></div>
   ${flashBox(flash)}
 
+  <details class="card add-house"${houses.length === 0 || flash?.kind === "err" ? raw(" open") : ""}>
+    <summary><span class="btn small">+ Agregar casa</span><a class="btn ghost small" href="/panel/casas/importar">Importar varias casas</a></summary>
+    <form class="grid-form" method="post" action="/panel/casas">
+      ${csrfField(csrf)}
+      <label>Código<input type="text" name="code" maxlength="12" required placeholder="14"></label>
+      <label>Residente<input type="text" name="residente" maxlength="80" required placeholder="Sandra Duque"></label>
+      <label>Celular (opcional)<input type="tel" name="telefono" maxlength="20" inputmode="tel" placeholder="3001234567"></label>
+      <button class="btn" type="submit">Agregar y ver enlace</button>
+    </form>
+  </details>
+
   <section class="card">
     <div class="row wrap"><h2>Listado</h2>
       <form class="searchbar" method="get" action="/panel/casas" role="search">
@@ -559,17 +599,6 @@ export function casasPage(args) {
         })}</ul><p class="muted" id="sin-casas" hidden>Ninguna casa coincide.</p>`}
   </section>
 
-  <section class="card">
-    <div class="row wrap"><h2>Agregar casa</h2><a class="btn ghost small" href="/panel/casas/importar">Importar varias casas</a></div>
-    <form class="grid-form" method="post" action="/panel/casas">
-      ${csrfField(csrf)}
-      <label>Código<input type="text" name="code" maxlength="12" required placeholder="14"></label>
-      <label>Residente<input type="text" name="residente" maxlength="80" required placeholder="Sandra Duque"></label>
-      <label>Celular (opcional)<input type="tel" name="telefono" maxlength="20" inputmode="tel" placeholder="3001234567"></label>
-      <button class="btn" type="submit">Agregar y ver enlace</button>
-    </form>
-  </section>
-
   ${inactive.length
     ? html`<section class="card">
         <h2>Casas desactivadas</h2>
@@ -587,7 +616,7 @@ export function casasPage(args) {
 
 /** Register a payment by hand. Step 1: who owes (a list you tap). Step 2: which months, how it was paid, when. */
 export function pagoManualPage(args) {
-  const { csrf, flash, debts, current, selected, missing = [], preselect = [], all = false, today, q = "" } = args;
+  const { csrf, flash, debts, current, selected, proof = null, missing = [], preselect = [], all = false, today, q = "" } = args;
   const monthButton = (m) => `+ ${monthName(m)}${m.slice(0, 4) === current.slice(0, 4) ? "" : ` ${m.slice(0, 4)}`}`;
   const methods = Object.entries(MANUAL_LABELS);
   const list = debts.groups.filter((g) => matchesSearch(q, `${g.house.code} ${g.house.residentName}`));
@@ -613,9 +642,12 @@ export function pagoManualPage(args) {
         <form class="stack-form" method="post" action="/panel/pagos/nuevo">
           ${csrfField(csrf)}
           <input type="hidden" name="casa" value="${selected.house.id}">
+          ${proof && proof.houseId === selected.house.id
+            ? html`<input type="hidden" name="comprobante" value="${proof.id}"><div class="proof-box"><span class="eyebrow dim">Comprobante que subió ${proof.residentName}</span>${proofView(proof)}${proof.note ? html`<p class="muted small">“${proof.note}”</p>` : ""}</div>`
+            : ""}
           <fieldset>
             <legend>¿Qué cuotas cubre?</legend>
-            ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${checked(d, i) ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}${d.period < current ? html` <span class="pill bad small"><i></i>Atrasada</span>` : ""}</span><b>${peso(d.amountCents)}</b></label>`)}
+            ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${checked(d, i) ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}${d.late ? html` <span class="pill bad small"><i></i>${d.period < current ? "Atrasada" : "Vencida"}</span>` : ""}</span><b>${peso(d.amountCents)}</b></label>`)}
             ${selected.dues.length > 1 ? html`<a class="small" href="/panel/pagos/nuevo?casa=${selected.house.id}&amp;todas=1">Marcar todas (${peso(selected.totalCents)})</a>` : ""}
             <small class="muted">Se registra la suma de las cuotas marcadas, exacta. Si pagó otro valor, anótalo en la nota y avísale al vecino.</small>
           </fieldset>
@@ -676,6 +708,17 @@ export function ajustesPage(args) {
       ${csrfField(csrf)}
       <label>Secreto del webhook<input type="password" name="secret" minlength="8" maxlength="200" required autocomplete="off" placeholder="${tenant.pagoradarConfigured ? "•••••••• (pega uno nuevo para cambiarlo)" : "Pega el secreto de pagoradar"}"></label>
       <button class="btn" type="submit">Guardar secreto</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Fechas de pago</h2>
+    <p class="muted small">Del 1 al 28. Los residentes ven “Paga del 1 al 10”. Pasado el último día, la cuota del mes se marca como <b>vencida</b> en Por cobrar y en el Resumen. Aun así, los pagos se reciben y se asignan en cualquier día. Déjalos vacíos si no quieres fechas.</p>
+    <form class="grid-form" method="post" action="/panel/ajustes/fechas">
+      ${csrfField(csrf)}
+      <label>Se empieza a pagar el día<input type="number" name="desde" min="1" max="28" inputmode="numeric" value="${tenant.openDay ?? ""}" placeholder="1"></label>
+      <label>Último día para pagar<input type="number" name="hasta" min="1" max="28" inputmode="numeric" value="${tenant.dueDay ?? ""}" placeholder="10"></label>
+      <button class="btn" type="submit">Guardar fechas</button>
     </form>
   </section>
 
@@ -771,6 +814,7 @@ export function pagoItem(p, csrf) {
       </span>
       <span class="amount"><b>${peso(p.amountCents)}</b>${PAY_STATUS[p.status]}</span>
     </div>
+    ${p.proof ? html`<a class="small" href="/panel/comprobantes/${p.proof.id}/archivo" target="_blank" rel="noopener">Ver comprobante</a>` : ""}
     ${p.status === "assigned" ? undoControl(p, csrf) : html`<a class="small" href="/panel#por-asignar">Asignar a una casa →</a>`}
   </li>`;
 }
@@ -912,9 +956,49 @@ export function linkPage(args) {
 
 const firstName = (full) => String(full ?? "").trim().split(/\s+/)[0] || "vecino";
 
-export function residentPage({ tenant, house, dues, period, token }) {
+/** "Paga del 1 al 10 de noviembre" (or just one end), for the resident; "" when the conjunto set no dates. */
+export function paymentWindow(tenant, period) {
+  const month = periodLabel(period).split(" ")[0];
+  if (tenant.openDay && tenant.dueDay) return `Paga del ${tenant.openDay} al ${tenant.dueDay} de ${month}`;
+  if (tenant.dueDay) return `Paga hasta el ${tenant.dueDay} de ${month}`;
+  if (tenant.openDay) return `Se paga desde el ${tenant.openDay} de ${month}`;
+  return "";
+}
+
+const PROOF_STATUS = {
+  pending: html`<span class="pill warn"><i></i>En revisión</span>`,
+  accepted: html`<span class="pill ok"><i></i>Confirmado</span>`,
+  rejected: html`<span class="pill bad"><i></i>No se pudo confirmar</span>`,
+};
+
+/** Upload a photo or PDF of the payment. It has no auto-refresh on purpose: a refresh would clear the chosen file. */
+export function residentProofPage({ tenant, house, dues, token, proofs = [], error = "", sent = false }) {
+  const owed = dues.filter((d) => d.status === "pending").reduce((s, d) => s + d.amountCents, 0);
+  return layout("Subir comprobante", html`
+<main class="narrow res">
+  <header class="backbar"><a href="/r/${token}" aria-label="Volver">${icon("back", 24, 2.2)}</a><h1>Subir comprobante</h1></header>
+  <section class="card">
+    ${sent ? html`<p class="flash ok" role="status">¡Listo! El tesorero revisará tu comprobante y registrará el pago.</p>` : ""}
+    ${error ? html`<p class="flash err" role="alert">${error}</p>` : ""}
+    <p class="muted">Casa ${house.code} · ${tenant.name}${owed ? html` · debes <b>${peso(owed)}</b>` : ""}</p>
+    <form class="stack-form" method="post" action="/r/${token}/comprobante" enctype="multipart/form-data">
+      <label>Foto o PDF del comprobante (máximo 5 MB)<input type="file" name="archivo" accept="image/jpeg,image/png,image/webp,application/pdf" required></label>
+      <label>Nota para el tesorero (opcional)<input type="text" name="nota" maxlength="200" placeholder="Pagué desde la cuenta de mi esposo"></label>
+      <button class="btn big" type="submit">Enviar comprobante</button>
+    </form>
+    <p class="muted small">Solo el tesorero de ${tenant.name} puede verlo. El pago queda registrado cuando él lo confirme.</p>
+  </section>
+  ${proofs.length
+    ? html`<section class="card"><h2>Tus comprobantes</h2><ul class="list">${proofs.map((p) => html`<li class="due"><span class="due-text"><b>${shortDateTime(p.createdAt)}</b><small class="muted">${p.mime === "application/pdf" ? "PDF" : "Foto"}</small></span>${PROOF_STATUS[p.status]}</li>`)}</ul></section>`
+    : ""}
+</main>`, { manifest: `/r/${token}/manifest.webmanifest` });
+}
+
+export function residentPage({ tenant, house, dues, period, token, proofs = [], day = bogotaDay() }) {
   const open = dues.filter((d) => d.period === period && d.status === "pending");
   const behind = dues.filter((d) => d.period < period && d.status === "pending");
+  const windowText = paymentWindow(tenant, period);
+  const overdue = behind.length > 0 || (tenant.dueDay != null && open.length > 0 && day > tenant.dueDay);
   const owed = [...open, ...behind];
   const total = owed.reduce((s, d) => s + d.amountCents, 0);
   return layout("Mi cuota", html`
@@ -925,14 +1009,18 @@ export function residentPage({ tenant, house, dues, period, token }) {
   <section class="hero" aria-label="Tu cuota">
     <div class="row">
       <span class="eyebrow">${owed.length ? "Tu cuota" : "Vigilancia"} · ${periodLabel(period).split(" ")[0]}</span>
-      ${owed.length ? STATUS.pending : STATUS.paid}
+      ${owed.length ? (overdue ? html`<span class="pill bad"><i></i>Vencida</span>` : STATUS.pending) : STATUS.paid}
     </div>
     ${owed.length
       ? html`<span class="hero-number">${peso(total)}</span>
+        ${windowText ? html`<span class="hero-sub">${windowText}</span>` : ""}
         <span class="hero-sub">${behind.length ? `Incluye ${behind.length} mes${behind.length === 1 ? "" : "es"} anterior${behind.length === 1 ? "" : "es"}` : [...new Set(owed.map((d) => d.conceptName))].join(" + ")}</span>
         <a class="btn lime big" href="/r/${token}/pagar">Pagar ahora ${icon("arrow", 20, 2.5)}</a>`
       : html`<span class="hero-number">Al día</span><span class="hero-sub">No tienes cuotas pendientes. ¡Gracias!</span>`}
   </section>
+
+  ${proofs.some((p) => p.status === "pending") ? html`<p class="flash info" role="status">Enviaste un comprobante y está en revisión. <a href="/r/${token}/comprobante">Ver</a></p>` : ""}
+  ${proofs[0]?.status === "rejected" && owed.length ? html`<p class="flash err" role="status">El tesorero no pudo confirmar tu último comprobante. Revisa el valor o <a href="/r/${token}/comprobante">súbelo de nuevo</a>.</p>` : ""}
 
   <section class="card">
     <h2>Tus pagos</h2>
@@ -948,7 +1036,7 @@ export function residentPage({ tenant, house, dues, period, token }) {
 }
 
 /** How to pay: the Bre-B key to copy and the exact amount. It refreshes itself so it turns into "Al día" once the bank confirms. */
-export function residentPayPage({ tenant, house, dues, token }) {
+export function residentPayPage({ tenant, house, dues, token, proofs = [] }) {
   const owed = dues.filter((d) => d.status === "pending");
   const total = owed.reduce((s, d) => s + d.amountCents, 0);
   return layout("Pagar", html`
@@ -974,6 +1062,12 @@ export function residentPayPage({ tenant, house, dues, token }) {
         </ol>
       </section>`
     : html`<section class="card"><p>El tesorero aún no ha configurado cómo pagar. Escríbele para que te indique.</p></section>`}
+
+  <section class="card">
+    ${proofs.some((p) => p.status === "pending")
+      ? html`<p>Tu comprobante está <b>en revisión</b>. <a href="/r/${token}/comprobante">Ver</a></p>`
+      : html`<p><b>¿Ya pagaste?</b> Sube la foto del comprobante para que el tesorero lo confirme más rápido.</p><a class="btn ghost" href="/r/${token}/comprobante">Subir comprobante</a>`}
+  </section>
 
   <p class="waiting" role="status"><span class="pulse"></span>${tenant.pagoradarConfigured
     ? "Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme."

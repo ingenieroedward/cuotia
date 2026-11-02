@@ -43,6 +43,11 @@ export function currentPeriod(date = new Date()) {
   return `${get("year")}-${get("month")}`;
 }
 
+/** The day of the month (1-31) it is right now in Colombia. */
+export function bogotaDay(date = new Date()) {
+  return Number(new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota", day: "numeric" }).format(date));
+}
+
 const MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 /** Lower case, no accents: "Pérez" and "perez" are the same when searching. Keep in step with `fold` in public/app.js. */
 export const foldText = (text) => String(text ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();

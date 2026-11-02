@@ -1082,7 +1082,7 @@ test("Por cobrar: quién debe, desde cuándo y cuánto, con los botones para act
   assert.match(page, /<h1>Por cobrar<\/h1>/);
   assert.match(page, /\$90\.000/, "total: 60.000 de Sandra + 30.000 de Diana");
   assert.match(page, /2 casas con cuotas pendientes/);
-  assert.match(page, /1 casa deben meses anteriores/);
+  assert.match(page, /1 casa tiene cuotas vencidas/);
   assert.ok(page.indexOf("Sandra Duque Arias") < page.indexOf("Diana Pérez"), "quien arrastra meses va primero");
   assert.doesNotMatch(page, /Carlos Mejía/, "ni casas de otro conjunto");
   const sandra = page.slice(page.indexOf("Sandra Duque Arias"), page.indexOf("Diana Pérez"));
@@ -1133,7 +1133,7 @@ test("Resumen: elegir el mes, ver lo atrasado y registrar el pago desde la propi
 
   // The arrears card and the "collect first" list.
   assert.match(page, /Atrasadas/);
-  assert.match(page, /\$30\.000<\/span>\s*<span class="small">1 casa deben meses anteriores/);
+  assert.match(page, /\$30\.000<\/span>\s*<span class="small">1 casa tiene cuotas vencidas/);
   assert.match(page, /href="\/panel\/cobros\?f=atrasadas"/);
   assert.match(page, /Para cobrar primero/);
   assert.match(page, /Ver quién debe/);
@@ -1367,4 +1367,116 @@ test("sin JavaScript la búsqueda del servidor también ignora acentos y acepta 
     assert.deepEqual(await find("PEREZ"), ["Diana Pérez"], `${path} PEREZ`);
     assert.deepEqual(await find("zzz"), [], `${path} zzz`);
   }
+}));
+
+test("fechas de pago: se guardan por conjunto, se validan y el residente las ve", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const save = (fields) => form(`${s.base}/panel/ajustes/fechas`, { _csrf: csrf, ...fields }, cookie);
+
+  assert.match((await save({ desde: "1", hasta: "10" })).headers.get("location"), /m=fechas$/);
+  const tenants = s.store.tenants;
+  assert.deepEqual([tenants.get(s.a.id).openDay, tenants.get(s.a.id).dueDay], [1, 10]);
+  assert.deepEqual([tenants.get(s.b.id).openDay, tenants.get(s.b.id).dueDay], [null, null], "el otro conjunto no cambia");
+
+  const ajustes = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  assert.match(ajustes, /name="hasta"[^>]*value="10"/);
+  s.A.dues.generate(currentPeriod());
+  s.B.dues.generate(currentPeriod());
+  const resident = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
+  assert.match(resident, /Paga del 1 al 10 de /);
+  assert.doesNotMatch(await (await fetch(`${s.base}/r/${s.b01.accessToken}`)).text(), /Paga del/);
+
+  for (const bad of [{ desde: "11", hasta: "10" }, { desde: "0", hasta: "10" }, { desde: "1", hasta: "29" }, { desde: "x", hasta: "5" }, { desde: "1.5", hasta: "5" }]) {
+    assert.match((await save(bad)).headers.get("location"), /m=fechasbad/, JSON.stringify(bad));
+  }
+  assert.equal(tenants.get(s.a.id).dueDay, 10, "los intentos malos no cambiaron nada");
+  assert.equal((await form(`${s.base}/panel/ajustes/fechas`, { desde: "2", hasta: "3" }, cookie)).status, 403, "sin token no se guarda");
+
+  assert.match((await save({ desde: "", hasta: "" })).headers.get("location"), /m=fechas$/);
+  assert.equal(tenants.get(s.a.id).dueDay, null, "vacío = sin fechas");
+}));
+
+const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("imagen de prueba")]);
+const uploadProof = (s, token, bytes, { name = "foto.png", type = "image/png", nota = "", headers = {} } = {}) => {
+  const fd = new FormData();
+  fd.append("nota", nota);
+  fd.append("archivo", new Blob([bytes], { type }), name);
+  return fetch(`${s.base}/r/${token}/comprobante`, { method: "POST", body: fd, redirect: "manual", headers });
+};
+
+test("comprobante: el residente lo sube, el tesorero lo ve y lo confirma al registrar el pago", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  s.B.dues.generate(currentPeriod());
+  const page = await (await fetch(`${s.base}/r/${s.a14.accessToken}/comprobante`)).text();
+  assert.match(page, /enctype="multipart\/form-data"/);
+  assert.doesNotMatch(page, /http-equiv="refresh"/, "sin refresco: borraría el archivo elegido");
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text(), /Subir comprobante/);
+
+  // Not a photo or PDF (HTML, SVG), empty and missing files are refused; nothing is stored.
+  assert.equal((await uploadProof(s, s.a14.accessToken, "<script>alert(1)</script>", { name: "x.png", type: "image/png" })).status, 400);
+  assert.equal((await uploadProof(s, s.a14.accessToken, "<svg></svg>", { name: "x.svg", type: "image/svg+xml" })).status, 400);
+  assert.equal((await uploadProof(s, s.a14.accessToken, Buffer.alloc(0))).status, 400);
+  assert.equal((await uploadProof(s, s.a14.accessToken, Buffer.concat([PNG_BYTES, Buffer.alloc(5 * 1024 * 1024)]))).status, 413, "más de 5 MB");
+  assert.equal(s.A.proofs.countPending(), 0);
+  assert.equal((await uploadProof(s, s.a14.accessToken, PNG_BYTES, { headers: { origin: "https://malo.example" } })).status, 403);
+  assert.equal((await uploadProof(s, "x".repeat(30), PNG_BYTES)).status, 404);
+
+  const ok = await uploadProof(s, s.a14.accessToken, PNG_BYTES, { nota: "Pagué por Nequi" });
+  assert.equal(ok.status, 303);
+  assert.match(ok.headers.get("location"), /\/comprobante\?m=enviado$/);
+  assert.equal(s.A.proofs.countPending(), 1);
+  assert.equal(s.B.proofs.countPending(), 0, "el otro conjunto no lo tiene");
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /está en revisión/);
+
+  // The treasurer sees it, with the file served locked down.
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const panelHtml = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
+  assert.match(panelHtml, /Comprobantes por revisar/);
+  assert.match(panelHtml, /Pagué por Nequi/);
+  const [pf] = s.A.proofs.listPending();
+  const file = await fetch(`${s.base}/panel/comprobantes/${pf.id}/archivo`, { headers: { cookie } });
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get("content-type"), "image/png");
+  assert.equal(file.headers.get("x-content-type-options"), "nosniff");
+  assert.match(file.headers.get("content-security-policy"), /default-src 'none'/);
+  assert.ok(Buffer.from(await file.arrayBuffer()).equals(PNG_BYTES));
+  const anon = await fetch(`${s.base}/panel/comprobantes/${pf.id}/archivo`, { redirect: "manual" });
+  assert.equal(anon.headers.get("location"), "/login", "sin sesión no hay archivo");
+
+  // The other conjunto's treasurer can neither see nor reject it.
+  const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  assert.equal((await fetch(`${s.base}/panel/comprobantes/${pf.id}/archivo`, { headers: { cookie: other.cookie } })).status, 404);
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes");
+  const bad = await form(`${s.base}/panel/comprobantes/${pf.id}/rechazar`, { _csrf: otherCsrf }, other.cookie);
+  assert.ok([302, 303, 404, 500].includes(bad.status));
+  assert.equal(s.A.proofs.countPending(), 1, "no lo rechazó");
+
+  // Recording the payment with the proof attached accepts it; undoing the payment puts it back in the queue.
+  const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
+  const form1 = await (await fetch(`${s.base}/panel/pagos/nuevo?casa=${s.a14.house.id}&comprobante=${pf.id}`, { headers: { cookie } })).text();
+  assert.ok(form1.includes(`name="comprobante" value="${pf.id}"`));
+  const due = s.A.dues.listForHouse(s.a14.house.id)[0];
+  const pay = new URLSearchParams({ _csrf: csrf, casa: s.a14.house.id, medio: "transfer", fecha: `${currentPeriod()}-01`, comprobante: pf.id });
+  pay.append("cuota", due.id);
+  const paid = await post(`${s.base}/panel/pagos/nuevo`, pay, { ...FORM, cookie });
+  assert.match(paid.headers.get("location"), /m=manual$/);
+  assert.equal(s.A.proofs.meta(pf.id).status, "accepted");
+  const paymentId = s.A.proofs.meta(pf.id).paymentId;
+  assert.match(await (await fetch(`${s.base}/panel/pagos`, { headers: { cookie } })).text(), /Ver comprobante/);
+
+  await form(`${s.base}/panel/pagos/${paymentId}/deshacer`, { _csrf: csrf }, cookie);
+  assert.equal(s.A.proofs.meta(pf.id).status, "pending", "al deshacer el pago, el comprobante vuelve a la bandeja");
+
+  // Rejecting one also tells the resident.
+  assert.match((await form(`${s.base}/panel/comprobantes/${pf.id}/rechazar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=comprech/);
+  assert.equal(s.A.proofs.meta(pf.id).status, "rejected");
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /no pudo confirmar/);
+
+  // A proof can't back a payment of another house.
+  const again = s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES });
+  assert.throws(() => s.A.payments.recordManual({ houseId: s.a03.house.id, dueIds: [s.A.dues.listForHouse(s.a03.house.id)[0].id], proofId: again.id }), /comprobante/);
+  assert.throws(() => s.B.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }), /no existe|otro conjunto|casa/i);
+  for (let i = 0; i < 3; i++) try { s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }); } catch {}
+  assert.throws(() => s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }), /esperando revisión/);
 }));
