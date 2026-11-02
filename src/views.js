@@ -569,7 +569,7 @@ export function casasPage(args) {
   ${flashBox(flash)}
 
   <details class="card add-house"${houses.length === 0 || flash?.kind === "err" ? raw(" open") : ""}>
-    <summary><span class="btn small">+ Agregar casa</span><a class="btn ghost small" href="/panel/casas/importar">Importar varias casas</a></summary>
+    <summary><span class="btn small">+ Agregar casa</span><a class="btn ghost small" href="/panel/casas/importar">Importar varias</a></summary>
     <form class="grid-form" method="post" action="/panel/casas">
       ${csrfField(csrf)}
       <label>Código<input type="text" name="code" maxlength="12" required placeholder="14"></label>
@@ -875,8 +875,8 @@ export function pagosPage(args) {
           <option value="unassigned"${filters.estado === "unassigned" ? raw(" selected") : ""}>Por asignar</option>
         </select>
       </label>
-      <label>Buscar<input type="text" name="q" value="${filters.q ?? ""}" maxlength="60" placeholder="Nombre, casa o residente"></label>
-      <button class="btn" type="submit">Filtrar</button>
+      <label class="wide">Buscar<input type="text" name="q" value="${filters.q ?? ""}" maxlength="60" placeholder="Nombre, casa o residente"></label>
+      <button class="btn wide" type="submit">Filtrar</button>
     </form>
     <div class="row wrap">
       <span class="muted small"><b>${result.total}</b> pago${result.total === 1 ? "" : "s"} · <b>${peso(result.totalCents)}</b></span>
