@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 import { createApp } from "../src/app.js";
 import { encryptSecret, hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
 import { bogotaDateTime, currentPeriod } from "../src/text.js";
@@ -868,4 +870,190 @@ test("sin pagoradar todo funciona a mano: se registran los pagos y el residente 
   const panel = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
   assert.match(panel, /Registrar pago/);
   assert.match(panel, /\$30\.000/);
+}));
+
+const pngSize = (bytes) => [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
+
+test("favicon e íconos: se sirven con su tipo y son PNG del tamaño que dicen", () => withServer(async (s) => {
+  for (const [path, size] of [["favicon-32.png", 32], ["favicon-48.png", 48], ["apple-touch-icon.png", 180], ["icon-192.png", 192], ["icon-512.png", 512], ["maskable-512.png", 512]]) {
+    const res = await fetch(`${s.base}/static/icons/${path}`);
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers.get("content-type"), "image/png");
+    const bytes = Buffer.from(await res.arrayBuffer());
+    assert.equal(bytes.subarray(1, 4).toString(), "PNG", "llega intacto, no convertido a texto");
+    assert.deepEqual(pngSize(bytes), [size, size], path);
+  }
+  for (const path of ["/static/icons/icon.svg", "/static/icons/maskable.svg", "/favicon.svg"]) {
+    const res = await fetch(`${s.base}${path}`);
+    assert.equal(res.headers.get("content-type"), "image/svg+xml", path);
+    assert.match(await res.text(), /<svg[^>]+viewBox="0 0 512 512"/);
+  }
+  const ico = await fetch(`${s.base}/favicon.ico`);
+  assert.equal(ico.headers.get("content-type"), "image/x-icon");
+  const bytes = Buffer.from(await ico.arrayBuffer());
+  assert.deepEqual([bytes.readUInt16LE(0), bytes.readUInt16LE(2), bytes.readUInt16LE(4)], [0, 1, 2], "cabecera ICO con dos imágenes");
+  for (let i = 0; i < 2; i++) {
+    const [width, , , , , bits, length, offset] = [bytes[6 + i * 16], bytes[7 + i * 16], bytes[8 + i * 16], bytes[9 + i * 16], bytes.readUInt16LE(10 + i * 16), bytes.readUInt16LE(12 + i * 16), bytes.readUInt32LE(14 + i * 16), bytes.readUInt32LE(18 + i * 16)];
+    assert.equal(bits, 32);
+    assert.deepEqual(pngSize(bytes.subarray(offset, offset + length)), [width, width], "cada imagen del .ico es un PNG del tamaño anunciado");
+  }
+}));
+
+test("manifiesto del tesorero: instalable, con íconos que existen y accesos directos reales", () => withServer(async (s) => {
+  const res = await fetch(`${s.base}/manifest.webmanifest`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type"), /application\/manifest\+json/);
+  const m = await res.json();
+  assert.deepEqual([m.name, m.short_name, m.display, m.start_url, m.scope], ["Cuotia", "Cuotia", "standalone", "/panel", "/"]);
+  assert.equal(m.theme_color, "#0b1b2b");
+  assert.equal(m.background_color, "#f3f5f8");
+  const pngs = m.icons.filter((i) => i.type === "image/png");
+  assert.ok(pngs.some((i) => i.sizes === "192x192" && i.purpose === "any"), "ícono de 192 para instalar");
+  assert.ok(pngs.some((i) => i.sizes === "512x512" && i.purpose === "any"), "ícono de 512 para la pantalla de inicio");
+  assert.ok(pngs.some((i) => i.purpose === "maskable"), "versión que el celular puede recortar");
+  for (const icon of m.icons) {
+    const r = await fetch(`${s.base}${icon.src}`);
+    assert.equal(r.status, 200, icon.src);
+    assert.equal(r.headers.get("content-type"), icon.type);
+    if (icon.type === "image/png") assert.deepEqual(pngSize(Buffer.from(await r.arrayBuffer())), icon.sizes.split("x").map(Number), `${icon.src} mide lo que dice`);
+  }
+  for (const sc of m.shortcuts) assert.equal((await fetch(`${s.base}${sc.url}`, { redirect: "manual" })).status, 303, `${sc.url} existe (pide iniciar sesión)`);
+}));
+
+test("las páginas enlazan el ícono, el manifiesto y los datos para instalar en iPhone y Android", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const pages = [
+    await (await fetch(`${s.base}/login`)).text(),
+    await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text(),
+    await (await fetch(`${s.base}/offline`)).text(),
+  ];
+  for (const html of pages) {
+    assert.match(html, /<link rel="manifest" href="\/manifest\.webmanifest">/);
+    assert.match(html, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
+    assert.match(html, /rel="icon" href="\/static\/icons\/favicon-32\.png"/);
+    assert.match(html, /<link rel="apple-touch-icon" href="\/static\/icons\/apple-touch-icon\.png">/);
+    assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+    assert.match(html, /<meta name="apple-mobile-web-app-title" content="Cuotia">/);
+    assert.match(html, /<meta name="theme-color" content="#0B1B2B">/);
+  }
+}));
+
+test("cada residente instala su propia app, que abre en su enlace; nada de otras casas", () => withServer(async (s) => {
+  const token = s.a14.accessToken;
+  const res = await fetch(`${s.base}/r/${token}/manifest.webmanifest`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type"), /application\/manifest\+json/);
+  const m = await res.json();
+  assert.deepEqual([m.name, m.short_name, m.start_url, m.scope, m.id, m.display], ["Cuotia · Casa 14", "Casa 14", `/r/${token}`, `/r/${token}`, `/r/${token}`, "standalone"]);
+  assert.ok(m.icons.some((i) => i.sizes === "192x192") && m.icons.some((i) => i.sizes === "512x512"));
+  assert.ok(m.start_url.startsWith(m.scope), "la página de inicio cae dentro del alcance");
+  for (const sub of ["/pagar", "/recibo/du_1"]) assert.ok(`/r/${token}${sub}`.startsWith(m.scope), `${sub} sigue dentro de la app`);
+  assert.doesNotMatch(JSON.stringify(m), /Diana|Carlos|Los Robles/);
+
+  s.A.dues.generate(currentPeriod());
+  for (const path of ["", "/pagar"]) {
+    const page = await (await fetch(`${s.base}/r/${token}${path}`)).text();
+    assert.ok(page.includes(`<link rel="manifest" href="/r/${token}/manifest.webmanifest">`), `la página ${path || "de inicio"} enlaza su propio manifiesto`);
+  }
+  const due = s.A.dues.listForHouse(s.a14.house.id)[0];
+  s.A.payments.recordCash(s.a14.house.id);
+  assert.ok((await (await fetch(`${s.base}/r/${token}/recibo/${due.id}`)).text()).includes(`/r/${token}/manifest.webmanifest`), "y el recibo también");
+
+  assert.equal((await fetch(`${s.base}/r/${"x".repeat(32)}/manifest.webmanifest`)).status, 404);
+  s.A.houses.setActive(s.a14.house.id, false);
+  assert.equal((await fetch(`${s.base}/r/${token}/manifest.webmanifest`)).status, 404, "una casa desactivada ya no se instala");
+}));
+
+test("sin conexión: la página de aviso es pública y no lleva datos de nadie", () => withServer(async (s) => {
+  const res = await fetch(`${s.base}/offline`);
+  assert.equal(res.status, 200);
+  const page = await res.text();
+  assert.match(page, /Sin conexión/);
+  assert.match(page, /data-reload/);
+  assert.doesNotMatch(page, /Jardines|Sandra|\/r\//);
+}));
+
+/** Runs public/sw.js in a sandbox with a fake cache and network, so its rules can be checked without a browser. */
+function loadWorker() {
+  const listeners = {};
+  const saved = new Map(); // what the fake Cache Storage holds, by URL
+  const log = { put: [], deleted: [], added: [] };
+  const caches = {
+    open: async () => ({ addAll: async (urls) => { log.added.push(...urls); }, put: async (req) => { log.put.push(req.url); saved.set(req.url, { fromCache: true }); } }),
+    match: async (req) => saved.get(typeof req === "string" ? `https://cuotia.test${req}` : req.url),
+    keys: async () => ["cuotia-static-v0", "cuotia-static-v1", "cuotia-static-v2", "ajeno"],
+    delete: async (key) => { log.deleted.push(key); return true; },
+  };
+  const net = { online: true };
+  const context = {
+    self: { addEventListener: (type, fn) => { listeners[type] = fn; }, location: { origin: "https://cuotia.test" }, skipWaiting: () => { log.skipped = true; }, clients: { claim: async () => { log.claimed = true; } } },
+    caches, URL, Promise,
+    fetch: async (req) => { if (!net.online) throw new TypeError("sin red"); return { ok: true, fromNetwork: true, url: req.url, clone() { return this; } }; },
+  };
+  vm.createContext(context);
+  vm.runInContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), context);
+  const fetchEvent = (url, { method = "GET", mode = "no-cors" } = {}) => {
+    const event = { request: { url, method, mode }, respondWith(p) { this.answer = p; } };
+    listeners.fetch(event);
+    return event;
+  };
+  return { listeners, saved, log, net, fetchEvent, flush: () => new Promise((r) => setTimeout(r, 0)) };
+}
+
+test("service worker: nunca guarda páginas ni formularios; sin red muestra la página de aviso", async () => {
+  const w = loadWorker();
+  w.saved.set("https://cuotia.test/offline", { offlinePage: true });
+  const origin = "https://cuotia.test";
+
+  // Pages (navigation): network first, and NEVER written to the cache.
+  const page = w.fetchEvent(`${origin}/r/TOKEN-SECRETO-1234567890/pagar`, { mode: "navigate" });
+  assert.equal((await page.answer).fromNetwork, true);
+  await w.flush();
+  assert.deepEqual(w.log.put, [], "una página con datos personales no se guarda");
+  w.net.online = false;
+  assert.deepEqual(await w.fetchEvent(`${origin}/panel`, { mode: "navigate" }).answer, { offlinePage: true }, "sin red, la página de aviso");
+  w.net.online = true;
+
+  // Anything that is not a plain GET, or not ours, is left alone: payments, logins and other sites go straight through.
+  assert.equal(w.fetchEvent(`${origin}/panel/pagos/nuevo`, { method: "POST" }).answer, undefined);
+  assert.equal(w.fetchEvent(`${origin}/login`, { method: "POST", mode: "navigate" }).answer, undefined);
+  assert.equal(w.fetchEvent("https://otro-sitio.test/x.js").answer, undefined);
+  assert.equal(w.fetchEvent(`${origin}/health`).answer, undefined, "ni siquiera las respuestas sueltas que no son de /static/");
+  assert.equal(w.fetchEvent(`${origin}/panel/pagos.csv`).answer, undefined, "ni el CSV de pagos");
+
+  // Look-and-feel files: saved when fetched, served from the saved copy when offline.
+  const css = w.fetchEvent(`${origin}/static/app.css`);
+  assert.equal((await css.answer).fromNetwork, true);
+  await w.flush();
+  assert.deepEqual(w.log.put, [`${origin}/static/app.css`]);
+  w.net.online = false;
+  assert.deepEqual(await w.fetchEvent(`${origin}/static/app.css`).answer, { fromCache: true });
+  assert.ok(w.log.put.every((u) => u.includes("/static/")), "solo se guardó lo de /static/");
+});
+
+test("service worker: al instalar guarda lo justo y al activarse borra versiones viejas, no cachés ajenos", async () => {
+  const w = loadWorker();
+  let installed;
+  w.listeners.install({ waitUntil: (p) => { installed = p; } });
+  await installed;
+  assert.ok(w.log.added.includes("/offline") && w.log.added.includes("/static/app.css"));
+  assert.ok(w.log.added.every((u) => u === "/offline" || u.startsWith("/static/")), "nada de páginas del panel");
+  assert.equal(w.log.skipped, true);
+
+  let activated;
+  w.listeners.activate({ waitUntil: (p) => { activated = p; } });
+  await activated;
+  assert.deepEqual(w.log.deleted.sort(), ["cuotia-static-v0", "cuotia-static-v2"], "borra las versiones viejas de Cuotia y respeta el resto");
+  assert.equal(w.log.claimed, true);
+});
+
+test("el service worker y el manifiesto se sirven de forma que las actualizaciones lleguen", () => withServer(async (s) => {
+  const sw = await fetch(`${s.base}/sw.js`);
+  assert.equal(sw.status, 200);
+  assert.match(sw.headers.get("content-type"), /javascript/);
+  assert.equal(sw.headers.get("cache-control"), "no-cache", "si el navegador lo guardara, un arreglo no llegaría");
+  const js = await (await fetch(`${s.base}/static/app.js`)).text();
+  assert.match(js, /serviceWorker\.register\("\/sw\.js"\)/);
+  assert.match((await fetch(`${s.base}/manifest.webmanifest`)).headers.get("cache-control"), /max-age=3600/);
 }));
