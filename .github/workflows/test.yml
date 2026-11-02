@@ -1,0 +1,25 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The same Node major as the Dockerfile (node:22-alpine). No dependencies to install.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+      # The real image: it has to build and start, not only pass the tests.
+      - run: docker build -t cuotia .
+      - name: The container starts and answers /health
+        run: |
+          docker run -d --name cuotia -p 3000:3000 -e PAGORADAR_WEBHOOK_SECRET=$(openssl rand -hex 32) cuotia
+          for i in $(seq 1 15); do curl -fsS http://127.0.0.1:3000/health && exit 0; sleep 2; done
+          docker logs cuotia
+          exit 1

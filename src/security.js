@@ -1,0 +1,70 @@
+import { createHash, createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+
+const scrypt = promisify(scryptCb);
+
+export const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+export const newToken = (bytes = 32) => randomBytes(bytes).toString("base64url");
+
+/** "scrypt$salt$key" (hex). */
+export async function hashPassword(password) {
+  const salt = randomBytes(16);
+  const key = await scrypt(password, salt, 64);
+  return `scrypt$${salt.toString("hex")}$${key.toString("hex")}`;
+}
+
+export async function verifyPassword(password, stored) {
+  const [kind, saltHex, keyHex] = String(stored).split("$");
+  if (kind !== "scrypt" || !saltHex || !keyHex) return false;
+  const expected = Buffer.from(keyHex, "hex");
+  const key = await scrypt(String(password), Buffer.from(saltHex, "hex"), expected.length);
+  return key.length === expected.length && timingSafeEqual(key, expected);
+}
+
+let dummy;
+/** Burns the same time as a real check so an unknown email can't be told apart by speed. */
+export async function fakeVerify(password) {
+  dummy ??= await hashPassword("no-existe");
+  await verifyPassword(password, dummy);
+}
+
+/**
+ * pagoradar signs `Pagoradar-Signature: t=<unix>,v1=<hex>` with v1 = HMAC-SHA256(secret, "<t>.<body>").
+ * Same check as pagoradar's own SDK; the body must be the exact bytes received.
+ */
+export function verifyPagoradarSignature(rawBody, header, secret, { toleranceSec = 300, now = Date.now() } = {}) {
+  const parts = Object.fromEntries(String(header ?? "").split(",").map((p) => p.trim().split("=", 2)));
+  const t = Number(parts.t);
+  if (!secret || !Number.isFinite(t) || !parts.v1 || Math.abs(now / 1000 - t) > toleranceSec) return false;
+  const expected = Buffer.from(createHmac("sha256", secret).update(`${t}.${rawBody}`).digest("hex"));
+  const given = Buffer.from(parts.v1);
+  return expected.length === given.length && timingSafeEqual(expected, given);
+}
+
+/** Builds a valid header for `body` (used by tests and local simulations). */
+export function signPagoradarBody(body, secret, t = Math.floor(Date.now() / 1000)) {
+  return `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${body}`).digest("hex")}`;
+}
+
+/** Blocks guessing: at most `max` failed attempts per key inside `windowMs`. */
+export class AttemptLimiter {
+  constructor({ max = 5, windowMs = 15 * 60_000 } = {}) {
+    this.max = max;
+    this.windowMs = windowMs;
+    this.hits = new Map();
+  }
+  #recent(key, now) {
+    const list = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs);
+    this.hits.set(key, list);
+    return list;
+  }
+  blocked(key, now = Date.now()) {
+    return this.#recent(key, now).length >= this.max;
+  }
+  fail(key, now = Date.now()) {
+    this.#recent(key, now).push(now);
+  }
+  clear(key) {
+    this.hits.delete(key);
+  }
+}
