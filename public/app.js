@@ -100,15 +100,23 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     return;
   }
   const key = Uint8Array.from(atob(box.dataset.key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  // The treasurer's card posts to the panel with the form token; a resident's card posts to their own personal link.
+  const subscribeUrl = box.dataset.subscribeUrl || "/panel/push/suscribir";
+  const unsubscribeUrl = box.dataset.unsubscribeUrl || "/panel/push/baja";
   const post = (url, fields) => fetch(url, {
     method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ _csrf: box.dataset.csrf, ...fields }),
+    body: new URLSearchParams({ ...(box.dataset.csrf ? { _csrf: box.dataset.csrf } : {}), ...fields }),
   }).then((r) => { if (!r.ok) throw new Error(String(r.status)); });
+  // A resident's notification must open THEIR link, which the server never stores: remember it on this phone.
+  const rememberLink = () => {
+    const mine = /^\/r\/[^/]+/.exec(location.pathname);
+    if (box.dataset.resident !== undefined && mine && "caches" in self) caches.open("resident-link").then((c) => c.put("/resident-link", new Response(mine[0]))).catch(() => {});
+  };
   const current = () => navigator.serviceWorker.ready.then((reg) => reg.pushManager.getSubscription());
   const render = async () => {
     const sub = await current().catch(() => null);
-    button.textContent = sub ? "Desactivar avisos en este dispositivo" : "Activar avisos en este dispositivo";
+    button.textContent = sub ? "Desactivar avisos en este dispositivo" : (box.dataset.resident !== undefined ? "Activar avisos" : "Activar avisos en este dispositivo");
   };
   button.addEventListener("click", async () => {
     button.disabled = true;
@@ -117,7 +125,7 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
-        await post("/panel/push/baja", { endpoint: sub.endpoint });
+        await post(unsubscribeUrl, { endpoint: sub.endpoint });
         await sub.unsubscribe();
         status.textContent = "Avisos desactivados en este dispositivo.";
       } else {
@@ -127,8 +135,9 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
         }
         const made = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
         const json = made.toJSON();
-        await post("/panel/push/suscribir", { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth });
-        status.textContent = "Listo: los avisos están activos. Recarga esta página para probarlos.";
+        await post(subscribeUrl, { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth });
+        rememberLink();
+        status.textContent = box.dataset.resident !== undefined ? "Listo: los avisos están activos en este celular." : "Listo: los avisos están activos. Recarga esta página para probarlos.";
       }
     } catch {
       status.textContent = "No se pudo completar. Inténtalo de nuevo en unos segundos.";

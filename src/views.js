@@ -1223,7 +1223,7 @@ export function residentProofPage({ tenant, house, dues, token, proofs = [], err
 </main>`, { manifest: `/r/${token}/manifest.webmanifest` });
 }
 
-export function residentPage({ tenant, house, dues, period, token, proofs = [], day = bogotaDay() }) {
+export function residentPage({ tenant, house, dues, period, token, proofs = [], pushKey = "", pushOn = 0, day = bogotaDay() }) {
   const open = dues.filter((d) => d.period === period && d.status === "pending");
   const behind = dues.filter((d) => d.period < period && d.status === "pending");
   const windowText = paymentWindow(tenant, period);
@@ -1250,6 +1250,13 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
 
   ${proofs.some((p) => p.status === "pending") ? html`<p class="flash info" role="status">Enviaste un comprobante y está en revisión. <a href="/r/${token}/comprobante">Ver</a></p>` : ""}
   ${proofs[0]?.status === "rejected" && owed.length ? html`<p class="flash err" role="status">El tesorero no pudo confirmar tu último comprobante. Revisa el valor o <a href="/r/${token}/comprobante">súbelo de nuevo</a>.</p>` : ""}
+
+  <section class="card" data-push data-key="${pushKey}" data-subscribe-url="/r/${token}/avisos/suscribir" data-unsubscribe-url="/r/${token}/avisos/baja" data-resident>
+    <h2>Avisos en este celular</h2>
+    <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone, primero instala la app: Compartir, <b>Añadir a pantalla de inicio</b>, y ábrela desde ahí.</p>
+    <p class="small" data-push-status role="status"></p>
+    <button class="btn ghost" type="button" data-push-toggle>Activar avisos</button>
+  </section>
 
   ${tenant.showAccounts ? html`<a class="card cuentas-link" href="/r/${token}/cuentas"><span><b>Cuentas del conjunto</b><small class="muted">Qué se recaudó y en qué se gastó</small></span>${icon("next", 20, 2.4)}</a>` : ""}
 

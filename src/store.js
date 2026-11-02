@@ -189,6 +189,28 @@ const MIGRATIONS = [
   );
   CREATE INDEX expenses_by_tenant ON expenses (tenant_id, period);
   `,
+  /* V12: residents' phones (a house installs the app and allows notifications) and the reminders already sent, so each
+     one goes out once per house and month. */
+  `
+  CREATE TABLE house_push_subscriptions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    house_id TEXT NOT NULL REFERENCES houses(id),
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX house_push_by_house ON house_push_subscriptions (tenant_id, house_id);
+  CREATE TABLE reminders_sent (
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    house_id TEXT NOT NULL REFERENCES houses(id),
+    period TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, house_id, period, kind)
+  );
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -309,7 +331,7 @@ export function openStore(path = ":memory:") {
     get: (key) => db.prepare("SELECT value FROM settings WHERE key = ?").get(key)?.value ?? null,
     set: (key, value) => void db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value),
     /** The old keys are gone: every subscription was made for them and is now useless. */
-    resetPush: () => void db.prepare("DELETE FROM push_subscriptions").run(),
+    resetPush: () => { db.prepare("DELETE FROM push_subscriptions").run(); db.prepare("DELETE FROM house_push_subscriptions").run(); },
   };
 
   const INVITE_TTL_MS = 7 * 24 * 3600_000;
@@ -714,6 +736,29 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** Phones of residents that asked for notifications about their own house. */
+    const housePush = {
+      add({ houseId, endpoint, p256dh, auth }) {
+        if (!db.prepare("SELECT 1 FROM houses WHERE id = ? AND tenant_id = ? AND active = 1").get(houseId, tenantId)) throw new Error("Esa casa no existe en este conjunto");
+        db.prepare("INSERT OR REPLACE INTO house_push_subscriptions (id, tenant_id, house_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(newId("hp"), tenantId, houseId, endpoint, p256dh, auth, nowIso());
+      },
+      list: (houseId) => db.prepare("SELECT endpoint, p256dh, auth FROM house_push_subscriptions WHERE tenant_id = ? AND house_id = ?").all(tenantId, houseId)
+        .map((r) => ({ endpoint: r.endpoint, p256dh: r.p256dh, auth: r.auth })),
+      count: (houseId) => Number(db.prepare("SELECT COUNT(*) AS n FROM house_push_subscriptions WHERE tenant_id = ? AND house_id = ?").get(tenantId, houseId).n),
+      /** Which of this conjunto's houses have at least one phone subscribed (for the reminders). */
+      houseIds: () => db.prepare("SELECT DISTINCT house_id FROM house_push_subscriptions WHERE tenant_id = ?").all(tenantId).map((r) => r.house_id),
+      remove: (endpoint) => void db.prepare("DELETE FROM house_push_subscriptions WHERE tenant_id = ? AND endpoint = ?").run(tenantId, endpoint),
+    };
+
+    /** One reminder per house, month and kind: `claim` is true only the first time. */
+    const reminders = {
+      claim(houseId, period, kind) {
+        if (!db.prepare("SELECT 1 FROM houses WHERE id = ? AND tenant_id = ?").get(houseId, tenantId)) throw new Error("Esa casa no existe en este conjunto");
+        return Number(db.prepare("INSERT OR IGNORE INTO reminders_sent (tenant_id, house_id, period, kind, sent_at) VALUES (?, ?, ?, ?, ?)").run(tenantId, houseId, period, kind, nowIso()).changes) === 1;
+      },
+    };
+
     /** What the conjunto spends. A mistake is voided (it stays visible as "anulado"), never erased. */
     const expenses = {
       create({ spentOn, amountCents, category, description, proof = null, userId = null }) {
@@ -820,7 +865,7 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, expenses, books, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, expenses, books, matchHouse, summary };
   }
 
   return { db, tenants, users, invitations, settings, sessions, residentByToken, forTenant, close: () => db.close() };

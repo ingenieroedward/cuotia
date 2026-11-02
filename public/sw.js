@@ -63,9 +63,13 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const target = new URL(event.notification.data?.url || "/panel", self.location.origin).href;
-  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+  const asked = String(event.notification.data?.url || "/panel");
+  // "@resident/pagar": the resident's own link (saved on their phone when they turned notifications on) plus a subpage.
+  const resolve = asked.startsWith("@resident")
+    ? caches.open("resident-link").then((c) => c.match("/resident-link")).then((r) => (r ? r.text() : "/")).then((base) => base + asked.slice("@resident".length)).catch(() => "/")
+    : Promise.resolve(asked);
+  event.waitUntil(resolve.then((path) => new URL(path, self.location.origin).href).then((target) => self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
     const open = windows.find((w) => w.url.startsWith(self.location.origin) && "focus" in w);
     return open ? open.focus().then((w) => w.navigate?.(target)) : self.clients.openWindow(target);
-  }));
+  })));
 });

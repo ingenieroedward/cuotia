@@ -525,3 +525,7 @@ li.expense.voided b { text-decoration: line-through; }
 .hero-stats b { overflow-wrap: anywhere; }
 @media (max-width: 480px) { .hero-stats b { font-size: 1.25rem; } }
 li.expense .amount { margin-left: auto; text-align: right; white-space: nowrap; }
+[data-push-status]:empty { display: none; }
+a.card.cuentas-link { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: .75rem; }
+a.card.cuentas-link > span { display: grid; min-width: 0; text-align: left; }
+a.card.cuentas-link > svg { flex: none; }
