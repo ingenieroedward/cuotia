@@ -663,9 +663,9 @@ export function pagoManualPage(args) {
           </fieldset>
           <div class="grid-form">
             <label>¿Cómo pagó?
-              <select name="medio">${methods.map(([key, label]) => html`<option value="${key}">${label}</option>`)}</select>
+              <select name="medio" data-medio>${methods.map(([key, label]) => html`<option value="${key}"${key === "transfer" ? raw(" selected") : ""}>${label}</option>`)}</select>
             </label>
-            <label>Banco o billetera <span class="muted small">(opcional)</span><input type="text" name="banco" maxlength="40" placeholder="Nequi, Bancolombia…"></label>
+            <label data-banco>Banco o billetera <span class="muted small">(opcional)</span><input type="text" name="banco" maxlength="40" value="Nequi" list="bancos" autocomplete="off" placeholder="Nequi, Bancolombia…"><datalist id="bancos"><option value="Nequi"><option value="Bancolombia"><option value="Daviplata"><option value="Davivienda"><option value="Nu"><option value="Banco de Bogotá"></datalist></label>
             <label>Fecha en que pagó<input type="date" name="fecha" value="${today}" max="${today}" required></label>
             <label>Nota <span class="muted small">(opcional)</span><input type="text" name="nota" maxlength="120" placeholder="Ej. lo trajo la esposa"></label>
           </div>

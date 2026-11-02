@@ -489,3 +489,11 @@ li.member > span { display: grid; min-width: 0; }
 .hero .btn.lime { background: var(--ink); color: #fff; }
 .chip-lime { background: var(--ink); color: var(--accent); }
 .eyebrow.dim { color: var(--muted); }
+
+/* iPhone zooms the page when a field with text under 16px gets focus. Every text field is at least 16px on touch screens.
+   !important on purpose: some containers (.small, .filters) shrink their fields and a new one must not bring the zoom back.
+   Zooming by pinch stays allowed (the viewport does not forbid it). */
+@media (max-width: 900px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="range"]):not([type="submit"]):not([type="button"]),
+  select, textarea { font-size: 16px !important; }
+}
