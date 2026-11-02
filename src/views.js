@@ -1,6 +1,6 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { MANUAL_LABELS, bankLabel, lastPeriods, paymentMedium, peso, periodLabel, shortDate, shortDateTime } from "./text.js";
+import { MANUAL_LABELS, bankLabel, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -12,6 +12,8 @@ const ICONS = {
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   back: '<path d="M15 6l-6 6 6 6"/>',
+  next: '<path d="M9 6l6 6-6 6"/>',
+  cobrar: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6.5l1 1 2-2M4 12.5l1 1 2-2M4 18.5l1 1 2-2"/>',
 };
 const icon = (name, size = 20, width = 2) => html`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${raw(ICONS[name])}</svg>`;
 
@@ -51,6 +53,8 @@ const FLASH = {
   asig: () => ({ kind: "ok", text: "Pago asignado y cuota marcada como pagada. Cuotia recordó el nombre." }),
   asigsin: () => ({ kind: "info", text: "Pago asignado, pero esa casa no tenía una cuota abierta por ese monto." }),
   manual: () => ({ kind: "ok", text: "Pago registrado: las cuotas quedaron al día." }),
+  mesok: () => ({ kind: "ok", text: "Mes agregado y marcado. Revisa los datos y registra el pago." }),
+  mesbad: () => ({ kind: "err", text: "Elige un mes de los últimos 24, sin pasarte del mes actual." }),
   manualbad: () => ({ kind: "err", text: "Revisa los datos: elige al menos una cuota y una fecha que no sea futura." }),
   dup: () => ({ kind: "err", text: "Ya existe una casa con ese código." }),
   ed: () => ({ kind: "ok", text: "Datos de la casa guardados." }),
@@ -156,6 +160,7 @@ export function twoFaPage({ stage, error, secret, uri, email }) {
 
 const NAV = [
   { key: "resumen", href: "/panel", label: "Resumen", icon: "home" },
+  { key: "cobros", href: "/panel/cobros", label: "Por cobrar", icon: "cobrar" },
   { key: "casas", href: "/panel/casas", label: "Casas", icon: "casas" },
   { key: "pagos", href: "/panel/pagos", label: "Pagos", icon: "pagos" },
   { key: "ajustes", href: "/panel/ajustes", label: "Ajustes", icon: "ajustes" },
@@ -165,23 +170,22 @@ const BRAND_ON_DARK = html`<span class="brand on-dark"><span class="brand-mark">
 
 /**
  * The frame of every treasurer page. `ctx` carries who is signed in and what the sidebar shows:
- * { tenant, user, csrf, active, badge (payments waiting to be assigned), houseCount, cuota }.
+ * { tenant, user, csrf, active, badge (payments waiting to be assigned), owing (houses that owe), houseCount, cuota }.
  */
 export function panelLayout(title, ctx, content) {
-  const { tenant, user, csrf, active, badge = 0, houseCount = 0, cuota = "" } = ctx;
+  const { tenant, user, csrf, active, badge = 0, owing = 0, houseCount = 0, cuota = "" } = ctx;
   const current = (key) => (key === active ? raw(' aria-current="page"') : "");
-  const bubble = badge ? html`<span class="badge" aria-label="${badge} por asignar">${badge}</span>` : "";
-  const sideLink = (n) => html`<a class="nav-link" href="${n.href}"${current(n.key)}>${icon(n.icon)}<span>${n.label}</span></a>`;
+  const unassigned = badge ? html`<span class="badge" aria-label="${badge} por asignar">${badge}</span>` : "";
+  const owes = (n) => (n.key === "cobros" && owing ? html`<span class="badge warn" aria-label="${owing} casas deben">${owing}</span>` : "");
+  const sideLink = (n) => html`<a class="nav-link" href="${n.href}"${current(n.key)}>${icon(n.icon)}<span>${n.label}</span>${owes(n)}</a>`;
   return layout(title, html`
 <div class="app">
   <aside class="side">
     ${BRAND_ON_DARK}
     <nav class="side-nav" aria-label="Principal">
-      ${sideLink(NAV[0])}
-      ${sideLink(NAV[1])}
-      ${sideLink(NAV[2])}
-      <a class="nav-link" href="/panel#por-asignar">${icon("asignar")}<span>Por asignar</span>${bubble}</a>
-      ${sideLink(NAV[3])}
+      ${NAV.slice(0, 4).map(sideLink)}
+      <a class="nav-link" href="/panel#por-asignar">${icon("asignar")}<span>Por asignar</span>${unassigned}</a>
+      ${sideLink(NAV[4])}
     </nav>
     <div class="side-foot">
       <div class="conj">
@@ -205,7 +209,7 @@ export function panelLayout(title, ctx, content) {
   </div>
 
   <nav class="tabbar" aria-label="Principal">
-    ${NAV.map((n) => html`<a class="tab" href="${n.href}"${current(n.key)}>${icon(n.icon, 22)}<span>${n.label}</span>${n.key === "resumen" ? bubble : ""}</a>`)}
+    ${NAV.map((n) => html`<a class="tab" href="${n.href}"${current(n.key)}>${icon(n.icon, 22)}<span>${n.label}</span>${n.key === "resumen" ? unassigned : owes(n)}</a>`)}
   </nav>
 </div>`);
 }
@@ -237,31 +241,125 @@ const FILTERS = [
   { key: "pendientes", label: "Pendientes", test: (d) => d.status === "pending" },
 ];
 
+// ---- pieces shared by the treasurer pages that talk about who owes what ----
+
+/** A WhatsApp link: straight to the resident when we have their phone, otherwise WhatsApp asks who to send it to. */
+const waLink = (phone, text) => {
+  const to = whatsappNumber(phone);
+  return `https://wa.me/${to ? `${to}` : ""}?text=${encodeURIComponent(text)}`;
+};
+
+/** The personal reminder for one house: its months, its total and how to pay. */
+function personalReminder(tenant, group) {
+  const first = group.house.residentName.trim().split(/\s+/)[0];
+  const names = group.months.map((m) => monthName(m).toLowerCase());
+  const when = names.length === 1 ? `de ${names[0]}` : `de ${names.slice(0, -1).join(", ")} y ${names.at(-1)}`;
+  return [
+    `Hola ${first}, te recordamos la cuota de vigilancia ${when}: ${peso(group.totalCents)}.`,
+    tenant.payKey ? `Puedes pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : "",
+    "Cuando pagues, avísame para registrarlo. ¡Gracias!",
+  ].filter(Boolean).join(" ");
+}
+
+const PILLS = {
+  late: html`<span class="pill bad"><i></i>Atrasada</span>`,
+  debt: (months) => html`<span class="pill bad"><i></i>Debe ${months} meses</span>`,
+  ok: html`<span class="pill ok"><i></i>Al día</span>`,
+};
+
+/** "oct", "nov"… with the year only when it isn't this year: the months a house owes, as small chips. */
+const monthChips = (group, period) => group.months.map((m) => html`<span class="mchip${m < period ? " bad" : ""}">${monthShort(m)}${m.slice(0, 4) === period.slice(0, 4) ? "" : ` ${m.slice(2, 4)}`}</span>`);
+
+/** The state of a house in one pill: up to date, owes this month only, or owes earlier months. */
+function houseStatus(group, period) {
+  if (!group) return PILLS.ok;
+  if (group.overdueCount > 0) return PILLS.debt(group.months.length);
+  return STATUS.pending;
+}
+
+/** One house that owes: who, which months, how much, and the buttons to act (record the payment, remind). */
+function debtRow(group, { tenant, period }) {
+  const { house } = group;
+  const late = group.overdueCount > 0;
+  return html`<li class="debt" data-search="${house.code} ${house.residentName}">
+    <span class="tile ${late ? "bad" : "warn"}">${house.code}</span>
+    <div class="debt-main">
+      <b>${house.residentName}</b>
+      <span class="months" aria-label="Meses que debe">${monthChips(group, period)}</span>
+    </div>
+    <div class="debt-total"><b>${peso(group.totalCents)}</b><small class="muted">${group.dues.length} cuota${group.dues.length === 1 ? "" : "s"}</small></div>
+    <div class="debt-actions">
+      <a class="btn small" href="/panel/pagos/nuevo?casa=${house.id}">Registrar pago</a>
+      <a class="btn ghost small" href="${waLink(house.phone, personalReminder(tenant, group))}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+    </div>
+  </li>`;
+}
+
+const panelHref = ({ mes, f, current }) => {
+  const qs = new URLSearchParams();
+  if (mes && mes !== current) qs.set("mes", mes);
+  if (f) qs.set("f", f);
+  return qs.size ? `/panel?${qs}` : "/panel";
+};
+
 export function panelPage(args) {
-  const { tenant, user, csrf, flash, summary, dues, unassigned, houses, recent = [], filter = "" } = args;
+  const { tenant, user, csrf, flash, summary, dues, unassigned, houses, recent = [], filter = "", current, prevPeriod, nextPeriod, debts, addable = [] } = args;
+  const { groups, totals } = debts;
+  const byHouse = new Map(groups.map((g) => [g.house.id, g]));
+  const selected = summary.period;
   const pct = summary.expectedCents ? Math.round((summary.collectedCents / summary.expectedCents) * 100) : 0;
   const owingCents = summary.expectedCents - summary.collectedCents;
-  const owing = houses.filter((h) => dues.some((d) => d.houseId === h.id && d.status === "pending"));
   const shown = dues.filter((FILTERS.find((f) => f.key === filter) ?? FILTERS[0]).test);
-  const reminder = reminderLink({ tenant, dues, period: summary.period });
+  const reminder = reminderLink({ tenant, dues, period: selected });
+
+  const essentials = [
+    { done: houses.length > 0, title: "Agrega las casas", text: "Pega la lista desde Excel y Cuotia crea cada casa y su enlace.", href: "/panel/casas/importar", cta: "Importar casas" },
+    { done: Boolean(tenant.payKey), title: "Escribe la llave Bre-B", text: "La ven los vecinos cuando van a pagar.", href: "/panel/ajustes", cta: "Ir a Ajustes" },
+    { done: recent.length > 0, title: "Registra el primer pago", text: "A mano, o déjalo para cuando conectes pagoradar.", href: "/panel/pagos/nuevo", cta: "Registrar pago" },
+  ];
+  const showSteps = essentials.some((s) => !s.done);
+
+  const rowPill = (d) => {
+    if (d.status === "paid") return STATUS.paid;
+    if (d.period < current) return PILLS.late;
+    const g = byHouse.get(d.houseId);
+    return g?.overdueCount ? PILLS.debt(g.months.length) : STATUS.pending;
+  };
 
   return panelLayout("Resumen", { ...args, active: "resumen" }, html`
   <header class="head">
     <div class="head-text">
       <h1>Hola, ${user.name}</h1>
-      <span class="muted">Así va el recaudo de vigilancia de este mes.</span>
+      <span class="muted">Así va el recaudo de vigilancia.</span>
     </div>
     <div class="head-actions">
-      <span class="monthpill">${icon("calendar", 18)}${periodLabel(summary.period)}</span>
+      <nav class="monthnav" aria-label="Elegir mes">
+        ${prevPeriod ? html`<a class="mn-btn" href="${panelHref({ mes: prevPeriod, f: filter, current })}" aria-label="Mes anterior: ${periodLabel(prevPeriod)}">${icon("back", 18, 2.4)}</a>` : html`<span class="mn-btn off" aria-hidden="true">${icon("back", 18, 2.4)}</span>`}
+        <span class="mn-label">${icon("calendar", 18)}${periodLabel(selected)}</span>
+        ${nextPeriod ? html`<a class="mn-btn" href="${panelHref({ mes: nextPeriod, f: filter, current })}" aria-label="Mes siguiente: ${periodLabel(nextPeriod)}">${icon("next", 18, 2.4)}</a>` : html`<span class="mn-btn off" aria-hidden="true">${icon("next", 18, 2.4)}</span>`}
+      </nav>
       <a class="btn" href="/panel/pagos/nuevo">+ Registrar pago</a>
     </div>
   </header>
   ${flashBox(flash)}
+  ${selected !== current ? html`<p class="flash info" role="status">Estás viendo ${periodLabel(selected)}. <a href="/panel">Volver a este mes</a></p>` : ""}
+
+  ${showSteps
+    ? html`<section class="card steps-card" aria-label="Primeros pasos">
+        <h2>Primeros pasos</h2>
+        <ol class="checklist">${essentials.map((s) => html`<li class="${s.done ? "done" : ""}">
+          <span class="dot ${s.done ? "ok" : "warn"}">${s.done ? icon("check", 16, 3) : ""}</span>
+          <span class="step-text"><b>${s.title}</b><small class="muted">${s.text}</small></span>
+          ${s.done ? "" : html`<a class="btn small" href="${s.href}">${s.cta}</a>`}
+        </li>`)}</ol>
+      </section>`
+    : ""}
 
   <section class="top" aria-label="Resumen del mes">
+    <div class="top-main">
     <div class="hero">
       <div class="row wrap">
-        <span class="eyebrow">Recaudado en ${periodLabel(summary.period).split(" ")[0]}</span>
+        <span class="eyebrow">Recaudado en ${periodLabel(selected).split(" ")[0]}</span>
         ${summary.weekCents > 0 ? html`<span class="chip-lime">+ ${peso(summary.weekCents)} esta semana</span>` : ""}
       </div>
       <span class="hero-number">${peso(summary.collectedCents)}</span>
@@ -273,20 +371,32 @@ export function panelPage(args) {
       </div>
     </div>
 
-    <div class="stats">
-      <div class="card stat">
-        <span class="eyebrow dim">Faltan por pagar</span>
-        <span class="stat-number">${peso(owingCents)}</span>
-        <span class="muted small">${summary.pendingCount} casa${summary.pendingCount === 1 ? "" : "s"}</span>
-        ${reminder ? html`<a class="btn ghost" href="${reminder}" target="_blank" rel="noopener noreferrer">Recordar por WhatsApp</a>` : html`<span class="small">¡Todas las casas están al día!</span>`}
-      </div>
-      <div class="stat info-card">
+    <div class="stat info-card">
         <span class="eyebrow">Por asignar</span>
         <span class="stat-number">${summary.unassignedCount} pago${summary.unassignedCount === 1 ? "" : "s"}</span>
         ${summary.unassignedCount
           ? html`<span class="small">${peso(summary.unassignedCents)} entraron sin casa asociada</span><a class="stat-link" href="#por-asignar">Asignar ahora →</a>`
           : html`<span class="small">Todo lo que entró ya tiene casa.</span>`}
       </div>
+    </div>
+
+    <div class="stats">
+      <div class="card stat">
+        <span class="eyebrow dim">Faltan por pagar · ${periodLabel(selected).split(" ")[0]}</span>
+        <span class="stat-number">${peso(owingCents)}</span>
+        <span class="muted small">${summary.pendingCount} casa${summary.pendingCount === 1 ? "" : "s"}</span>
+        ${summary.pendingCount
+          ? html`<a class="btn" href="/panel/cobros">Ver quién debe</a>${reminder ? html`<a class="btn ghost" href="${reminder}" target="_blank" rel="noopener noreferrer">Recordar a todos por WhatsApp</a>` : ""}`
+          : html`<span class="small">¡Todas las casas están al día!</span>`}
+      </div>
+      ${totals.overdueDues > 0
+        ? html`<a class="stat late-card" href="/panel/cobros?f=atrasadas">
+            <span class="eyebrow">Atrasadas</span>
+            <span class="stat-number">${peso(totals.overdueCents)}</span>
+            <span class="small">${totals.overdueHouses} casa${totals.overdueHouses === 1 ? "" : "s"} deben meses anteriores</span>
+            <span class="stat-link">Ver las atrasadas →</span>
+          </a>`
+        : ""}
     </div>
   </section>
 
@@ -298,7 +408,10 @@ export function panelPage(args) {
           <div class="row"><span><b>${p.payerName || "Sin nombre"}</b><small class="muted">${bankLabel(p.bank)} · ${shortDate(p.paidAt)}</small></span><b>${peso(p.amountCents)}</b></div>
           <form class="assign" method="post" action="/panel/pagos/${p.id}/asignar">
             ${csrfField(csrf)}
-            <select name="house" required aria-label="Casa de ${p.payerName}"><option value="">Elegir casa…</option>${houseOptions(houses)}</select>
+            <div class="combo">
+              <input type="search" class="combo-search" hidden data-select-filter="#casa-${p.id}" placeholder="Buscar casa o nombre…" aria-label="Buscar la casa de ${p.payerName}" autocomplete="off">
+              <select id="casa-${p.id}" name="house" required aria-label="Casa de ${p.payerName}"><option value="">Elegir casa…</option>${houseOptions(houses)}</select>
+            </div>
             <label class="check"><input type="checkbox" name="remember" value="1" checked> Recordar nombre</label>
             <button class="btn small" type="submit">Asignar</button>
           </form>
@@ -309,28 +422,43 @@ export function panelPage(args) {
   <section class="cols">
     <div class="card table-card">
       <div class="row wrap">
-        <h2>Casas · ${periodLabel(summary.period).split(" ")[0]}</h2>
+        <h2>Casas · ${periodLabel(selected).split(" ")[0]}</h2>
         <div class="chips" role="group" aria-label="Filtrar casas">
-          ${FILTERS.map((f) => html`<a class="chip-filter" href="/panel${f.key ? `?f=${f.key}` : ""}"${f.key === filter ? raw(' aria-current="true"') : ""}>${f.label} ${dues.filter(f.test).length}</a>`)}
+          ${FILTERS.map((f) => html`<a class="chip-filter" href="${panelHref({ mes: selected, f: f.key, current })}"${f.key === filter ? raw(' aria-current="true"') : ""}>${f.label} ${dues.filter(f.test).length}</a>`)}
         </div>
       </div>
       ${dues.length === 0
         ? html`<p class="muted">Aún no hay cuotas para este mes.</p>
-          <form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn" type="submit">Generar cuotas de ${periodLabel(summary.period)}</button></form>`
-        : html`<div class="table-wrap"><table>
-        <thead><tr><th>Casa</th><th>Residente</th><th>Estado</th><th>Pagó el</th><th class="num">Monto</th></tr></thead>
+          ${selected === current ? html`<form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn" type="submit">Generar cuotas de ${periodLabel(selected)}</button></form>` : ""}`
+        : html`${selected === current && addable.length && dues.length
+          ? html`<details class="undo addmonth-all">
+              <summary>¿Falta un mes anterior (por ejemplo octubre)?</summary>
+              <p class="muted small">Crea la cuota de ese mes para las ${houses.length} casas, al valor de hoy. Las que no la hayan pagado quedan como <b>atrasadas</b> en Por cobrar, y ahí registras los pagos con su fecha.</p>
+              <form class="addmonths" method="post" action="/panel/cuotas/generar">
+                ${csrfField(csrf)}
+                <span class="addmonths-buttons">${addable.map((m) => html`<button class="btn ghost small" type="submit" name="mes" value="${m}">+ ${monthName(m)}${m.slice(0, 4) === current.slice(0, 4) ? "" : ` ${m.slice(0, 4)}`}</button>`)}</span>
+              </form>
+            </details>`
+          : ""}<div class="table-wrap"><table>
+        <thead><tr><th>Casa</th><th>Residente</th><th>Estado</th><th>Pagó el</th><th class="num">Monto</th><th><span class="sr">Acción</span></th></tr></thead>
         <tbody>${shown.map((d) => html`<tr>
           <td><a class="rowlink" href="/panel/casas/${d.houseId}"><b>${d.houseCode}</b></a></td>
           <td>${d.residentName}</td>
-          <td>${STATUS[d.status]}</td>
+          <td>${rowPill(d)}</td>
           <td class="muted">${d.paidAt ? shortDate(d.paidAt) : "—"}</td>
           <td class="num"><b>${peso(d.amountCents)}</b></td>
+          <td class="act">${d.status === "pending" ? html`<a class="btn ghost small" href="/panel/pagos/nuevo?casa=${d.houseId}&amp;cuota=${d.id}">Registrar pago</a>` : ""}</td>
         </tr>`)}</tbody>
-      </table></div>
-      <form class="regen" method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Generar cuotas de ${periodLabel(summary.period)}</button></form>`}
+      </table></div>`}
     </div>
 
     <div class="col-side">
+      ${groups.length
+        ? html`<div class="card">
+            <div class="row"><h2>Para cobrar primero</h2><a class="small" href="/panel/cobros">Ver todas →</a></div>
+            <ul class="list stack compact">${groups.slice(0, 5).map((g) => debtRow(g, { tenant, period: current }))}</ul>
+          </div>`
+        : ""}
       <div class="card">
         <div class="row"><h2>Últimos pagos</h2><a class="small" href="/panel/pagos">Ver todos →</a></div>
         ${recent.length
@@ -339,23 +467,97 @@ export function panelPage(args) {
               <span class="who"><b>${p.manual ? p.residentName : p.payerName || "Sin nombre"}</b><small class="muted">${payMethod(p)} · ${shortDateTime(p.paidAt)}</small></span>
               <b>+${peso(p.amountCents)}</b>
             </li>`)}</ul>`
-          : html`<p class="muted small">Cuando llegue el primer pago aparecerá aquí.</p>`}
-      </div>
-
-      <div class="card">
-        <h2>Pago manual</h2>
-        <p class="muted small">¿Te pagaron en mano o por transferencia, o aún no conectas pagoradar? Regístralo y la cuota queda al día.</p>
-        <a class="btn ghost" href="/panel/pagos/nuevo">Registrar un pago</a>
+          : html`<p class="muted small">Cuando llegue o registres el primer pago aparecerá aquí.</p>`}
       </div>
     </div>
   </section>`);
 }
 
-export function casasPage(args) {
-  const { tenant, csrf, flash, houses, inactive = [] } = args;
-  return panelLayout("Casas", { ...args, active: "casas" }, html`
-  <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}</span></div>
+/** Who owes, across months: the page a treasurer opens to chase payments. */
+export function cobrosPage(args) {
+  const { tenant, flash, groups, shown, totals, filter, q, current } = args;
+  const FILTER_LINKS = [
+    { key: "", label: "Todas", count: groups.length },
+    { key: "atrasadas", label: "Atrasadas", count: groups.filter((g) => g.overdueCount > 0).length },
+    { key: "mes", label: "Solo este mes", count: groups.filter((g) => g.overdueCount === 0).length },
+  ];
+  const href = (f) => `/panel/cobros${f || q ? `?${new URLSearchParams({ ...(f ? { f } : {}), ...(q ? { q } : {}) })}` : ""}`;
+  const everyone = groups.length
+    ? `https://wa.me/?text=${encodeURIComponent(`Hola vecinos, les recordamos la cuota de vigilancia pendiente. Casas: ${groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; ")}.${tenant.payKey ? ` Pueden pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : ""} ¡Gracias!`)}`
+    : null;
+  return panelLayout("Por cobrar", { ...args, active: "cobros" }, html`
+  <header class="head">
+    <div class="head-text"><h1>Por cobrar</h1><span class="muted">Quién debe, cuánto y desde cuándo.</span></div>
+    <div class="head-actions"><a class="btn" href="/panel/pagos/nuevo">+ Registrar pago</a></div>
+  </header>
   ${flashBox(flash)}
+
+  <section class="top" aria-label="Lo que se debe">
+    <div class="card stat grow">
+      <span class="eyebrow dim">Total por cobrar</span>
+      <span class="stat-number big">${peso(totals.totalCents)}</span>
+      <span class="muted small">${totals.houses} casa${totals.houses === 1 ? "" : "s"} con cuotas pendientes</span>
+      ${everyone ? html`<a class="btn ghost" href="${everyone}" target="_blank" rel="noopener noreferrer">Recordar a todos por WhatsApp</a>` : ""}
+    </div>
+    <div class="stat late-card grow${totals.overdueDues ? "" : " calm"}">
+      <span class="eyebrow">Atrasadas</span>
+      <span class="stat-number big">${peso(totals.overdueCents)}</span>
+      <span class="small">${totals.overdueHouses ? `${totals.overdueHouses} casa${totals.overdueHouses === 1 ? "" : "s"} deben meses anteriores` : "Nadie debe meses anteriores."}</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row wrap">
+      <div class="chips" role="group" aria-label="Filtrar">
+        ${FILTER_LINKS.map((f) => html`<a class="chip-filter" href="${href(f.key)}"${f.key === filter ? raw(' aria-current="true"') : ""}>${f.label} ${f.count}</a>`)}
+      </div>
+      <form class="searchbar" method="get" action="/panel/cobros" role="search">
+        ${filter ? html`<input type="hidden" name="f" value="${filter}">` : ""}
+        <input type="search" name="q" value="${q ?? ""}" maxlength="60" placeholder="Buscar casa o nombre" aria-label="Buscar casa o nombre" autocomplete="off" data-live-filter="#lista-cobros" data-live-empty="#sin-cobros">
+        <button class="btn ghost small" type="submit" data-search-button>Buscar</button>
+      </form>
+    </div>
+    ${shown.length
+      ? html`<ul class="list stack debts" id="lista-cobros">${shown.map((g) => debtRow(g, { tenant, period: current }))}</ul><p class="muted" id="sin-cobros" hidden>Ninguna casa coincide.</p>`
+      : groups.length
+        ? html`<p class="muted">Ninguna casa coincide con ese filtro.</p>`
+        : html`<div class="empty"><span class="okring small">${icon("check", 28, 3)}</span><h2>¡Todo al día!</h2><p class="muted">No hay cuotas pendientes. Cuando llegue un nuevo mes, aparecerán aquí las casas que no hayan pagado.</p></div>`}
+  </section>`);
+}
+
+export function casasPage(args) {
+  const { tenant, csrf, flash, houses, inactive = [], debts, current, q = "" } = args;
+  const byHouse = new Map(debts.groups.map((g) => [g.house.id, g]));
+  const shown = houses.filter((h) => matchesSearch(q, `${h.code} ${h.residentName}`));
+  return panelLayout("Casas", { ...args, active: "casas" }, html`
+  <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}${debts.groups.length ? ` · ${debts.groups.length} con deuda` : ""}</span></div>
+  ${flashBox(flash)}
+
+  <section class="card">
+    <div class="row wrap"><h2>Listado</h2>
+      <form class="searchbar" method="get" action="/panel/casas" role="search">
+        <input type="search" name="q" value="${q}" maxlength="60" placeholder="Buscar casa o nombre" aria-label="Buscar casa o nombre" autocomplete="off" data-live-filter="#lista-casas" data-live-empty="#sin-casas">
+        <button class="btn ghost small" type="submit" data-search-button>Buscar</button>
+      </form>
+    </div>
+    ${houses.length === 0
+      ? html`<div class="empty"><h2>Aún no hay casas</h2><p class="muted">Pega la lista desde Excel y Cuotia crea cada casa con su enlace personal.</p><a class="btn" href="/panel/casas/importar">Importar casas</a></div>`
+      : shown.length === 0
+        ? html`<p class="muted">Ninguna casa coincide con “${q}”.</p>`
+        : html`<ul class="list" id="lista-casas">${shown.map((h) => {
+          const g = byHouse.get(h.id);
+          return html`<li class="house-row" data-search="${h.code} ${h.residentName}">
+            <span class="tile ${g ? (g.overdueCount ? "bad" : "warn") : "ok"}">${h.code}</span>
+            <span class="house-main"><b>${h.residentName}</b><small class="muted">${h.phone ?? "Sin celular"}</small></span>
+            <span class="house-state">${houseStatus(g, current)}${g ? html`<small class="muted">${peso(g.totalCents)}</small>` : ""}</span>
+            <span class="actions">
+              ${g ? html`<a class="btn small" href="/panel/pagos/nuevo?casa=${h.id}">Registrar pago</a>` : ""}
+              <a class="btn ghost small" href="/panel/casas/${h.id}">Editar</a>
+              <form method="post" action="/panel/casas/${h.id}/enlace">${csrfField(csrf)}<button class="btn ghost small" type="submit">Enlace</button></form>
+            </span>
+          </li>`;
+        })}</ul><p class="muted" id="sin-casas" hidden>Ninguna casa coincide.</p>`}
+  </section>
 
   <section class="card">
     <div class="row wrap"><h2>Agregar casa</h2><a class="btn ghost small" href="/panel/casas/importar">Importar varias casas</a></div>
@@ -366,19 +568,6 @@ export function casasPage(args) {
       <label>Celular (opcional)<input type="tel" name="telefono" maxlength="20" inputmode="tel" placeholder="3001234567"></label>
       <button class="btn" type="submit">Agregar y ver enlace</button>
     </form>
-  </section>
-
-  <section class="card">
-    <h2>Listado</h2>
-    ${houses.length === 0
-      ? html`<p class="muted">Aún no hay casas.</p>`
-      : html`<ul class="list">${houses.map((h) => html`<li>
-        <span><b>Casa ${h.code}</b><small class="muted">${h.residentName}${h.phone ? ` · ${h.phone}` : ""}</small></span>
-        <span class="actions">
-          <a class="btn ghost small" href="/panel/casas/${h.id}">Editar</a>
-          <form method="post" action="/panel/casas/${h.id}/enlace">${csrfField(csrf)}<button class="btn ghost small" type="submit">Enlace</button></form>
-        </span>
-      </li>`)}</ul>`}
   </section>
 
   ${inactive.length
@@ -395,6 +584,74 @@ export function casasPage(args) {
       </section>`
     : ""}`);
 }
+
+/** Register a payment by hand. Step 1: who owes (a list you tap). Step 2: which months, how it was paid, when. */
+export function pagoManualPage(args) {
+  const { csrf, flash, debts, current, selected, missing = [], preselect = [], all = false, today, q = "" } = args;
+  const monthButton = (m) => `+ ${monthName(m)}${m.slice(0, 4) === current.slice(0, 4) ? "" : ` ${m.slice(0, 4)}`}`;
+  const methods = Object.entries(MANUAL_LABELS);
+  const list = debts.groups.filter((g) => matchesSearch(q, `${g.house.code} ${g.house.residentName}`));
+  const checked = (d, i) => (all || preselect.includes(d.id) || (preselect.length === 0 && i === 0));
+  return panelLayout("Registrar pago", { ...args, active: "pagos" }, html`
+  <div class="heading"><h1>Registrar pago</h1><span class="muted">Efectivo, transferencia u otro</span></div>
+  <p><a href="${selected ? "/panel/pagos/nuevo" : "/panel/pagos"}">← ${selected ? "Elegir otra casa" : "Volver a pagos"}</a></p>
+  ${flashBox(flash)}
+
+  ${selected
+    ? html`<section class="card">
+        <div class="row wrap">
+          <h2>Casa ${selected.house.code} <span class="muted">· ${selected.house.residentName}</span></h2>
+          <span class="owes"><small class="muted">Debe</small> <b>${peso(selected.totalCents)}</b></span>
+        </div>
+        ${missing.length
+          ? html`<form class="addmonths" method="post" action="/panel/casas/${selected.house.id}/mes">
+              ${csrfField(csrf)}
+              <span class="muted small">¿Pagó también un mes que no aparece? Agrégalo:</span>
+              <span class="addmonths-buttons">${missing.map((m) => html`<button class="btn ghost small" type="submit" name="mes" value="${m}">${monthButton(m)}</button>`)}</span>
+            </form>`
+          : ""}
+        <form class="stack-form" method="post" action="/panel/pagos/nuevo">
+          ${csrfField(csrf)}
+          <input type="hidden" name="casa" value="${selected.house.id}">
+          <fieldset>
+            <legend>¿Qué cuotas cubre?</legend>
+            ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${checked(d, i) ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}${d.period < current ? html` <span class="pill bad small"><i></i>Atrasada</span>` : ""}</span><b>${peso(d.amountCents)}</b></label>`)}
+            ${selected.dues.length > 1 ? html`<a class="small" href="/panel/pagos/nuevo?casa=${selected.house.id}&amp;todas=1">Marcar todas (${peso(selected.totalCents)})</a>` : ""}
+            <small class="muted">Se registra la suma de las cuotas marcadas, exacta. Si pagó otro valor, anótalo en la nota y avísale al vecino.</small>
+          </fieldset>
+          <div class="grid-form">
+            <label>¿Cómo pagó?
+              <select name="medio">${methods.map(([key, label]) => html`<option value="${key}">${label}</option>`)}</select>
+            </label>
+            <label>Banco o billetera <span class="muted small">(opcional)</span><input type="text" name="banco" maxlength="40" placeholder="Nequi, Bancolombia…"></label>
+            <label>Fecha en que pagó<input type="date" name="fecha" value="${today}" max="${today}" required></label>
+            <label>Nota <span class="muted small">(opcional)</span><input type="text" name="nota" maxlength="120" placeholder="Ej. lo trajo la esposa"></label>
+          </div>
+          <button class="btn" type="submit">Registrar pago</button>
+        </form>
+      </section>`
+    : html`<section class="card">
+        <div class="row wrap">
+          <h2>¿Quién pagó?</h2>
+          <form class="searchbar big" method="get" action="/panel/pagos/nuevo" role="search">
+            <input type="search" name="q" value="${q}" maxlength="60" placeholder="Escribe la casa o el nombre…" aria-label="Buscar casa o nombre" autocomplete="off" autofocus data-live-filter="#lista-pick" data-live-empty="#sin-pick">
+            <button class="btn small" type="submit" data-search-button>Buscar</button>
+          </form>
+        </div>
+        ${debts.groups.length === 0
+          ? html`<div class="empty"><span class="okring small">${icon("check", 28, 3)}</span><h2>¡Todo al día!</h2><p class="muted">Ninguna casa tiene cuotas pendientes: no hay nada por registrar.</p></div>`
+          : list.length === 0
+            ? html`<p class="muted">Ninguna casa con deuda coincide con “${q}”.</p>`
+            : html`<p class="muted small">Escribe para buscar o toca la casa que pagó. Solo aparecen las que deben algo. <span class="kbd-hint">Con una sola coincidencia, Enter la abre.</span></p>
+              <ul class="list stack pick" id="lista-pick">${list.map((g) => html`<li class="debt" data-search="${g.house.code} ${g.house.residentName}">
+                <span class="tile ${g.overdueCount ? "bad" : "warn"}">${g.house.code}</span>
+                <div class="debt-main"><b>${g.house.residentName}</b><span class="months">${monthChips(g, current)}</span></div>
+                <div class="debt-total"><b>${peso(g.totalCents)}</b><small class="muted">${g.dues.length} cuota${g.dues.length === 1 ? "" : "s"}</small></div>
+                <div class="debt-actions"><a class="btn small" href="/panel/pagos/nuevo?casa=${g.house.id}" data-pick>Elegir</a></div>
+              </li>`)}</ul><p class="muted" id="sin-pick" hidden>Ninguna casa con deuda coincide.</p>`}
+      </section>`}`);
+}
+
 
 export function ajustesPage(args) {
   const { tenant, csrf, flash, webhookUrl } = args;
@@ -569,49 +826,6 @@ export function pagosPage(args) {
   </section>`);
 }
 
-/** Register a payment by hand: pick the house, then which months it covers, how it was paid and when. */
-export function pagoManualPage(args) {
-  const { csrf, flash, groups, selected, today } = args;
-  const methods = Object.entries(MANUAL_LABELS);
-  return panelLayout("Registrar pago", { ...args, active: "pagos" }, html`
-  <div class="heading"><h1>Registrar pago</h1><span class="muted">Efectivo, transferencia u otro</span></div>
-  <p><a href="/panel/pagos">← Volver a pagos</a></p>
-  ${flashBox(flash)}
-
-  ${selected
-    ? html`<section class="card">
-        <h2>Casa ${selected.house.code} <span class="muted">· ${selected.house.residentName}</span></h2>
-        <form class="stack-form" method="post" action="/panel/pagos/nuevo">
-          ${csrfField(csrf)}
-          <input type="hidden" name="casa" value="${selected.house.id}">
-          <fieldset>
-            <legend>¿Qué cuotas cubre?</legend>
-            ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${i === 0 ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}</span><b>${peso(d.amountCents)}</b></label>`)}
-            <small class="muted">Se registra la suma de las cuotas marcadas, exacta. Si pagó otro valor, anótalo en la nota y avísale al vecino.</small>
-          </fieldset>
-          <div class="grid-form">
-            <label>¿Cómo pagó?
-              <select name="medio">${methods.map(([key, label]) => html`<option value="${key}">${label}</option>`)}</select>
-            </label>
-            <label>Banco o billetera <span class="muted small">(opcional)</span><input type="text" name="banco" maxlength="40" placeholder="Nequi, Bancolombia…"></label>
-            <label>Fecha en que pagó<input type="date" name="fecha" value="${today}" max="${today}" required></label>
-            <label>Nota <span class="muted small">(opcional)</span><input type="text" name="nota" maxlength="120" placeholder="Ej. lo trajo la esposa"></label>
-          </div>
-          <button class="btn" type="submit">Registrar pago</button>
-        </form>
-        <p><a class="small" href="/panel/pagos/nuevo">Elegir otra casa</a></p>
-      </section>`
-    : html`<section class="card">
-        <h2>¿Quién pagó?</h2>
-        ${groups.length
-          ? html`<form class="assign" method="get" action="/panel/pagos/nuevo">
-              <select name="casa" required aria-label="Casa que pagó"><option value="">Elegir casa…</option>${groups.map((g) => html`<option value="${g.house.id}">Casa ${g.house.code} · ${g.house.residentName} · ${g.dues.length} cuota${g.dues.length === 1 ? "" : "s"}</option>`)}</select>
-              <button class="btn small" type="submit">Continuar</button>
-            </form>
-            <p class="muted small">Solo aparecen las casas con cuotas pendientes.</p>`
-          : html`<p class="muted">Todas las casas están al día: no hay nada pendiente por registrar.</p>`}
-      </section>`}`);
-}
 
 export function casaPage(args) {
   const { tenant, csrf, flash, house, aliases, dues, payments } = args;
@@ -696,8 +910,6 @@ export function linkPage(args) {
 // Resident pages (reached by the personal link, no sign-in): home, how to pay, receipt.
 // ---------------------------------------------------------------------------------------------------------------
 
-/** "2026-11" -> "Noviembre". */
-const monthName = (period) => { const m = periodLabel(period).split(" ")[0]; return m[0].toUpperCase() + m.slice(1); };
 const firstName = (full) => String(full ?? "").trim().split(/\s+/)[0] || "vecino";
 
 export function residentPage({ tenant, house, dues, period, token }) {

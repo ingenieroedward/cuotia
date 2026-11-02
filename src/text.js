@@ -44,6 +44,42 @@ export function currentPeriod(date = new Date()) {
 }
 
 const MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+/** Lower case, no accents: "Pérez" and "perez" are the same when searching. Keep in step with `fold` in public/app.js. */
+export const foldText = (text) => String(text ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+/**
+ * Search the way a person types: every word must appear somewhere, in any order, ignoring accents and case.
+ * The browser does the same while typing (public/app.js); this is for the server when JavaScript is off.
+ */
+export function matchesSearch(query, text) {
+  const haystack = foldText(text);
+  return foldText(query).split(/\s+/).filter(Boolean).every((word) => haystack.includes(word));
+}
+
+/** "2026-11" -> "nov" (three letters, for small chips). */
+export function monthShort(period) {
+  return MONTHS[Number(period.split("-")[1]) - 1]?.slice(0, 3) ?? period;
+}
+
+/** "2026-11" -> "Noviembre" (capitalised, no year). */
+export function monthName(period) {
+  const m = MONTHS[Number(period.split("-")[1]) - 1] ?? period;
+  return m[0].toUpperCase() + m.slice(1);
+}
+
+/** The previous or next month of "YYYY-MM": shiftPeriod("2026-01", -1) = "2025-12". */
+export function shiftPeriod(period, delta) {
+  const [y, m] = period.split("-").map(Number);
+  const index = y * 12 + (m - 1) + delta;
+  return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}`;
+}
+
+/** The number a wa.me link needs (Colombian mobiles get 57), or "" when the phone is missing or unusable. */
+export function whatsappNumber(phone) {
+  const d = String(phone ?? "").replace(/\D/g, "");
+  return d.length === 10 ? `57${d}` : d.length >= 11 ? d : "";
+}
+
 /** "2026-11" -> "noviembre 2026". */
 export function periodLabel(period) {
   const [y, m] = period.split("-");
