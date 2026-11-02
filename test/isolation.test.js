@@ -248,3 +248,18 @@ test("cuotas pendientes: solo de casas activas y del propio conjunto", () => {
   assert.deepEqual(A.dues.listPending(), []);
   assert.equal(B.dues.listPending().length, 1);
 });
+
+test("agregar un mes a una sola casa: solo a esa casa, sin duplicar, y no en casas ajenas ni desactivadas", () => {
+  const { A, B, a14, a03, b01 } = twoConjuntos();
+  assert.equal(A.dues.generateForHouse(a14.house.id, "2026-10"), 1, "una cuota por concepto");
+  assert.equal(A.dues.generateForHouse(a14.house.id, "2026-10"), 0, "repetirlo no duplica");
+  assert.deepEqual(A.dues.listForHouse(a14.house.id).map((d) => d.period), ["2026-10"]);
+  assert.deepEqual(A.dues.listForHouse(a03.house.id), [], "las demás casas no reciben nada");
+  assert.equal(B.dues.listByPeriod("2026-10").length, 0, "ni el otro conjunto");
+
+  assert.throws(() => A.dues.generateForHouse(b01.house.id, "2026-10"), /no existe en este conjunto/);
+  assert.throws(() => A.dues.generateForHouse(a14.house.id, "octubre"), /AAAA-MM/);
+  A.houses.setActive(a03.house.id, false);
+  assert.throws(() => A.dues.generateForHouse(a03.house.id, "2026-10"), /desactivada/);
+  assert.equal(B.dues.listForHouse(b01.house.id).length, 0, "nada quedó a medias en el otro conjunto");
+});

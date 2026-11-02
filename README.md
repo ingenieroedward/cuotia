@@ -84,6 +84,12 @@ Las cuotas son mensuales y Cuotia lleva la cuenta mes a mes:
 - **Resumen:** el mes se cambia con las flechas (‹ noviembre 2026 ›). Cada casa que no ha pagado tiene su botón **Registrar pago**
   en la propia fila (ya con esa cuota marcada). Una casa que debe meses anteriores dice **"Debe 2 meses"**, y una tarjeta roja
   suma lo **atrasado**. "Para cobrar primero" lista las cinco casas con la deuda más vieja.
+- **Buscar entre muchas casas:** en *Registrar pago*, *Por cobrar* y *Casas* el buscador **filtra al instante mientras escribes**
+  (sin acentos, mayúsculas ni orden: `dia per` encuentra "Diana Pérez"); con una sola coincidencia, **Enter** la abre. El selector
+  de casa de *Por asignar* también trae su buscador. Sin JavaScript, los mismos cuadros funcionan como búsqueda normal.
+- **Un mes que no existe (por ejemplo octubre):** Cuotia solo crea la cuota del mes en curso. En el formulario de *Registrar pago* de
+  una casa hay botones `+ Octubre`, `+ Septiembre`… que agregan ese mes **a esa casa** y lo dejan marcado para registrar el pago con
+  su fecha. Para **todas las casas** a la vez, en el Resumen: *¿Falta un mes anterior?* Hasta 24 meses atrás, nunca el futuro.
 - **Casas:** cada casa muestra si está **al día** o cuánto **debe**, con el botón de cobrar; se puede buscar.
 - **Registrar pago:** eliges la casa tocándola (solo salen las que deben algo), marcas qué meses cubre (o *Marcar todas*) y listo;
   al terminar vuelves a *Por cobrar* para seguir con la siguiente.

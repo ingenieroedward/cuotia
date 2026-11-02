@@ -44,6 +44,18 @@ export function currentPeriod(date = new Date()) {
 }
 
 const MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+/** Lower case, no accents: "Pérez" and "perez" are the same when searching. Keep in step with `fold` in public/app.js. */
+export const foldText = (text) => String(text ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+/**
+ * Search the way a person types: every word must appear somewhere, in any order, ignoring accents and case.
+ * The browser does the same while typing (public/app.js); this is for the server when JavaScript is off.
+ */
+export function matchesSearch(query, text) {
+  const haystack = foldText(text);
+  return foldText(query).split(/\s+/).filter(Boolean).every((word) => haystack.includes(word));
+}
+
 /** "2026-11" -> "nov" (three letters, for small chips). */
 export function monthShort(period) {
   return MONTHS[Number(period.split("-")[1]) - 1]?.slice(0, 3) ?? period;

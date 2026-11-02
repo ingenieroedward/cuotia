@@ -29,3 +29,60 @@ document.addEventListener("click", (event) => {
 if ("serviceWorker" in navigator) {
   addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }
+
+// ---- Live search ------------------------------------------------------------------------------------------------
+// With 100 houses a dropdown is a chore. Lists and the "casa" select filter as you type; without JavaScript the same
+// inputs are ordinary search forms handled by the server, so nothing here is required.
+
+/** Lower case, no accents: "Pérez" matches "perez". */
+const fold = (text) => String(text ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+/** Every word typed must appear somewhere in the text, in any order: "dia per" finds "03 Diana Pérez". */
+const matches = (query, text) => {
+  const haystack = fold(text);
+  return fold(query).split(/\s+/).filter(Boolean).every((word) => haystack.includes(word));
+};
+globalThis.cuotia = { fold, matches };
+
+for (const input of document.querySelectorAll("[data-live-filter]")) {
+  const list = document.querySelector(input.dataset.liveFilter);
+  if (!list) continue;
+  const empty = input.dataset.liveEmpty ? document.querySelector(input.dataset.liveEmpty) : null;
+  const items = [...list.children];
+  const form = input.closest("form");
+  form?.querySelector("[data-search-button]")?.setAttribute("hidden", "");
+  const apply = () => {
+    let shown = 0;
+    for (const item of items) {
+      const visible = matches(input.value, item.dataset.search ?? item.textContent);
+      item.hidden = !visible;
+      if (visible) shown++;
+    }
+    if (empty) empty.hidden = shown > 0;
+    return shown;
+  };
+  input.addEventListener("input", apply);
+  // Enter: with exactly one house left, open it (the "Elegir" link); otherwise just keep filtering, never reload.
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const visible = items.filter((item) => !item.hidden);
+    const link = visible.length === 1 ? visible[0].querySelector("[data-pick]") : null;
+    if (link) location.href = link.href;
+  });
+  apply();
+}
+
+// A <select> with many options gets a search box above it that narrows the options as you type.
+for (const input of document.querySelectorAll("[data-select-filter]")) {
+  const select = document.querySelector(input.dataset.selectFilter);
+  if (!select) continue;
+  input.hidden = false;
+  const all = [...select.options].map((option) => ({ value: option.value, text: option.textContent }));
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") event.preventDefault(); });
+  input.addEventListener("input", () => {
+    const chosen = select.value;
+    const options = all.filter((o) => !o.value || matches(input.value, o.text)); // the "Elegir casa…" placeholder always stays
+    select.replaceChildren(...options.map((o) => new Option(o.text, o.value, false, o.value === chosen)));
+    const real = options.filter((o) => o.value);
+    if (input.value.trim() && real.length === 1) select.value = real[0].value; // one match: already chosen
+  });
+}

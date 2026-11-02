@@ -1,6 +1,6 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { MANUAL_LABELS, bankLabel, lastPeriods, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
+import { MANUAL_LABELS, bankLabel, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -53,6 +53,8 @@ const FLASH = {
   asig: () => ({ kind: "ok", text: "Pago asignado y cuota marcada como pagada. Cuotia recordó el nombre." }),
   asigsin: () => ({ kind: "info", text: "Pago asignado, pero esa casa no tenía una cuota abierta por ese monto." }),
   manual: () => ({ kind: "ok", text: "Pago registrado: las cuotas quedaron al día." }),
+  mesok: () => ({ kind: "ok", text: "Mes agregado y marcado. Revisa los datos y registra el pago." }),
+  mesbad: () => ({ kind: "err", text: "Elige un mes de los últimos 24, sin pasarte del mes actual." }),
   manualbad: () => ({ kind: "err", text: "Revisa los datos: elige al menos una cuota y una fecha que no sea futura." }),
   dup: () => ({ kind: "err", text: "Ya existe una casa con ese código." }),
   ed: () => ({ kind: "ok", text: "Datos de la casa guardados." }),
@@ -279,7 +281,7 @@ function houseStatus(group, period) {
 function debtRow(group, { tenant, period }) {
   const { house } = group;
   const late = group.overdueCount > 0;
-  return html`<li class="debt">
+  return html`<li class="debt" data-search="${house.code} ${house.residentName}">
     <span class="tile ${late ? "bad" : "warn"}">${house.code}</span>
     <div class="debt-main">
       <b>${house.residentName}</b>
@@ -301,7 +303,7 @@ const panelHref = ({ mes, f, current }) => {
 };
 
 export function panelPage(args) {
-  const { tenant, user, csrf, flash, summary, dues, unassigned, houses, recent = [], filter = "", current, prevPeriod, nextPeriod, debts } = args;
+  const { tenant, user, csrf, flash, summary, dues, unassigned, houses, recent = [], filter = "", current, prevPeriod, nextPeriod, debts, addable = [] } = args;
   const { groups, totals } = debts;
   const byHouse = new Map(groups.map((g) => [g.house.id, g]));
   const selected = summary.period;
@@ -406,7 +408,10 @@ export function panelPage(args) {
           <div class="row"><span><b>${p.payerName || "Sin nombre"}</b><small class="muted">${bankLabel(p.bank)} · ${shortDate(p.paidAt)}</small></span><b>${peso(p.amountCents)}</b></div>
           <form class="assign" method="post" action="/panel/pagos/${p.id}/asignar">
             ${csrfField(csrf)}
-            <select name="house" required aria-label="Casa de ${p.payerName}"><option value="">Elegir casa…</option>${houseOptions(houses)}</select>
+            <div class="combo">
+              <input type="search" class="combo-search" hidden data-select-filter="#casa-${p.id}" placeholder="Buscar casa o nombre…" aria-label="Buscar la casa de ${p.payerName}" autocomplete="off">
+              <select id="casa-${p.id}" name="house" required aria-label="Casa de ${p.payerName}"><option value="">Elegir casa…</option>${houseOptions(houses)}</select>
+            </div>
             <label class="check"><input type="checkbox" name="remember" value="1" checked> Recordar nombre</label>
             <button class="btn small" type="submit">Asignar</button>
           </form>
@@ -425,7 +430,16 @@ export function panelPage(args) {
       ${dues.length === 0
         ? html`<p class="muted">Aún no hay cuotas para este mes.</p>
           ${selected === current ? html`<form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn" type="submit">Generar cuotas de ${periodLabel(selected)}</button></form>` : ""}`
-        : html`<div class="table-wrap"><table>
+        : html`${selected === current && addable.length && dues.length
+          ? html`<details class="undo addmonth-all">
+              <summary>¿Falta un mes anterior (por ejemplo octubre)?</summary>
+              <p class="muted small">Crea la cuota de ese mes para las ${houses.length} casas, al valor de hoy. Las que no la hayan pagado quedan como <b>atrasadas</b> en Por cobrar, y ahí registras los pagos con su fecha.</p>
+              <form class="addmonths" method="post" action="/panel/cuotas/generar">
+                ${csrfField(csrf)}
+                <span class="addmonths-buttons">${addable.map((m) => html`<button class="btn ghost small" type="submit" name="mes" value="${m}">+ ${monthName(m)}${m.slice(0, 4) === current.slice(0, 4) ? "" : ` ${m.slice(0, 4)}`}</button>`)}</span>
+              </form>
+            </details>`
+          : ""}<div class="table-wrap"><table>
         <thead><tr><th>Casa</th><th>Residente</th><th>Estado</th><th>Pagó el</th><th class="num">Monto</th><th><span class="sr">Acción</span></th></tr></thead>
         <tbody>${shown.map((d) => html`<tr>
           <td><a class="rowlink" href="/panel/casas/${d.houseId}"><b>${d.houseCode}</b></a></td>
@@ -499,12 +513,12 @@ export function cobrosPage(args) {
       </div>
       <form class="searchbar" method="get" action="/panel/cobros" role="search">
         ${filter ? html`<input type="hidden" name="f" value="${filter}">` : ""}
-        <input type="search" name="q" value="${q ?? ""}" maxlength="60" placeholder="Buscar casa o nombre" aria-label="Buscar casa o nombre">
-        <button class="btn ghost small" type="submit">Buscar</button>
+        <input type="search" name="q" value="${q ?? ""}" maxlength="60" placeholder="Buscar casa o nombre" aria-label="Buscar casa o nombre" autocomplete="off" data-live-filter="#lista-cobros" data-live-empty="#sin-cobros">
+        <button class="btn ghost small" type="submit" data-search-button>Buscar</button>
       </form>
     </div>
     ${shown.length
-      ? html`<ul class="list stack debts">${shown.map((g) => debtRow(g, { tenant, period: current }))}</ul>`
+      ? html`<ul class="list stack debts" id="lista-cobros">${shown.map((g) => debtRow(g, { tenant, period: current }))}</ul><p class="muted" id="sin-cobros" hidden>Ninguna casa coincide.</p>`
       : groups.length
         ? html`<p class="muted">Ninguna casa coincide con ese filtro.</p>`
         : html`<div class="empty"><span class="okring small">${icon("check", 28, 3)}</span><h2>¡Todo al día!</h2><p class="muted">No hay cuotas pendientes. Cuando llegue un nuevo mes, aparecerán aquí las casas que no hayan pagado.</p></div>`}
@@ -514,8 +528,7 @@ export function cobrosPage(args) {
 export function casasPage(args) {
   const { tenant, csrf, flash, houses, inactive = [], debts, current, q = "" } = args;
   const byHouse = new Map(debts.groups.map((g) => [g.house.id, g]));
-  const needle = q.trim().toLowerCase();
-  const shown = needle ? houses.filter((h) => `${h.code} ${h.residentName}`.toLowerCase().includes(needle)) : houses;
+  const shown = houses.filter((h) => matchesSearch(q, `${h.code} ${h.residentName}`));
   return panelLayout("Casas", { ...args, active: "casas" }, html`
   <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}${debts.groups.length ? ` · ${debts.groups.length} con deuda` : ""}</span></div>
   ${flashBox(flash)}
@@ -523,17 +536,17 @@ export function casasPage(args) {
   <section class="card">
     <div class="row wrap"><h2>Listado</h2>
       <form class="searchbar" method="get" action="/panel/casas" role="search">
-        <input type="search" name="q" value="${q}" maxlength="60" placeholder="Buscar casa o nombre" aria-label="Buscar casa o nombre">
-        <button class="btn ghost small" type="submit">Buscar</button>
+        <input type="search" name="q" value="${q}" maxlength="60" placeholder="Buscar casa o nombre" aria-label="Buscar casa o nombre" autocomplete="off" data-live-filter="#lista-casas" data-live-empty="#sin-casas">
+        <button class="btn ghost small" type="submit" data-search-button>Buscar</button>
       </form>
     </div>
     ${houses.length === 0
       ? html`<div class="empty"><h2>Aún no hay casas</h2><p class="muted">Pega la lista desde Excel y Cuotia crea cada casa con su enlace personal.</p><a class="btn" href="/panel/casas/importar">Importar casas</a></div>`
       : shown.length === 0
         ? html`<p class="muted">Ninguna casa coincide con “${q}”.</p>`
-        : html`<ul class="list">${shown.map((h) => {
+        : html`<ul class="list" id="lista-casas">${shown.map((h) => {
           const g = byHouse.get(h.id);
-          return html`<li class="house-row">
+          return html`<li class="house-row" data-search="${h.code} ${h.residentName}">
             <span class="tile ${g ? (g.overdueCount ? "bad" : "warn") : "ok"}">${h.code}</span>
             <span class="house-main"><b>${h.residentName}</b><small class="muted">${h.phone ?? "Sin celular"}</small></span>
             <span class="house-state">${houseStatus(g, current)}${g ? html`<small class="muted">${peso(g.totalCents)}</small>` : ""}</span>
@@ -543,7 +556,7 @@ export function casasPage(args) {
               <form method="post" action="/panel/casas/${h.id}/enlace">${csrfField(csrf)}<button class="btn ghost small" type="submit">Enlace</button></form>
             </span>
           </li>`;
-        })}</ul>`}
+        })}</ul><p class="muted" id="sin-casas" hidden>Ninguna casa coincide.</p>`}
   </section>
 
   <section class="card">
@@ -574,10 +587,10 @@ export function casasPage(args) {
 
 /** Register a payment by hand. Step 1: who owes (a list you tap). Step 2: which months, how it was paid, when. */
 export function pagoManualPage(args) {
-  const { csrf, flash, debts, current, selected, preselect = [], all = false, today, q = "" } = args;
+  const { csrf, flash, debts, current, selected, missing = [], preselect = [], all = false, today, q = "" } = args;
+  const monthButton = (m) => `+ ${monthName(m)}${m.slice(0, 4) === current.slice(0, 4) ? "" : ` ${m.slice(0, 4)}`}`;
   const methods = Object.entries(MANUAL_LABELS);
-  const needle = q.trim().toLowerCase();
-  const list = needle ? debts.groups.filter((g) => `${g.house.code} ${g.house.residentName}`.toLowerCase().includes(needle)) : debts.groups;
+  const list = debts.groups.filter((g) => matchesSearch(q, `${g.house.code} ${g.house.residentName}`));
   const checked = (d, i) => (all || preselect.includes(d.id) || (preselect.length === 0 && i === 0));
   return panelLayout("Registrar pago", { ...args, active: "pagos" }, html`
   <div class="heading"><h1>Registrar pago</h1><span class="muted">Efectivo, transferencia u otro</span></div>
@@ -590,6 +603,13 @@ export function pagoManualPage(args) {
           <h2>Casa ${selected.house.code} <span class="muted">· ${selected.house.residentName}</span></h2>
           <span class="owes"><small class="muted">Debe</small> <b>${peso(selected.totalCents)}</b></span>
         </div>
+        ${missing.length
+          ? html`<form class="addmonths" method="post" action="/panel/casas/${selected.house.id}/mes">
+              ${csrfField(csrf)}
+              <span class="muted small">¿Pagó también un mes que no aparece? Agrégalo:</span>
+              <span class="addmonths-buttons">${missing.map((m) => html`<button class="btn ghost small" type="submit" name="mes" value="${m}">${monthButton(m)}</button>`)}</span>
+            </form>`
+          : ""}
         <form class="stack-form" method="post" action="/panel/pagos/nuevo">
           ${csrfField(csrf)}
           <input type="hidden" name="casa" value="${selected.house.id}">
@@ -613,22 +633,22 @@ export function pagoManualPage(args) {
     : html`<section class="card">
         <div class="row wrap">
           <h2>¿Quién pagó?</h2>
-          <form class="searchbar" method="get" action="/panel/pagos/nuevo" role="search">
-            <input type="search" name="q" value="${q}" maxlength="60" placeholder="Buscar casa o nombre" aria-label="Buscar casa o nombre">
-            <button class="btn ghost small" type="submit">Buscar</button>
+          <form class="searchbar big" method="get" action="/panel/pagos/nuevo" role="search">
+            <input type="search" name="q" value="${q}" maxlength="60" placeholder="Escribe la casa o el nombre…" aria-label="Buscar casa o nombre" autocomplete="off" autofocus data-live-filter="#lista-pick" data-live-empty="#sin-pick">
+            <button class="btn small" type="submit" data-search-button>Buscar</button>
           </form>
         </div>
         ${debts.groups.length === 0
           ? html`<div class="empty"><span class="okring small">${icon("check", 28, 3)}</span><h2>¡Todo al día!</h2><p class="muted">Ninguna casa tiene cuotas pendientes: no hay nada por registrar.</p></div>`
           : list.length === 0
             ? html`<p class="muted">Ninguna casa con deuda coincide con “${q}”.</p>`
-            : html`<p class="muted small">Toca la casa que pagó. Solo aparecen las que deben algo.</p>
-              <ul class="list stack pick">${list.map((g) => html`<li class="debt">
+            : html`<p class="muted small">Escribe para buscar o toca la casa que pagó. Solo aparecen las que deben algo. <span class="kbd-hint">Con una sola coincidencia, Enter la abre.</span></p>
+              <ul class="list stack pick" id="lista-pick">${list.map((g) => html`<li class="debt" data-search="${g.house.code} ${g.house.residentName}">
                 <span class="tile ${g.overdueCount ? "bad" : "warn"}">${g.house.code}</span>
                 <div class="debt-main"><b>${g.house.residentName}</b><span class="months">${monthChips(g, current)}</span></div>
                 <div class="debt-total"><b>${peso(g.totalCents)}</b><small class="muted">${g.dues.length} cuota${g.dues.length === 1 ? "" : "s"}</small></div>
-                <div class="debt-actions"><a class="btn small" href="/panel/pagos/nuevo?casa=${g.house.id}">Elegir</a></div>
-              </li>`)}</ul>`}
+                <div class="debt-actions"><a class="btn small" href="/panel/pagos/nuevo?casa=${g.house.id}" data-pick>Elegir</a></div>
+              </li>`)}</ul><p class="muted" id="sin-pick" hidden>Ninguna casa con deuda coincide.</p>`}
       </section>`}`);
 }
 

@@ -8,7 +8,7 @@ import {
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
 import { debtTotals, groupDebts } from "./debts.js";
-import { bogotaDateTime, csvCell, currentPeriod, parseHouseLines, paymentMedium, periodLabel, peso, slugify, whatsappNumber } from "./text.js";
+import { bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
@@ -290,6 +290,7 @@ export function createApp({ config, store }) {
         unassigned: ledger.payments.listUnassigned(),
         houses, debts, current: period,
         prevPeriod: months[at + 1] ?? null, nextPeriod: months[at - 1] ?? null,
+        addable: lastPeriods(period, 13).slice(1).filter((m) => !months.includes(m)).slice(0, 6),
         recent: ledger.payments.list({ limit: 4 }).rows,
         filter: ["pagadas", "pendientes"].includes(url.searchParams.get("f")) ? url.searchParams.get("f") : "",
       }));
@@ -299,10 +300,9 @@ export function createApp({ config, store }) {
     if (method === "GET" && path === "/panel/cobros") {
       const filter = ["atrasadas", "mes"].includes(url.searchParams.get("f")) ? url.searchParams.get("f") : "";
       const q = String(url.searchParams.get("q") ?? "").trim().slice(0, 60);
-      const needle = q.toLowerCase();
       const shown = groups
         .filter((g) => (filter === "atrasadas" ? g.overdueCount > 0 : filter === "mes" ? g.overdueCount === 0 : true))
-        .filter((g) => !needle || `${g.house.code} ${g.house.residentName}`.toLowerCase().includes(needle));
+        .filter((g) => matchesSearch(q, `${g.house.code} ${g.house.residentName}`));
       return send(res, 200, cobrosPage({ ...base, flash: flashOf(url.searchParams), groups, shown, totals: debts.totals, filter, q, current: period }));
     }
 
@@ -330,6 +330,12 @@ export function createApp({ config, store }) {
       return send(res, 200, pagoManualPage({
         ...base, flash: flashOf(url.searchParams), debts, current: period,
         selected: groups.find((g) => g.house.id === url.searchParams.get("casa")) ?? null,
+        missing: (() => {
+          const g = groups.find((x) => x.house.id === url.searchParams.get("casa"));
+          if (!g) return [];
+          const have = new Set(ledger.dues.listForHouse(g.house.id).map((d) => d.period));
+          return lastPeriods(period, 13).filter((m) => !have.has(m)).slice(0, 6);
+        })(),
         preselect: url.searchParams.getAll("cuota"), all: url.searchParams.get("todas") === "1",
         q: String(url.searchParams.get("q") ?? "").trim().slice(0, 60),
         today: bogotaDateTime(new Date().toISOString()).slice(0, 10),
@@ -390,7 +396,12 @@ export function createApp({ config, store }) {
         return redirect(res, "/panel/ajustes?m=clave");
       }
 
-      if (path === "/panel/cuotas/generar") return back("gen", ledger.dues.generate(period));
+      if (path === "/panel/cuotas/generar") {
+        const asked = String(form.get("mes") ?? "") || period;
+        if (!validPastPeriod(asked)) return redirect(res, "/panel?m=mesbad");
+        const created = ledger.dues.generate(asked);
+        return redirect(res, `/panel?${asked === period ? "" : `mes=${asked}&`}m=gen&n=${created}`);
+      }
 
       const assign = path.match(/^\/panel\/pagos\/(pg_[a-f0-9]+)\/asignar$/);
       if (assign) {
@@ -449,10 +460,19 @@ export function createApp({ config, store }) {
         return showLink(res, base, house, ledger.houses.rotateToken(house.id));
       }
 
-      const act = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/(editar|alias|desactivar|reactivar)$/);
+      const act = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/(editar|alias|desactivar|reactivar|mes)$/);
       if (act) {
         const [, houseId, action] = act;
         const own = `/panel/casas/${houseId}`;
+        if (action === "mes") {
+          // "+ Octubre": the due of a month that was never generated for this house, and straight to paying it.
+          const asked = String(form.get("mes") ?? "");
+          const form_ = `/panel/pagos/nuevo?casa=${houseId}`;
+          if (!validPastPeriod(asked)) return redirect(res, `${form_}&m=mesbad`);
+          ledger.dues.generateForHouse(houseId, asked);
+          const ticked = ledger.dues.listForHouse(houseId).filter((d) => d.period === asked && d.status === "pending").map((d) => `&cuota=${d.id}`).join("");
+          return redirect(res, `${form_}${ticked}&m=mesok`);
+        }
         if (action === "editar") {
           const data = houseForm(form);
           if (!data) return redirect(res, `${own}?m=err`);
@@ -500,6 +520,12 @@ export function createApp({ config, store }) {
     const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date)) || date > today || date < "2024-01-01") return null;
     return date === today ? new Date().toISOString() : `${date}T17:00:00.000Z`;
+  }
+
+  /** A month you may add dues for: a real "YYYY-MM", not in the future and at most two years back. */
+  function validPastPeriod(p) {
+    const now = currentPeriod();
+    return /^\d{4}-(0[1-9]|1[0-2])$/.test(p) && p <= now && p >= shiftPeriod(now, -24);
   }
 
   /** Validated house fields from a form, or null. */

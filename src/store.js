@@ -347,6 +347,17 @@ export function openStore(path = ":memory:") {
         });
       },
       // A deactivated house's unpaid dues don't show; its paid ones keep counting.
+      /** A month's dues for ONE house (all concepts): to record a payment for a month that was never generated, e.g. October. */
+      generateForHouse(houseId, period) {
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw new Error("El período debe ser AAAA-MM");
+        if (!ownHouse(houseId).active) throw new Error("Esa casa está desactivada");
+        return tx(() => {
+          let created = 0;
+          const insert = db.prepare("INSERT OR IGNORE INTO dues (id, tenant_id, house_id, concept_id, period, amount_cents) VALUES (?, ?, ?, ?, ?, ?)");
+          for (const c of concepts.list()) created += Number(insert.run(newId("du"), tenantId, houseId, c.id, period, c.amountCents).changes);
+          return created;
+        });
+      },
       listByPeriod: (period) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.period = ? AND (h.active = 1 OR d.status = 'paid') ORDER BY h.code, c.name`).all(tenantId, period).map(dueRow),
       listForHouse: (houseId) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.house_id = ? ORDER BY d.period DESC, c.name`).all(tenantId, houseId).map(dueRow),
       /** The months that have dues, newest first ("2026-11", "2026-10"…): what the month selector offers. */

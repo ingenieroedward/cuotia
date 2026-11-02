@@ -402,3 +402,18 @@ input[type="date"]:focus-visible { outline: 3px solid var(--link); outline-offse
 .late-card .stat-link, .late-card .small { color: var(--bad-fg); }
 .late-card.calm .eyebrow, .late-card.calm .small { color: var(--ok-fg); }
 td.act .btn { white-space: nowrap; }
+
+/* live search */
+[hidden] { display: none !important; }
+.combo { flex: 1 1 280px; display: flex; flex-wrap: wrap; gap: .5rem; min-width: 0; }
+.combo .combo-search { flex: 1 1 150px; min-height: 48px; padding: 0 .9rem; font: inherit; color: inherit; background: var(--surface); border: 1.5px solid var(--line); border-radius: 12px; min-width: 0; }
+.combo select { flex: 2 1 200px; width: auto; }
+.combo-search:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+.searchbar.big { flex: 1 1 320px; }
+.searchbar.big input[type="search"] { width: 100%; min-height: 52px; font-size: 1.05rem; }
+.kbd-hint { color: var(--muted); }
+
+/* adding a month that was never generated */
+.addmonths { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; padding: .75rem 1rem; background: var(--ground); border-radius: 14px; }
+.addmonths-buttons { display: inline-flex; flex-wrap: wrap; gap: .4rem; }
+details.addmonth-all { margin-bottom: .75rem; }
