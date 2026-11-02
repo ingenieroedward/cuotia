@@ -63,11 +63,14 @@ export async function readBody(req, limit = 256 * 1024) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** A malformed %-sequence (a damaged or hostile cookie) must not crash the request: keep the raw text, it just won't match a session. */
+const safeDecode = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+
 export function parseCookies(header) {
   const out = {};
   for (const part of String(header ?? "").split(";")) {
     const i = part.indexOf("=");
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i > 0) out[part.slice(0, i).trim()] = safeDecode(part.slice(i + 1).trim());
   }
   return out;
 }

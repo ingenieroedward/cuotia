@@ -74,6 +74,37 @@ Cuotia solo usa `payment.received`; los demás eventos solo confirman la conexi�
 (reintento del webhook) se registra una sola vez. Mientras un conjunto no tenga secreto, su URL responde
 503 y pagoradar reintenta.
 
+## Operación diaria
+
+- **Las cuotas del mes se crean solas.** Cuotia las genera al arrancar y revisa cada hora (no duplica nada), así que el día 1
+  nadie tiene que pulsar un botón y un pago que llegue temprano ya encuentra su cuota. Una casa nueva o reactivada recibe la
+  suya al instante. "Generar cuotas" sigue ahí por si lo necesitas.
+- **Importar casas.** En **Casas → Importar varias casas**: pega una lista desde Excel o Google Sheets (`código`, `nombre`,
+  `celular`; una por línea). Cuotia crea las casas, sus cuotas y un **enlace personal** para cada una, con botón de WhatsApp.
+  Los enlaces se muestran **una sola vez**.
+- **Ajustes:** cambia la llave Bre-B y el titular que ven los residentes, el secreto de pagoradar y tu contraseña (al cambiarla
+  se cierran las sesiones de otros dispositivos).
+- **Perdí el celular del código / la contraseña** (lo hace quien administra el servidor, desde la terminal del contenedor):
+
+  ```bash
+  npm run admin -- restablecer-2fa --correo tesorera@ejemplo.com     # la próxima vez activa un código nuevo
+  npm run admin -- restablecer-clave --correo tesorera@ejemplo.com   # imprime una contraseña temporal
+  ```
+
+### Respaldos
+
+Cuotia guarda todo en un solo archivo (`/app/data/cuotia.db`). Para sacar una copia consistente **sin detener la app**:
+
+```bash
+npm run admin -- respaldar            # crea data/backups/cuotia-AAAAMMDD-HHMMSS.db y conserva las últimas 14
+npm run admin -- respaldar --conservar 30
+```
+
+Desde el servidor, sin entrar al contenedor: `docker exec $(docker ps -qf name=cuotia) npm run admin -- respaldar`.
+Prográmalo cada día (cron del servidor o una tarea programada de Dokploy). **Ojo:** el respaldo queda en el mismo disco que la
+base; copia la carpeta `backups` a otro lugar (otro servidor, tu computador, la nube) o no te protege de perder el disco.
+Y guarda `MASTER_KEY` aparte: sin ella, un respaldo no sirve para entrar.
+
 ## Desplegar en Dokploy
 
 *Create Service → Docker Compose* con este repositorio. Variables:
@@ -118,4 +149,4 @@ La tipografía (Plus Jakarta Sans, licencia OFL) se sirve desde el propio servid
 
 Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
 alias, doble factor, panel completo y página del residente (responsive). Pendiente: passkeys,
-tipografía propia, panel del operador, transparencia. Ver `CLAUDE.md`.
+panel del operador, transparencia. Ver `CLAUDE.md`.

@@ -299,3 +299,9 @@ body.receipt-page { background: var(--ink); }
   .receipt-actions { display: none; }
   .rcard { border: 1px solid #e3e8ee; }
 }
+
+/* ---- bulk import ---- */
+textarea { width: 100%; padding: .75rem .9rem; font: inherit; color: inherit; background: var(--ground); border: 1.5px solid var(--line); border-radius: 12px; resize: vertical; }
+textarea:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+pre.example { margin: 0; background: var(--ground); border-radius: 12px; padding: .75rem 1rem; font-size: .85rem; overflow-x: auto; }
+.list.stack li .key { margin: 0; font-size: .8rem; }

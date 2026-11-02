@@ -26,7 +26,7 @@ export function ingestEvent(store, event, tenantId) {
   }
 
   const ledger = store.forTenant(tenant.id);
-  const payerName = String(d.payerName ?? "").trim();
+  const payerName = String(d.payerName ?? "").trim().slice(0, 120);
   const { created, payment } = ledger.payments.record({
     // Namespaced: two conjuntos with their own pagoradar may reuse an id, and one must never block the other.
     externalId: `${tenant.id}:${d.id}`,

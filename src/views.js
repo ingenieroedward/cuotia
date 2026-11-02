@@ -51,6 +51,11 @@ const FLASH = {
   undoc: () => ({ kind: "ok", text: "Pago en efectivo anulado: la cuota volvió a pendiente." }),
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
+  cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
+  clave: () => ({ kind: "ok", text: "Contraseña cambiada. En los demás dispositivos tendrás que entrar de nuevo." }),
+  clavemal: () => ({ kind: "err", text: "La contraseña actual no es correcta." }),
+  clavebad: () => ({ kind: "err", text: "La contraseña nueva debe tener al menos 10 caracteres y las dos deben coincidir." }),
+  clavelim: () => ({ kind: "err", text: "Demasiados intentos. Espera unos minutos." }),
   err: () => ({ kind: "err", text: "No se pudo completar la acción. Revisa los datos e inténtalo de nuevo." }),
 };
 export function flashOf(query) {
@@ -348,7 +353,7 @@ export function casasPage(args) {
   ${flashBox(flash)}
 
   <section class="card">
-    <h2>Agregar casa</h2>
+    <div class="row wrap"><h2>Agregar casa</h2><a class="btn ghost small" href="/panel/casas/importar">Importar varias casas</a></div>
     <form class="grid-form" method="post" action="/panel/casas">
       ${csrfField(csrf)}
       <label>Código<input type="text" name="code" maxlength="12" required placeholder="14"></label>
@@ -413,9 +418,71 @@ export function ajustesPage(args) {
 
   <section class="card">
     <h2>Cuenta para cobrar</h2>
-    <p class="small">Llave Bre-B: <b>${tenant.payKey ?? "sin configurar"}</b>${tenant.payHolder ? html` · Titular: <b>${tenant.payHolder}</b>` : ""}</p>
-    <p class="muted small">Es la que ven los residentes en su enlace personal.</p>
+    <p class="muted small">Es la llave Bre-B que ven los residentes cuando van a pagar. Debe ser la de la cuenta cuyos avisos recibe pagoradar.</p>
+    <form class="grid-form" method="post" action="/panel/ajustes/cobro">
+      ${csrfField(csrf)}
+      <label>Llave Bre-B<input type="text" name="llave" maxlength="80" value="${tenant.payKey ?? ""}" placeholder="@mi.llave"></label>
+      <label>Titular de la cuenta<input type="text" name="titular" maxlength="80" value="${tenant.payHolder ?? ""}" placeholder="Quien recibe el dinero"></label>
+      <button class="btn" type="submit">Guardar</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Tu contraseña</h2>
+    <form class="grid-form" method="post" action="/panel/ajustes/clave" autocomplete="off">
+      ${csrfField(csrf)}
+      <label>Contraseña actual<input type="password" name="actual" required autocomplete="current-password"></label>
+      <label>Contraseña nueva (mínimo 10 caracteres)<input type="password" name="nueva" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+      <label>Repite la nueva<input type="password" name="nueva2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+      <button class="btn" type="submit">Cambiar contraseña</button>
+    </form>
+    <p class="muted small">Al cambiarla, tus sesiones en otros dispositivos se cierran. Si pierdes el celular del código de verificación, pídele al operador que lo restablezca.</p>
   </section>`);
+}
+
+export function importPage(args) {
+  const { csrf } = args;
+  return panelLayout("Importar casas", { ...args, active: "casas" }, html`
+  <div class="heading"><h1>Importar casas</h1><span class="muted">Pega la lista y listo</span></div>
+  <p><a href="/panel/casas">← Volver a casas</a></p>
+  <section class="card">
+    <p class="small">Una casa por línea: <b>código</b>, <b>nombre del residente</b> y, si lo tienes, <b>celular</b>. Puedes pegar directo desde Excel o Google Sheets, o separar con punto y coma.</p>
+    <pre class="example" translate="no">01;Marta Rojas;3001234567
+02;Julián Castaño;3109876543
+03;Diana Pérez</pre>
+    <form method="post" action="/panel/casas/importar">
+      ${csrfField(csrf)}
+      <label>Lista de casas<textarea name="casas" rows="12" required placeholder="Código;Nombre;Celular"></textarea></label>
+      <p class="muted small">Hasta 300 casas por vez. Las que ya existan se saltan. Cada casa recibe un enlace personal, que verás en la siguiente pantalla (solo se muestra una vez).</p>
+      <button class="btn" type="submit">Importar casas</button>
+    </form>
+  </section>`);
+}
+
+export function importResultPage(args) {
+  const { created, problems } = args;
+  return panelLayout("Casas importadas", { ...args, active: "casas" }, html`
+  <div class="heading"><h1>${created.length} casa${created.length === 1 ? "" : "s"} importada${created.length === 1 ? "" : "s"}</h1><a class="btn ghost small" href="/panel/casas">Ir a casas</a></div>
+  ${problems.length
+    ? html`<section class="card">
+        <h2>Revisa estas líneas <span class="count">${problems.length}</span></h2>
+        <ul class="list">${problems.map((p) => html`<li><span><b>Línea ${p.line}</b><small class="muted">${p.text}</small></span><span class="small">${p.reason}</span></li>`)}</ul>
+      </section>`
+    : ""}
+  ${created.length
+    ? html`<section class="card">
+        <h2>Enlaces personales</h2>
+        <p class="muted small"><b>Solo se muestran ahora.</b> Envíale a cada residente el suyo; si lo pierdes, genera uno nuevo desde la casa. Ya quedaron creadas las cuotas de este mes.</p>
+        <ul class="list stack">${created.map(({ house, url, whatsapp }, i) => html`<li>
+          <div class="row"><span><b>Casa ${house.code}</b><small class="muted">${house.residentName}${house.phone ? ` · ${house.phone}` : ""}</small></span>
+            <span class="actions">
+              <button class="btn ghost small" type="button" data-copy="${url}" data-copy-target="#enlace-${i}">Copiar enlace</button>
+              ${whatsapp ? html`<a class="btn ghost small" href="${whatsapp}" target="_blank" rel="noopener noreferrer">WhatsApp</a>` : ""}
+            </span></div>
+          <p class="key url" id="enlace-${i}" translate="no">${url}</p>
+        </li>`)}</ul>
+      </section>`
+    : ""}`);
 }
 
 const PAY_STATUS = {

@@ -7,8 +7,8 @@ import {
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
-import { bankLabel, bogotaDateTime, csvCell, currentPeriod, periodLabel, peso, slugify } from "./text.js";
-import { ajustesPage, casaPage, casasPage, flashOf, linkPage, loginPage, notFoundPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
+import { bankLabel, bogotaDateTime, csvCell, currentPeriod, parseHouseLines, periodLabel, peso, slugify } from "./text.js";
+import { ajustesPage, casaPage, casasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -290,6 +290,8 @@ export function createApp({ config, store }) {
       }));
     }
 
+    if (method === "GET" && path === "/panel/casas/importar") return send(res, 200, importPage({ ...base }));
+
     if (method === "GET" && path === "/panel/ajustes") {
       return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
@@ -310,6 +312,27 @@ export function createApp({ config, store }) {
         return redirect(res, "/panel/ajustes?m=sec");
       }
 
+      if (path === "/panel/ajustes/cobro") {
+        store.tenants.setPayment(s.tenant.id, { payKey: String(form.get("llave") ?? "").slice(0, 80), payHolder: String(form.get("titular") ?? "").slice(0, 80) });
+        return redirect(res, "/panel/ajustes?m=cobro");
+      }
+
+      if (path === "/panel/ajustes/clave") {
+        const key = `clave|${s.user.id}`;
+        if (loginLimiter.blocked(key)) return redirect(res, "/panel/ajustes?m=clavelim");
+        const user = store.users.byId(s.user.id);
+        if (!(await verifyPassword(String(form.get("actual") ?? ""), user.passwordHash))) {
+          loginLimiter.fail(key);
+          return redirect(res, "/panel/ajustes?m=clavemal");
+        }
+        const nueva = String(form.get("nueva") ?? "");
+        if (nueva.length < 10 || nueva.length > 200 || nueva !== String(form.get("nueva2") ?? "")) return redirect(res, "/panel/ajustes?m=clavebad");
+        store.users.setPasswordHash(user.id, await hashPassword(nueva));
+        store.sessions.deleteForUser(user.id, s.token); // every other device must sign in again with the new password
+        loginLimiter.clear(key);
+        return redirect(res, "/panel/ajustes?m=clave");
+      }
+
       if (path === "/panel/cuotas/generar") return back("gen", ledger.dues.generate(period));
 
       const assign = path.match(/^\/panel\/pagos\/(pg_[a-f0-9]+)\/asignar$/);
@@ -323,6 +346,24 @@ export function createApp({ config, store }) {
         return back("efec");
       }
 
+      if (path === "/panel/casas/importar") {
+        const { rows, errors } = parseHouseLines(form.get("casas"));
+        const created = [];
+        const skipped = [];
+        for (const row of rows) {
+          try {
+            const { house, accessToken } = ledger.houses.create({ code: row.code, residentName: row.residentName, phone: row.phone });
+            const url = `${config.publicUrl}/r/${accessToken}`;
+            created.push({ house, url, whatsapp: whatsappLink(house, url) });
+          } catch (e) {
+            if (!/UNIQUE/.test(e.message)) throw e;
+            skipped.push({ line: row.line, text: `${row.code} · ${row.residentName}`, reason: `Ya existe la casa ${row.code}` });
+          }
+        }
+        if (created.length) ledger.dues.generate(period);
+        return send(res, 200, importResultPage({ ...base, created, problems: [...errors, ...skipped].sort((a, b) => a.line - b.line) }));
+      }
+
       if (path === "/panel/casas") {
         const data = houseForm(form);
         if (!data) return redirect(res, "/panel/casas?m=err");
@@ -333,6 +374,7 @@ export function createApp({ config, store }) {
           if (/UNIQUE/.test(e.message)) return redirect(res, "/panel/casas?m=dup");
           throw e;
         }
+        ledger.dues.generate(period);
         return showLink(res, base, created.house, created.accessToken);
       }
 
@@ -363,6 +405,7 @@ export function createApp({ config, store }) {
           return redirect(res, `${own}?m=${name && ledger.aliases.add(houseId, name) ? "aliasok" : "err"}`);
         }
         ledger.houses.setActive(houseId, action === "reactivar");
+        if (action === "reactivar") ledger.dues.generate(period);
         return redirect(res, action === "reactivar" ? `${own}?m=react` : "/panel/casas?m=desact");
       }
 
@@ -421,16 +464,23 @@ export function createApp({ config, store }) {
     });
   }
 
-  function showLink(res, base, house, token) {
-    const linkUrl = `${config.publicUrl}/r/${token}`;
+  /** A WhatsApp link to this resident with their personal link already written, or null without a usable phone. */
+  function whatsappLink(house, linkUrl) {
     const digits = (house.phone ?? "").replace(/\D/g, "");
     const to = digits.length === 10 ? `57${digits}` : digits.length >= 11 ? digits : "";
+    if (!to) return null;
     const text = `Hola ${house.residentName.split(" ")[0]}, este es tu enlace personal de Cuotia para ver y pagar tu cuota de vigilancia: ${linkUrl}`;
-    const whatsapp = to ? `https://wa.me/${to}?text=${encodeURIComponent(text)}` : null;
-    return send(res, 200, linkPage({ ...base, house, url: linkUrl, whatsapp }));
+    return `https://wa.me/${to}?text=${encodeURIComponent(text)}`;
+  }
+
+  function showLink(res, base, house, token) {
+    const linkUrl = `${config.publicUrl}/r/${token}`;
+    return send(res, 200, linkPage({ ...base, house, url: linkUrl, whatsapp: whatsappLink(house, linkUrl) }));
   }
 
   return async function app(req, res) {
+    // Behind HTTPS, tell browsers never to use plain HTTP for this site again (about six months).
+    if (config.secureCookies) res.setHeader("Strict-Transport-Security", "max-age=15552000");
     try {
       await route(req, res);
     } catch (err) {
