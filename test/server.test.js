@@ -1718,3 +1718,48 @@ test("cuentas claras: el tesorero registra gastos con soporte, ve el saldo, anul
   assert.doesNotMatch(await (await resident()).text(), /Pago del vigilante/);
   assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}/cuentas/${gasto.id}/soporte`)).status, 404);
 }));
+
+test("avisos de residentes: se activan con el enlace personal y 'pago confirmado' llega solo al celular de esa casa", async () => {
+  const sent = [];
+  const pushSend = async (sub, message) => { sent.push({ endpoint: sub.endpoint, message }); return { ok: true, gone: false }; };
+  const { createECDH, randomBytes } = await import("node:crypto");
+  const keysFor = () => { const e = createECDH("prime256v1"); e.generateKeys(); return { p256dh: e.getPublicKey().toString("base64url"), auth: randomBytes(16).toString("base64url") }; };
+  await withServer(async (s) => {
+    s.A.dues.generate(currentPeriod());
+    const wait = () => new Promise((r) => setTimeout(r, 30));
+    const home = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
+    assert.match(home, /data-push data-key="[A-Za-z0-9_-]{80,90}" data-subscribe-url="\/r\/[^"]+\/avisos\/suscribir"/);
+    assert.match(home, /Avisos en este celular/);
+
+    const subscribe = (token, fields, headers = {}) => post(`${s.base}/r/${token}/avisos/suscribir`, new URLSearchParams(fields), { ...FORM, ...headers });
+    const mine = { endpoint: "https://fcm.googleapis.com/fcm/send/casa-14", ...keysFor() };
+    assert.equal((await subscribe("x".repeat(30), mine)).status, 404, "enlace inválido");
+    assert.equal((await subscribe(s.a14.accessToken, mine, { origin: "https://malo.example" })).status, 403);
+    assert.equal((await subscribe(s.a14.accessToken, { ...mine, endpoint: "https://127.0.0.1/x" })).status, 400);
+    assert.equal((await subscribe(s.a14.accessToken, { ...mine, auth: "corta" })).status, 400);
+    assert.equal((await subscribe(s.a14.accessToken, mine)).status, 200);
+    assert.equal(s.A.housePush.count(s.a14.house.id), 1);
+    assert.equal(s.A.housePush.count(s.a03.house.id), 0);
+
+    // The treasurer records Casa 14's payment: only Casa 14's phone hears it, with the amount and nothing about others.
+    const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+    const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
+    const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+    const due = s.A.dues.listForHouse(s.a14.house.id)[0];
+    await form(`${s.base}/panel/pagos/nuevo`, { _csrf: csrf, casa: s.a14.house.id, cuota: due.id, medio: "cash", fecha: today }, cookie);
+    await wait();
+    assert.deepEqual(sent.map((x) => x.endpoint), ["https://fcm.googleapis.com/fcm/send/casa-14"]);
+    assert.deepEqual(sent[0].message, { title: "Pago confirmado", body: "Recibimos tu pago de $30.000. ¡Gracias!", url: "@resident", tag: "pago" });
+
+    // Casa 03 pays too, but has no phone subscribed: nobody is notified.
+    sent.length = 0;
+    const due03 = s.A.dues.listForHouse(s.a03.house.id)[0];
+    await form(`${s.base}/panel/pagos/nuevo`, { _csrf: csrf, casa: s.a03.house.id, cuota: due03.id, medio: "cash", fecha: today }, cookie);
+    await wait();
+    assert.equal(sent.length, 0);
+
+    // Turning it off removes that phone.
+    assert.equal((await post(`${s.base}/r/${s.a14.accessToken}/avisos/baja`, new URLSearchParams({ endpoint: mine.endpoint }), FORM)).status, 200);
+    assert.equal(s.A.housePush.count(s.a14.house.id), 0);
+  }, { pushSend });
+});
