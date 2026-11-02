@@ -149,6 +149,10 @@ const MIGRATIONS = [
   );
   CREATE INDEX invitations_by_tenant ON invitations (tenant_id, used_at);
   `,
+  /* V9: how the conjunto confirms payments, 'auto' (pagoradar) or 'manual' (the treasurer records each one). NULL = decide by whether a secret is saved. */
+  `
+  ALTER TABLE tenants ADD COLUMN pay_mode TEXT CHECK (pay_mode IN ('auto', 'manual'));
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
@@ -160,6 +164,8 @@ const tenantRow = (r) => !r ? null : {
   // The secret itself never travels in the DTO: views get only whether it is set.
   pagoradarConfigured: !!r.pagoradar_secret, pagoradarLastAt: r.pagoradar_last_at,
   openDay: r.open_day ?? null, dueDay: r.due_day ?? null,
+  // What residents are told: payments confirmed by the bank, or registered by the treasurer.
+  payMode: r.pay_mode ?? (r.pagoradar_secret ? "auto" : "manual"),
 };
 const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active };
 const dueRow = (r) => ({
@@ -229,6 +235,7 @@ export function openStore(path = ":memory:") {
     pagoradarSecret: (id) => db.prepare("SELECT pagoradar_secret FROM tenants WHERE id = ?").get(id)?.pagoradar_secret ?? null,
     setPagoradarSecret: (id, encrypted) => void db.prepare("UPDATE tenants SET pagoradar_secret = ? WHERE id = ?").run(encrypted, id),
     /** The Bre-B key and holder residents see. Empty means "not set". */
+    setPayMode: (id, mode) => void db.prepare("UPDATE tenants SET pay_mode = ? WHERE id = ?").run(mode === "auto" || mode === "manual" ? mode : null, id),
     setDates: (id, { openDay, dueDay }) => void db.prepare("UPDATE tenants SET open_day = ?, due_day = ? WHERE id = ?").run(openDay ?? null, dueDay ?? null, id),
     setPayment: (id, { payKey, payHolder }) => void db.prepare("UPDATE tenants SET pay_key = ?, pay_holder = ? WHERE id = ?").run(String(payKey ?? "").trim() || null, String(payHolder ?? "").trim() || null, id),
     /** A correctly signed event arrived (even a test one): the panel shows the connection as alive. */
