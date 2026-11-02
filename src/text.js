@@ -55,6 +55,16 @@ export function shortDate(iso) {
   return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "numeric", month: "short" }).format(new Date(iso)).replace(".", "");
 }
 
+/** How each manual payment method is named in the ledger, the history and the form. */
+export const MANUAL_LABELS = { cash: "Efectivo", transfer: "Transferencia", other: "Otro" };
+
+/** What a payment is called in lists, receipts and the spreadsheet: "Efectivo", "Transferencia · Nequi", "Nequi Negocios"… */
+export function paymentMedium(p) {
+  if (!p.manual) return bankLabel(p.bank);
+  if (p.method === "transfer") return p.bank ? `Transferencia · ${p.bank}` : "Transferencia";
+  return p.method === "other" ? "Otro" : "Efectivo";
+}
+
 const BANKS = { nequi: "Nequi", nequi_negocios: "Nequi Negocios", bancolombia: "Bancolombia" };
 export const bankLabel = (bank) => BANKS[bank] ?? (bank ? String(bank) : "Banco");
 

@@ -1,6 +1,6 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { bankLabel, lastPeriods, peso, periodLabel, shortDate, shortDateTime } from "./text.js";
+import { MANUAL_LABELS, bankLabel, lastPeriods, paymentMedium, peso, periodLabel, shortDate, shortDateTime } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -40,7 +40,8 @@ const FLASH = {
   gen: (n) => ({ kind: "ok", text: n > 0 ? `Se crearon ${n} cuota${n === 1 ? "" : "s"} nueva${n === 1 ? "" : "s"}.` : "Las cuotas de este mes ya estaban creadas." }),
   asig: () => ({ kind: "ok", text: "Pago asignado y cuota marcada como pagada. Cuotia recordó el nombre." }),
   asigsin: () => ({ kind: "info", text: "Pago asignado, pero esa casa no tenía una cuota abierta por ese monto." }),
-  efec: () => ({ kind: "ok", text: "Pago en efectivo registrado." }),
+  manual: () => ({ kind: "ok", text: "Pago registrado: las cuotas quedaron al día." }),
+  manualbad: () => ({ kind: "err", text: "Revisa los datos: elige al menos una cuota y una fecha que no sea futura." }),
   dup: () => ({ kind: "err", text: "Ya existe una casa con ese código." }),
   ed: () => ({ kind: "ok", text: "Datos de la casa guardados." }),
   aliasok: () => ({ kind: "ok", text: "Nombre agregado: los pagos con ese nombre se asignarán a esta casa." }),
@@ -48,7 +49,7 @@ const FLASH = {
   desact: () => ({ kind: "ok", text: "Casa desactivada. Su historial se conserva." }),
   react: () => ({ kind: "ok", text: "Casa reactivada." }),
   undo: () => ({ kind: "ok", text: "Asignación deshecha: el pago volvió a “Por asignar” y la cuota a pendiente." }),
-  undoc: () => ({ kind: "ok", text: "Pago en efectivo anulado: la cuota volvió a pendiente." }),
+  undoc: () => ({ kind: "ok", text: "Pago anulado: las cuotas que cubría volvieron a pendiente." }),
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
   cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
@@ -205,7 +206,7 @@ const STATUS = {
 };
 
 const houseOptions = (houses) => houses.map((h) => html`<option value="${h.id}">Casa ${h.code} · ${h.residentName}</option>`);
-const payMethod = (p) => (p.method === "cash" ? "Efectivo" : bankLabel(p.bank));
+const payMethod = paymentMedium;
 
 /** A WhatsApp link (no phone number: the treasurer picks the group) with the reminder already written. */
 function reminderLink({ tenant, dues, period }) {
@@ -242,7 +243,7 @@ export function panelPage(args) {
     </div>
     <div class="head-actions">
       <span class="monthpill">${icon("calendar", 18)}${periodLabel(summary.period)}</span>
-      ${owing.length ? html`<a class="btn" href="#efectivo">+ Registrar pago en efectivo</a>` : ""}
+      <a class="btn" href="/panel/pagos/nuevo">+ Registrar pago</a>
     </div>
   </header>
   ${flashBox(flash)}
@@ -325,23 +326,17 @@ export function panelPage(args) {
         ${recent.length
           ? html`<ul class="recent">${recent.map((p) => html`<li>
               <span class="tile ${p.status === "assigned" ? "ok" : "info"}">${p.houseCode ?? "?"}</span>
-              <span class="who"><b>${p.method === "cash" ? p.residentName : p.payerName || "Sin nombre"}</b><small class="muted">${payMethod(p)} · ${shortDateTime(p.paidAt)}</small></span>
+              <span class="who"><b>${p.manual ? p.residentName : p.payerName || "Sin nombre"}</b><small class="muted">${payMethod(p)} · ${shortDateTime(p.paidAt)}</small></span>
               <b>+${peso(p.amountCents)}</b>
             </li>`)}</ul>`
           : html`<p class="muted small">Cuando llegue el primer pago aparecerá aquí.</p>`}
       </div>
 
-      ${owing.length
-        ? html`<div class="card" id="efectivo">
-            <h2>Pago en efectivo</h2>
-            <p class="muted small">Si un vecino te pagó en mano, regístralo para dejar su cuota al día.</p>
-            <form class="assign" method="post" action="/panel/efectivo">
-              ${csrfField(csrf)}
-              <select name="house" required aria-label="Casa que pagó en efectivo"><option value="">Elegir casa…</option>${houseOptions(owing)}</select>
-              <button class="btn small" type="submit">Registrar efectivo</button>
-            </form>
-          </div>`
-        : ""}
+      <div class="card">
+        <h2>Pago manual</h2>
+        <p class="muted small">¿Te pagaron en mano o por transferencia, o aún no conectas pagoradar? Regístralo y la cuota queda al día.</p>
+        <a class="btn ghost" href="/panel/pagos/nuevo">Registrar un pago</a>
+      </div>
     </div>
   </section>`);
 }
@@ -406,6 +401,7 @@ export function ajustesPage(args) {
           : html`<span class="pill warn"><i></i>Secreto guardado · aún sin avisos</span>`)
         : html`<span class="pill warn"><i></i>Sin configurar</span>`}
     </div>
+    <p class="muted small"><b>Es opcional.</b> Sin pagoradar puedes registrar los pagos a mano desde <a href="/panel/pagos/nuevo">Pagos → Registrar pago</a>.</p>
     <p class="muted small">Cada conjunto tiene su propia conexión. En el panel de pagoradar crea una app para este conjunto con esta URL de webhook:</p>
     <p class="key url" translate="no">${webhookUrl}</p>
     <p class="muted small">Luego copia el <b>secreto del webhook</b> de esa app y pégalo aquí. Se guarda cifrado y no se vuelve a mostrar.</p>
@@ -493,8 +489,8 @@ const PAY_STATUS = {
 /** The undo control: a <details> so a stray tap never undoes anything and no script is needed. */
 const undoControl = (p, csrf) => html`<details class="undo">
   <summary>Deshacer</summary>
-  <p class="muted small">${p.method === "cash"
-    ? "Se anula este pago en efectivo y la cuota vuelve a pendiente."
+  <p class="muted small">${p.manual
+    ? "Se anula este pago registrado a mano y las cuotas que cubría vuelven a pendiente."
     : "El pago vuelve a “Por asignar”, la cuota queda pendiente y Cuotia olvida el nombre que aprendió para esta casa."}</p>
   <form method="post" action="/panel/pagos/${p.id}/deshacer">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, deshacer</button></form>
 </details>`;
@@ -504,7 +500,7 @@ export function pagoItem(p, csrf) {
     <div class="row">
       <span>
         <b>${p.payerName || "Sin nombre"}</b>
-        <small class="muted">${shortDateTime(p.paidAt)}${p.method === "cash" ? "" : ` · ${payMethod(p)}`}${p.houseCode ? ` · Casa ${p.houseCode}` : ""}${p.duePeriod ? ` · ${p.conceptName} ${periodLabel(p.duePeriod)}` : ""}</small>
+        <small class="muted">${shortDateTime(p.paidAt)}${p.manual ? "" : ` · ${payMethod(p)}`}${p.note ? ` · ${p.note}` : ""}${p.houseCode ? ` · Casa ${p.houseCode}` : ""}${p.duePeriod ? ` · ${p.conceptName} ${periodLabel(p.duePeriod)}` : ""}</small>
       </span>
       <span class="amount"><b>${peso(p.amountCents)}</b>${PAY_STATUS[p.status]}</span>
     </div>
@@ -561,6 +557,50 @@ export function pagosPage(args) {
         </nav>`
       : ""}
   </section>`);
+}
+
+/** Register a payment by hand: pick the house, then which months it covers, how it was paid and when. */
+export function pagoManualPage(args) {
+  const { csrf, flash, groups, selected, today } = args;
+  const methods = Object.entries(MANUAL_LABELS);
+  return panelLayout("Registrar pago", { ...args, active: "pagos" }, html`
+  <div class="heading"><h1>Registrar pago</h1><span class="muted">Efectivo, transferencia u otro</span></div>
+  <p><a href="/panel/pagos">← Volver a pagos</a></p>
+  ${flashBox(flash)}
+
+  ${selected
+    ? html`<section class="card">
+        <h2>Casa ${selected.house.code} <span class="muted">· ${selected.house.residentName}</span></h2>
+        <form class="stack-form" method="post" action="/panel/pagos/nuevo">
+          ${csrfField(csrf)}
+          <input type="hidden" name="casa" value="${selected.house.id}">
+          <fieldset>
+            <legend>¿Qué cuotas cubre?</legend>
+            ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${i === 0 ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}</span><b>${peso(d.amountCents)}</b></label>`)}
+            <small class="muted">Se registra la suma de las cuotas marcadas, exacta. Si pagó otro valor, anótalo en la nota y avísale al vecino.</small>
+          </fieldset>
+          <div class="grid-form">
+            <label>¿Cómo pagó?
+              <select name="medio">${methods.map(([key, label]) => html`<option value="${key}">${label}</option>`)}</select>
+            </label>
+            <label>Banco o billetera <span class="muted small">(opcional)</span><input type="text" name="banco" maxlength="40" placeholder="Nequi, Bancolombia…"></label>
+            <label>Fecha en que pagó<input type="date" name="fecha" value="${today}" max="${today}" required></label>
+            <label>Nota <span class="muted small">(opcional)</span><input type="text" name="nota" maxlength="120" placeholder="Ej. lo trajo la esposa"></label>
+          </div>
+          <button class="btn" type="submit">Registrar pago</button>
+        </form>
+        <p><a class="small" href="/panel/pagos/nuevo">Elegir otra casa</a></p>
+      </section>`
+    : html`<section class="card">
+        <h2>¿Quién pagó?</h2>
+        ${groups.length
+          ? html`<form class="assign" method="get" action="/panel/pagos/nuevo">
+              <select name="casa" required aria-label="Casa que pagó"><option value="">Elegir casa…</option>${groups.map((g) => html`<option value="${g.house.id}">Casa ${g.house.code} · ${g.house.residentName} · ${g.dues.length} cuota${g.dues.length === 1 ? "" : "s"}</option>`)}</select>
+              <button class="btn small" type="submit">Continuar</button>
+            </form>
+            <p class="muted small">Solo aparecen las casas con cuotas pendientes.</p>`
+          : html`<p class="muted">Todas las casas están al día: no hay nada pendiente por registrar.</p>`}
+      </section>`}`);
 }
 
 export function casaPage(args) {
@@ -713,13 +753,15 @@ export function residentPayPage({ tenant, house, dues, token }) {
       </section>`
     : html`<section class="card"><p>El tesorero aún no ha configurado cómo pagar. Escríbele para que te indique.</p></section>`}
 
-  <p class="waiting" role="status"><span class="pulse"></span>Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme.</p>
+  <p class="waiting" role="status"><span class="pulse"></span>${tenant.pagoradarConfigured
+    ? "Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme."
+    : "Cuando pagues, avísale al tesorero para que registre tu pago. Esta pantalla se actualiza cuando lo haga."}</p>
   <p class="muted small center-text">Paga siempre el valor exacto. Si pagas otro valor, el tesorero lo asignará a mano.</p>
 </main>`, { refresh: 20 });
 }
 
 export function receiptPage({ tenant, receipt, token }) {
-  const medium = receipt.method === "cash" ? "Efectivo" : `Bre-B · ${bankLabel(receipt.bank)}`;
+  const medium = receipt.manual ? paymentMedium(receipt) : `Bre-B · ${bankLabel(receipt.bank)}`;
   return layout("Recibo", html`
 <main class="receipt">
   <div class="okring">${icon("check", 36, 3)}</div>

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createApp } from "../src/app.js";
 import { encryptSecret, hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
-import { currentPeriod } from "../src/text.js";
+import { bogotaDateTime, currentPeriod } from "../src/text.js";
 import { openStore } from "../src/store.js";
 import { qrSvg } from "../src/qr.js";
 import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
@@ -266,16 +266,19 @@ test("asignar un pago a mano salda la cuota y enseña el nombre", () => withServ
   assert.equal((await (await hook("pay_b", "PEDRO DUQUE")).json()).status, "assigned", "con cuota abierta, el nombre aprendido concilia solo");
 }));
 
-test("pago en efectivo, casas nuevas y enlace personal", () => withServer(async (s) => {
+test("pago manual, casas nuevas y enlace personal", () => withServer(async (s) => {
   const period = currentPeriod();
   s.A.dues.generate(period);
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
   const csrf = await csrfOf(s.base, cookie);
 
-  assert.match((await form(`${s.base}/panel/efectivo`, { _csrf: csrf, house: s.a03.house.id }, cookie)).headers.get("location"), /m=efec/);
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+  const due03 = s.A.dues.listForHouse(s.a03.house.id)[0].id;
+  const pay = (casa, cuota) => form(`${s.base}/panel/pagos/nuevo`, { _csrf: csrf, casa, cuota, medio: "cash", fecha: today }, cookie);
+  assert.match((await pay(s.a03.house.id, due03)).headers.get("location"), /m=manual/);
   assert.equal(s.A.summary(period).paidCount, 1);
-  assert.match((await form(`${s.base}/panel/efectivo`, { _csrf: csrf, house: s.a03.house.id }, cookie)).headers.get("location"), /m=err/, "ya no debe nada");
-  assert.match((await form(`${s.base}/panel/efectivo`, { _csrf: csrf, house: s.b01.house.id }, cookie)).headers.get("location"), /m=err/, "casa de otro conjunto");
+  assert.match((await pay(s.a03.house.id, due03)).headers.get("location"), /m=err/, "ya no debe nada");
+  assert.match((await pay(s.b01.house.id, s.B.dues.listForHouse(s.b01.house.id)[0]?.id ?? "x")).headers.get("location"), /m=err/, "casa de otro conjunto");
 
   const created = await form(`${s.base}/panel/casas`, { _csrf: csrf, code: "20", residente: "Lucía Gómez", telefono: "300 123 4567" }, cookie);
   assert.equal(created.status, 200);
@@ -757,4 +760,112 @@ test("HSTS solo con https; y una cookie dañada redirige al login en vez de fall
 
 test("sin https no se manda HSTS (no se debe forzar https en una prueba local)", () => withServer(async (s) => {
   assert.equal((await fetch(`${s.base}/health`)).headers.get("strict-transport-security"), null);
+}));
+
+test("pago manual: varios meses de una vez, con medio, fecha y nota; aparece en el historial y en el recibo", () => withServer(async (s) => {
+  s.A.dues.generate("2026-09");
+  s.A.dues.generate("2026-10");
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+
+  // Step 1: only houses with something pending, each with its count.
+  const pick = await (await fetch(`${s.base}/panel/pagos/nuevo`, { headers: { cookie } })).text();
+  assert.match(pick, /Casa 14 · Sandra Duque Arias · 3 cuotas/);
+  assert.doesNotMatch(pick, /Carlos Mejía/, "ni casas de otro conjunto");
+
+  // Step 2: the dues of that house, the oldest already ticked.
+  const form2 = await (await fetch(`${s.base}/panel/pagos/nuevo?casa=${s.a14.house.id}`, { headers: { cookie } })).text();
+  const dues = s.A.dues.listForHouse(s.a14.house.id).sort((a, b) => a.period.localeCompare(b.period));
+  assert.equal((form2.match(/name="cuota"/g) ?? []).length, 3);
+  assert.match(form2, new RegExp(`name="cuota" value="${dues[0].id}" checked`));
+  assert.match(form2, new RegExp(`name="fecha" value="${today}" max="${today}"`));
+  assert.equal((await fetch(`${s.base}/panel/pagos/nuevo?casa=${s.b01.house.id}`, { headers: { cookie } })).status, 200, "una casa de otro conjunto no se abre: solo muestra el selector");
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel/pagos/nuevo?casa=${s.b01.house.id}`, { headers: { cookie } })).text(), /Carlos Mejía/);
+
+  // Pay September and October by Nequi transfer, dated the 2nd of October.
+  const res = await form(`${s.base}/panel/pagos/nuevo`, {
+    _csrf: csrf, casa: s.a14.house.id, medio: "transfer", banco: "Nequi", fecha: "2026-10-02", nota: "lo trajo la esposa",
+  }, cookie).catch(() => null);
+  assert.equal(res.headers.get("location"), `/panel/pagos/nuevo?casa=${s.a14.house.id}&m=manualbad`, "sin cuotas marcadas no registra nada");
+
+  const body = new URLSearchParams({ _csrf: csrf, casa: s.a14.house.id, medio: "transfer", banco: "Nequi", fecha: "2026-10-02", nota: "lo trajo la esposa" });
+  body.append("cuota", dues[0].id);
+  body.append("cuota", dues[1].id);
+  const ok = await post(`${s.base}/panel/pagos/nuevo`, body, { ...FORM, cookie });
+  assert.match(ok.headers.get("location"), /\/panel\/pagos\?m=manual/);
+
+  const after = s.A.dues.listForHouse(s.a14.house.id).sort((a, b) => a.period.localeCompare(b.period));
+  assert.deepEqual(after.map((d) => d.status), ["paid", "paid", "pending"]);
+  assert.equal(after[0].paymentId, after[1].paymentId, "un solo pago cubre las dos cuotas");
+  const payment = s.A.payments.get(after[0].paymentId);
+  assert.deepEqual([payment.amountCents, payment.method, payment.bank, payment.note, payment.manual, payment.status], [6_000_000, "transfer", "Nequi", "lo trajo la esposa", true, "assigned"]);
+  assert.equal(payment.paidAt, "2026-10-02T17:00:00.000Z", "mediodía de Colombia ese día");
+  assert.equal(s.A.payments.list({ period: "2026-10" }).total, 1, "cae en el mes en que pagó, no en el de hoy");
+
+  const history = await (await fetch(`${s.base}/panel/pagos?q=Sandra`, { headers: { cookie } })).text();
+  assert.match(history, /Transferencia · Sandra Duque Arias/);
+  assert.match(history, /lo trajo la esposa/);
+  const csv = await (await fetch(`${s.base}/panel/pagos.csv`, { headers: { cookie } })).text();
+  assert.match(csv, /"Transferencia · Nequi";"14"/);
+
+  // The resident gets a receipt per month, saying how it was paid.
+  const receipt = await (await fetch(`${s.base}/r/${s.a14.accessToken}/recibo/${dues[0].id}`)).text();
+  assert.match(receipt, /Transferencia · Nequi/);
+  assert.match(receipt, /\$30\.000/, "el recibo de cada mes muestra el valor de ese mes, no el total");
+
+  // Undo removes the whole manual payment and puts both months back.
+  const undone = await form(`${s.base}/panel/pagos/${payment.id}/deshacer`, { _csrf: csrf }, cookie);
+  assert.match(undone.headers.get("location"), /m=undoc/);
+  assert.equal(s.A.payments.get(payment.id), null);
+  assert.deepEqual(s.A.dues.listForHouse(s.a14.house.id).map((d) => d.status), ["pending", "pending", "pending"]);
+}));
+
+test("pago manual: valida fecha, cuotas y medio, y no toca nada de otro conjunto", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  s.B.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
+  const mine = s.A.dues.listForHouse(s.a14.house.id)[0].id;
+  const theirs = s.B.dues.listForHouse(s.b01.house.id)[0].id;
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+  const tomorrow = new Date(Date.now() + 2 * 86400_000).toISOString().slice(0, 10);
+  const go = (fields) => form(`${s.base}/panel/pagos/nuevo`, { _csrf: csrf, medio: "cash", fecha: today, ...fields }, cookie);
+  const untouched = () => s.A.dues.listForHouse(s.a14.house.id)[0].status === "pending" && s.B.dues.listForHouse(s.b01.house.id)[0].status === "pending";
+
+  assert.equal((await form(`${s.base}/panel/pagos/nuevo`, { casa: s.a14.house.id, cuota: mine, medio: "cash", fecha: today }, cookie)).status, 403, "sin token");
+  assert.match((await go({ casa: s.a14.house.id, cuota: mine, fecha: tomorrow })).headers.get("location"), /m=manualbad/, "no se registra un pago del futuro");
+  assert.match((await go({ casa: s.a14.house.id, cuota: mine, fecha: "ayer" })).headers.get("location"), /m=manualbad/);
+  assert.match((await go({ casa: s.a14.house.id, cuota: mine, fecha: "2001-01-01" })).headers.get("location"), /m=manualbad/);
+  assert.match((await go({ casa: s.a14.house.id, cuota: mine, medio: "bitcoin" })).headers.get("location"), /m=err/);
+  assert.match((await go({ casa: s.b01.house.id, cuota: theirs })).headers.get("location"), /m=err/, "casa de otro conjunto");
+  assert.match((await go({ casa: s.a14.house.id, cuota: theirs })).headers.get("location"), /m=err/, "cuota de otro conjunto en una casa propia");
+  assert.match((await go({ casa: s.a03.house.id, cuota: mine })).headers.get("location"), /m=err/, "cuota de otra casa");
+  assert.ok(untouched(), "ningún intento fallido dejó nada a medias");
+  assert.equal(s.A.payments.list().total + s.B.payments.list().total, 0);
+
+  assert.match((await go({ casa: s.a14.house.id, cuota: mine, medio: "other", nota: "x".repeat(500) })).headers.get("location"), /m=manual$/);
+  assert.equal(s.A.payments.list().rows[0].note.length, 120, "la nota se recorta");
+}));
+
+test("sin pagoradar todo funciona a mano: se registran los pagos y el residente ve que debe avisar al tesorero", () => withServer(async (s) => {
+  s.store.db.prepare("UPDATE tenants SET pagoradar_secret = NULL WHERE id = ?").run(s.a.id);
+  assert.equal(s.store.tenants.get(s.a.id).pagoradarConfigured, false);
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+
+  const pay = await (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text();
+  assert.match(pay, /avísale al tesorero/);
+  assert.doesNotMatch(pay, /cuando el banco lo confirme/);
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Es opcional\.<\/b> Sin pagoradar/);
+
+  const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+  const due = s.A.dues.listForHouse(s.a14.house.id)[0].id;
+  assert.match((await form(`${s.base}/panel/pagos/nuevo`, { _csrf: csrf, casa: s.a14.house.id, cuota: due, medio: "cash", fecha: today }, cookie)).headers.get("location"), /m=manual/);
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /Al día/);
+  const panel = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
+  assert.match(panel, /Registrar pago/);
+  assert.match(panel, /\$30\.000/);
 }));

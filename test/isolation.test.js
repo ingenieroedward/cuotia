@@ -198,3 +198,53 @@ test("historial: filtros, búsqueda literal, paginación y aislamiento", () => {
   assert.equal(A.payments.list({ limit: 3, offset: 3 }).rows.length, 1);
   assert.equal(A.payments.list({ houseId: a14.house.id }).rows[0].duePeriod, "2026-11");
 });
+
+test("pago manual: varias cuotas con un solo pago, todo o nada, sin tocar otras casas ni otros conjuntos", () => {
+  const { store, A, B, a14, a03, b01 } = twoConjuntos();
+  A.dues.generate("2026-09");
+  A.dues.generate("2026-10");
+  B.dues.generate("2026-10");
+  const mine = A.dues.listForHouse(a14.house.id);
+  const other = A.dues.listForHouse(a03.house.id)[0];
+  const theirs = B.dues.listForHouse(b01.house.id)[0];
+
+  // Nothing is half done when one of the dues is not valid.
+  for (const dueIds of [[mine[0].id, other.id], [mine[0].id, theirs.id], [mine[0].id, "du_inventada"], []]) {
+    assert.throws(() => A.payments.recordManual({ houseId: a14.house.id, dueIds }), /cuota|Elige/);
+  }
+  assert.throws(() => A.payments.recordManual({ houseId: a14.house.id, dueIds: [mine[0].id], method: "bitcoin" }), /Medio/);
+  assert.throws(() => A.payments.recordManual({ houseId: b01.house.id, dueIds: [theirs.id] }), /no existe en este conjunto/);
+  assert.equal(A.payments.list().total, 0);
+  assert.ok(A.dues.listForHouse(a14.house.id).every((d) => d.status === "pending"));
+  assert.equal(B.dues.listForHouse(b01.house.id)[0].status, "pending");
+
+  const r = A.payments.recordManual({ houseId: a14.house.id, dueIds: [mine[0].id, mine[1].id, mine[0].id], method: "transfer", bank: "Bancolombia", note: " pagó doble ", paidAt: "2026-10-03T17:00:00.000Z" });
+  assert.equal(r.amountCents, 6_000_000, "la suma, y una cuota repetida no cuenta dos veces");
+  const p = A.payments.get(r.paymentId);
+  assert.deepEqual([p.payerName, p.bank, p.note, p.manual, p.method], ["Transferencia · Sandra Duque Arias", "Bancolombia", "pagó doble", true, "transfer"]);
+  assert.equal(A.summary("2026-10").collectedCents + A.summary("2026-09").collectedCents, 6_000_000);
+  assert.throws(() => A.payments.recordManual({ houseId: a14.house.id, dueIds: [mine[0].id] }), /no está pendiente/, "no se cobra dos veces la misma cuota");
+  assert.equal(B.payments.list().total, 0);
+  assert.equal(store.forTenant(B.tenantId).payments.get(r.paymentId), null, "el otro conjunto no ve el pago");
+
+  // Undo: the whole payment disappears and both months are pending again; a pagoradar payment is never "manual".
+  assert.deepEqual(A.payments.revert(r.paymentId), { deleted: true });
+  assert.ok(A.dues.listForHouse(a14.house.id).every((d) => d.status === "pending"));
+  const bank = A.payments.record({ externalId: "pay_x", payerName: "X", payerNorm: "X", amountCents: 3_000_000, bank: "nequi", method: "transfer", paidAt: "2026-10-04T00:00:00.000Z" }).payment;
+  assert.equal(bank.manual, false, "un pago de pagoradar con método 'transfer' no se confunde con uno manual");
+  const cash = A.payments.recordCash(a14.house.id);
+  assert.equal(A.dues.listForHouse(a14.house.id).find((d) => d.paymentId === cash.paymentId).period, "2026-09", "el efectivo rápido salda la cuota más antigua");
+  assert.equal(cash.amountCents, 3_000_000);
+});
+
+test("cuotas pendientes: solo de casas activas y del propio conjunto", () => {
+  const { A, B, a14, a03 } = twoConjuntos();
+  A.dues.generate("2026-11");
+  B.dues.generate("2026-11");
+  assert.deepEqual(A.dues.listPending().map((d) => d.houseCode), ["03", "14"]);
+  A.houses.setActive(a03.house.id, false);
+  assert.deepEqual(A.dues.listPending().map((d) => d.houseCode), ["14"]);
+  A.payments.recordCash(a14.house.id);
+  assert.deepEqual(A.dues.listPending(), []);
+  assert.equal(B.dues.listPending().length, 1);
+});
