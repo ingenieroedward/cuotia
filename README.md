@@ -65,6 +65,15 @@ Cuotia solo usa `payment.received`; los demás eventos solo confirman la conexi�
 `MASTER_KEY` (`openssl rand -hex 32`; **guárdala**: cifra el doble factor y sin ella nadie puede entrar), `PUBLIC_URL`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
 `cuotia-data` (`/app/data/cuotia.db`): respáldalo. Monitor a `/health`.
 
+Si el log dice `SQLITE_CANTOPEN` o `readonly database`, el volumen quedó con otro dueño (Cuotia corre como el usuario
+`node`, uid 1000). Se arregla una vez, con el servicio detenido:
+
+```sh
+docker run --rm -v cuotia-data:/d alpine chown -R 1000:1000 /d
+```
+
+Cloudflare: con el proxy activo, pon SSL/TLS en **Full (strict)**.
+
 ## El panel del tesorero
 
 Entra con correo y contraseña y luego con un **código de 6 dígitos** de una app (Google Authenticator,
@@ -72,10 +81,13 @@ Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra la clave 
 
 - **Resumen** del mes: recaudado, al día, pendientes.
 - **Por asignar:** elige la casa de cada pago desconocido; Cuotia recuerda el nombre.
-- **Generar cuotas** del mes, **pago en efectivo** y **Casas** (agregar, enlace personal por WhatsApp).
+- **Generar cuotas** del mes, **pago en efectivo** y **Casas**: agregar, **editar** (código, residente, celular),
+  agregar o quitar los **nombres con los que paga** cada casa, **desactivar** y reactivar, y el enlace personal por WhatsApp.
+- **Pagos:** historial con filtros (mes, estado, búsqueda), páginas, **descarga para Excel (CSV)** y **Deshacer**: una
+  asignación equivocada vuelve a “Por asignar” (y Cuotia olvida el nombre), un pago en efectivo se anula.
 
 ## Estado
 
 Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
 alias, doble factor, panel completo y página del residente (responsive, claro y oscuro). Pendiente: passkeys,
-editar casas, historial y CSV, tipografía propia, panel del operador, transparencia. Ver `CLAUDE.md`.
+tipografía propia, panel del operador, transparencia. Ver `CLAUDE.md`.

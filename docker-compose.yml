@@ -1,3 +1,6 @@
+# Dokploy: crea una app "Docker Compose" apuntando a este repo (rama main), agrega el dominio hacia el
+# servicio "cuotia", puerto 3000, con HTTPS, y pon las variables en Environment (ver .env.example).
+# Si falta una variable obligatoria, el despliegue se detiene con un mensaje claro en vez de arrancar mal.
 services:
   cuotia:
     build: .

@@ -49,3 +49,43 @@ export function shortDate(iso) {
 
 const BANKS = { nequi: "Nequi", nequi_negocios: "Nequi Negocios", bancolombia: "Bancolombia" };
 export const bankLabel = (bank) => BANKS[bank] ?? (bank ? String(bank) : "Banco");
+
+/** The [from, to) UTC instants of a "YYYY-MM" month in Colombia (UTC-5, no daylight saving), as ISO strings. */
+export function periodRange(period) {
+  const [y, m] = period.split("-").map(Number);
+  return [new Date(Date.UTC(y, m - 1, 1, 5)).toISOString(), new Date(Date.UTC(y, m, 1, 5)).toISOString()];
+}
+
+/** "2026-11-03T15:22:53Z" -> "2026-11-03 10:22" (Colombia time, 24 h): for spreadsheets. */
+export function bogotaDateTime(iso) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(iso));
+  const g = (t) => parts.find((x) => x.type === t).value;
+  return `${g("year")}-${g("month")}-${g("day")} ${g("hour")}:${g("minute")}`;
+}
+
+/** The last `n` months ending at `period`, newest first: ["2026-11", "2026-10", …]. */
+export function lastPeriods(period, n = 12) {
+  let [y, m] = period.split("-").map(Number);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(`${y}-${String(m).padStart(2, "0")}`);
+    if (--m === 0) { m = 12; y--; }
+  }
+  return out;
+}
+
+/** One CSV cell: quoted, and a leading = + - @ is neutralized so a spreadsheet never runs a payer's name as a formula. */
+export function csvCell(value) {
+  let s = String(value ?? "");
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+/** "2026-11-03T15:22:53Z" -> "3 nov, 10:22" (Colombia time). */
+export function shortDateTime(iso) {
+  const d = new Date(iso);
+  const time = new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+  return `${shortDate(iso)}, ${time}`;
+}
