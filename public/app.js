@@ -139,3 +139,20 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
   });
   render();
 })();
+
+// Registrar pago: the bank/wallet field only applies to a transfer, so it hides (and clears) for cash or "otro".
+(() => {
+  const medio = document.querySelector("select[data-medio]");
+  const banco = document.querySelector("[data-banco]");
+  if (!medio || !banco) return;
+  const input = banco.querySelector("input");
+  let last = input.value || "Nequi";
+  const sync = () => {
+    const transfer = medio.value === "transfer";
+    if (!transfer && input.value) last = input.value;
+    banco.hidden = !transfer;
+    input.value = transfer ? last : "";
+  };
+  medio.addEventListener("change", sync);
+  sync();
+})();

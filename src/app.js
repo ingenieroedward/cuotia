@@ -613,7 +613,8 @@ export function createApp({ config, store, pushSend = sendPush }) {
         if (!paidAt || dueIds.length === 0) return redirect(res, `/panel/pagos/nuevo?casa=${encodeURIComponent(houseId)}&m=manualbad`);
         ledger.payments.recordManual({
           houseId, dueIds, method: String(form.get("medio") ?? "cash"), paidAt,
-          bank: String(form.get("banco") ?? ""), note: String(form.get("nota") ?? ""),
+          // The bank only means something for a transfer: cash and "other" never keep one (the form pre-fills Nequi).
+          bank: String(form.get("medio") ?? "") === "transfer" ? String(form.get("banco") ?? "") : "", note: String(form.get("nota") ?? ""),
           proofId: String(form.get("comprobante") ?? "") || null,
         });
         return redirect(res, "/panel/cobros?m=manual");

@@ -1287,6 +1287,8 @@ test("+ Octubre: agregar a una casa un mes que nunca se generó y registrar su p
 
   // The form offers the months this house has no due for, as one-tap buttons.
   const open = await get(`/panel/pagos/nuevo?casa=${s.a14.house.id}`);
+  assert.match(open, /<option value="transfer" selected>/, "por defecto: transferencia");
+  assert.match(open, /name="banco"[^>]*value="Nequi"/, "y Nequi");
   assert.match(open, /¿Pagó también un mes que no aparece\?/);
   assert.ok(open.includes(`action="/panel/casas/${s.a14.house.id}/mes"`));
   assert.ok(open.includes(`name="mes" value="${before}">+ `), "el botón del mes anterior");
@@ -1620,3 +1622,16 @@ test("avisos en el celular: se activan por persona, llegan solo al propio conjun
     assert.equal(s.A.push.list().length, 0);
   }, { pushSend });
 });
+
+test("registrar pago: el banco solo se guarda en una transferencia, aunque el formulario traiga Nequi", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+  const due = (house) => s.A.dues.listForHouse(house.house.id)[0].id;
+  await form(`${s.base}/panel/pagos/nuevo`, { _csrf: csrf, casa: s.a14.house.id, cuota: due(s.a14), medio: "cash", banco: "Nequi", fecha: today }, cookie);
+  await form(`${s.base}/panel/pagos/nuevo`, { _csrf: csrf, casa: s.a03.house.id, cuota: due(s.a03), medio: "transfer", banco: "Nequi", fecha: today }, cookie);
+  const rows = s.A.payments.list({}).rows;
+  assert.equal(rows.find((p) => p.houseCode === "14").bank, null, "efectivo no guarda banco");
+  assert.equal(rows.find((p) => p.houseCode === "03").bank, "Nequi");
+}));
