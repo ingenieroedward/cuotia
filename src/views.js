@@ -1,6 +1,6 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { MANUAL_LABELS, bankLabel, bogotaDay, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
+import { MANUAL_LABELS, bankLabel, bogotaDay, longDate, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -984,6 +984,15 @@ export function casaPage(args) {
       : html`<p class="muted small">Aún no hay pagos asignados a esta casa.</p>`}
   </section>
 
+  <section class="card">
+    <h2>Documentos</h2>
+    <p class="muted small">Para imprimir o guardar en PDF. El paz y salvo solo se emite si la casa no tiene cuotas vencidas.</p>
+    <div class="actions">
+      <a class="btn ghost" href="/panel/casas/${house.id}/estado" target="_blank" rel="noopener">Estado de cuenta</a>
+      ${house.active ? html`<a class="btn ghost" href="/panel/casas/${house.id}/paz-y-salvo" target="_blank" rel="noopener">Paz y salvo</a>` : ""}
+    </div>
+  </section>
+
   <section class="card" id="baja">
     <h2>Acciones</h2>
     ${house.active
@@ -1258,6 +1267,14 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
     <button class="btn ghost" type="button" data-push-toggle>Activar avisos</button>
   </section>
 
+  <section class="card">
+    <h2>Mis documentos</h2>
+    <ul class="list">
+      <li><a class="strong" href="/r/${token}/estado">Estado de cuenta</a><small class="muted">Todo lo que has pagado y lo que debes</small></li>
+      <li><a class="strong" href="/r/${token}/paz-y-salvo">Paz y salvo</a><small class="muted">Certificado, cuando no tienes cuotas vencidas</small></li>
+    </ul>
+  </section>
+
   ${tenant.showAccounts ? html`<a class="card cuentas-link" href="/r/${token}/cuentas"><span><b>Cuentas del conjunto</b><small class="muted">Qué se recaudó y en qué se gastó</small></span>${icon("next", 20, 2.4)}</a>` : ""}
 
   <section class="card">
@@ -1343,6 +1360,86 @@ export function receiptPage({ tenant, receipt, token }) {
     <a class="btn outline big" href="/r/${token}">Volver al inicio</a>
   </div>
 </main>`, { bodyClass: "receipt-page", manifest: `/r/${token}/manifest.webmanifest` });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Printable documents: estado de cuenta and paz y salvo. "Guardar como PDF" is the browser's own print dialog.
+// ---------------------------------------------------------------------------------------------------------------
+
+const docShell = (title, tenant, body, { backHref, manifest } = {}) => layout(title, html`
+<main class="doc">
+  <div class="doc-actions noprint">
+    ${backHref ? html`<a class="btn ghost" href="${backHref}">← Volver</a>` : ""}
+    <button class="btn" type="button" data-print>Imprimir o guardar como PDF</button>
+  </div>
+  <article class="doc-sheet">
+    <header class="doc-head"><span class="brand"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span><span class="muted small">${tenant.name}</span></header>
+    ${body}
+  </article>
+</main>`, { bodyClass: "doc-page", ...(manifest ? { manifest } : {}) });
+
+const dueState = (d) => d.status === "paid"
+  ? html`<span class="pill ok"><i></i>Pagada${d.paidAt ? ` el ${shortDate(d.paidAt)}` : ""}</span>`
+  : d.late ? html`<span class="pill bad"><i></i>Vencida</span>` : html`<span class="pill warn"><i></i>Pendiente</span>`;
+
+/** Every due of a house with what is paid and owed, as of today. */
+export function estadoPage({ tenant, house, doc, backHref, manifest }) {
+  return docShell("Estado de cuenta", tenant, html`
+    <h1>Estado de cuenta</h1>
+    <dl class="doc-meta">
+      <div><dt>Casa</dt><dd>${house.code}</dd></div>
+      <div><dt>Residente</dt><dd>${house.residentName}</dd></div>
+      <div><dt>Fecha</dt><dd>${longDate(doc.today)}</dd></div>
+    </dl>
+    ${doc.rows.length
+      ? html`<div class="table-wrap"><table class="doc-table">
+          <thead><tr><th>Mes</th><th class="num">Valor</th><th>Estado</th></tr></thead>
+          <tbody>${doc.rows.map((d) => html`<tr><td><b>${periodLabel(d.period)}</b><small class="muted">${d.conceptName}</small></td><td class="num">${peso(d.amountCents)}</td><td>${dueState(d)}</td></tr>`)}</tbody>
+        </table></div>`
+      : html`<p class="muted">Esta casa todavía no tiene cuotas.</p>`}
+    <dl class="doc-totals">
+      <div><dt>Total pagado</dt><dd>${peso(doc.paidCents)}</dd></div>
+      <div><dt>Total pendiente</dt><dd>${peso(doc.pendingCents)}</dd></div>
+      <div class="strong"><dt>De ello, vencido</dt><dd>${peso(doc.lateCents)}</dd></div>
+    </dl>
+    <p class="muted small">Generado por Cuotia con los pagos que ${tenant.name} tiene registrados al ${longDate(doc.today)}. No es una factura.</p>`, { backHref, manifest });
+}
+
+/** The certificate when the house has no overdue dues; otherwise what it owes and a way to the estado de cuenta. */
+export function pazYSalvoPage({ tenant, house, doc, code, verifyUrl, backHref, estadoHref, manifest }) {
+  if (!code) {
+    return docShell("Paz y salvo", tenant, html`
+      <h1>Paz y salvo</h1>
+      <p class="flash err" role="status">Todavía no se puede emitir: la casa ${house.code} tiene <b>${peso(doc.lateCents)}</b> en cuotas vencidas.</p>
+      <p>Cuando esas cuotas queden pagadas, este documento se genera solo. Mientras tanto puedes ver el detalle en el estado de cuenta.</p>
+      <p class="noprint"><a class="btn" href="${estadoHref}">Ver el estado de cuenta</a></p>`, { backHref, manifest });
+  }
+  return docShell("Paz y salvo", tenant, html`
+    <h1>Paz y salvo</h1>
+    <p class="doc-lead">${tenant.name} certifica que, según los registros de Cuotia al <b>${longDate(doc.today)}</b>, la <b>casa ${house.code}</b>, a nombre de <b>${house.residentName}</b>, <b>no registra cuotas vencidas</b>.</p>
+    <p class="muted small">Este certificado tiene validez a la fecha de su expedición y se genera con los pagos registrados por el tesorero. No sustituye el paz y salvo que exija una escritura o un contrato si el reglamento del conjunto pide otro formato.</p>
+    <div class="doc-code">
+      <span class="eyebrow dim">Código de verificación</span>
+      <b class="doc-code-value" translate="no">${code}</b>
+      <span class="muted small">Quien reciba este documento puede comprobarlo en <b>${verifyUrl}</b></span>
+    </div>`, { backHref, manifest });
+}
+
+/** Public: what a code stands for. It never shows a name. */
+export function verificarPage({ code = "", found = null, searched = false, error = "" }) {
+  return layout("Verificar paz y salvo", html`
+<main class="center">
+  <form class="card login" method="get" action="/verificar">
+    ${BRAND_MARK}
+    <h1>Verificar paz y salvo</h1>
+    <p class="muted">Escribe el código que aparece en el documento.</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    ${searched && found ? html`<p class="flash ok" role="status">Documento válido: <b>paz y salvo</b> de la <b>casa ${found.houseCode}</b> de <b>${found.tenantName}</b>, expedido el <b>${longDate(found.issuedOn)}</b>.</p><p class="muted small">Confirma que en esa fecha la casa no tenía cuotas vencidas. No dice cómo está hoy.</p>` : ""}
+    ${searched && !found ? html`<p class="alert" role="alert">No encontramos ese código. Revísalo o pide un documento nuevo.</p>` : ""}
+    <label>Código<input type="text" name="codigo" value="${code}" maxlength="12" autocomplete="off" autocapitalize="characters" placeholder="XXXXX-XXXXX" required></label>
+    <button class="btn" type="submit">Verificar</button>
+  </form>
+</main>`);
 }
 
 /** Shown by the service worker when the phone has no connection. Static and public: it is cached when the app is first opened. */

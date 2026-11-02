@@ -91,6 +91,12 @@ export function periodLabel(period) {
   return `${MONTHS[Number(m) - 1] ?? m} ${y}`;
 }
 
+/** "2026-11-03" or an ISO instant -> "3 de noviembre de 2026" (Colombia time). */
+export function longDate(value) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(value)) ? new Date(`${value}T17:00:00.000Z`) : new Date(value);
+  return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "numeric", month: "long", year: "numeric" }).format(date);
+}
+
 /** "2026-11-02T15:22:53Z" -> "2 nov" (Colombia time). */
 export function shortDate(iso) {
   return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "numeric", month: "short" }).format(new Date(iso)).replace(".", "");

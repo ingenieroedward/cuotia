@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { createApp } from "../src/app.js";
 import { encryptSecret, hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
-import { bogotaDateTime, currentPeriod, shiftPeriod } from "../src/text.js";
+import { bogotaDateTime, currentPeriod, periodLabel, shiftPeriod } from "../src/text.js";
 import { openStore } from "../src/store.js";
 import { qrSvg } from "../src/qr.js";
 import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
@@ -1763,3 +1763,60 @@ test("avisos de residentes: se activan con el enlace personal y 'pago confirmado
     assert.equal(s.A.housePush.count(s.a14.house.id), 0);
   }, { pushSend });
 });
+
+test("estado de cuenta y paz y salvo: el residente y el tesorero los ven, solo se emite sin cuotas vencidas y el código se puede verificar", () => withServer(async (s) => {
+  const now = currentPeriod();
+  const before = shiftPeriod(now, -1);
+  s.A.dues.generate(before); s.A.dues.generate(now);
+  const tok = (h) => h.accessToken;
+  const text = async (url, opts) => (await fetch(`${s.base}${url}`, opts)).text();
+
+  // Estado de cuenta: every due with its state and the totals.
+  const estado = await text(`/r/${tok(s.a14)}/estado`);
+  assert.match(estado, /Estado de cuenta/);
+  assert.match(estado, new RegExp(periodLabel(before)));
+  assert.match(estado, /Total pendiente<\/dt><dd>\$60\.000/);
+  assert.match(estado, /De ello, vencido<\/dt><dd>\$30\.000/);
+  assert.doesNotMatch(estado, /Carlos Mejía/, "ni rastro de otro conjunto");
+
+  // Owes last month: no certificate, and no code is stored.
+  const owes = await text(`/r/${tok(s.a14)}/paz-y-salvo`);
+  assert.match(owes, /Todavía no se puede emitir/);
+  assert.match(owes, /\$30\.000/);
+  assert.equal(s.store.db.prepare("SELECT COUNT(*) AS n FROM certificates").get().n, 0);
+
+  // Pays last month: this month's due is not overdue yet, so the certificate is issued, with a stable code.
+  const old = s.A.dues.listForHouse(s.a14.house.id).find((d) => d.period === before);
+  s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: [old.id], method: "cash" });
+  const issued = await text(`/r/${tok(s.a14)}/paz-y-salvo`);
+  const code = /translate="no">([2-9A-Z]{5}-[2-9A-Z]{5})</.exec(issued)?.[1];
+  assert.ok(code, "tiene código");
+  assert.match(issued, /no registra cuotas vencidas/);
+  assert.match(issued, /Sandra Duque Arias/);
+  assert.equal(/translate="no">([2-9A-Z]{5}-[2-9A-Z]{5})</.exec(await text(`/r/${tok(s.a14)}/paz-y-salvo`))[1], code, "recargar no cambia el código");
+
+  // Anyone can check the code; it names the conjunto and the house, never the resident.
+  const ok = await text(`/verificar?codigo=${code.toLowerCase()}`);
+  assert.match(ok, /Documento válido/);
+  assert.match(ok, /casa 14/);
+  assert.match(ok, /Jardines de Ibiza/);
+  assert.doesNotMatch(ok, /Sandra/);
+  assert.match(await text("/verificar?codigo=ZZZZZ-ZZZZZ"), /No encontramos ese código/);
+  assert.match(await text("/verificar"), /Escribe el código/);
+
+  // The treasurer gets the same documents for any of their houses, and nothing for another conjunto's house.
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const hdr = { headers: { cookie }, redirect: "manual" };
+  assert.match(await text(`/panel/casas/${s.a03.house.id}/estado`, hdr), /Diana Pérez/);
+  assert.match(await text(`/panel/casas/${s.a03.house.id}/paz-y-salvo`, hdr), /Todavía no se puede emitir/);
+  assert.equal((await fetch(`${s.base}/panel/casas/${s.b01.house.id}/estado`, hdr)).status, 404);
+  assert.equal((await fetch(`${s.base}/panel/casas/${s.b01.house.id}/paz-y-salvo`, hdr)).status, 404);
+  assert.equal((await fetch(`${s.base}/panel/casas/${s.a14.house.id}/estado`, { redirect: "manual" })).headers.get("location"), "/login");
+  assert.match(await text(`/panel/casas/${s.a14.house.id}`, hdr), /Documentos/);
+  assert.match(await text(`/r/${tok(s.a14)}`), /Mis documentos/);
+
+  // A house dada de baja has no documents (its link is closed).
+  s.A.houses.setActive(s.a03.house.id, false);
+  assert.equal((await fetch(`${s.base}/panel/casas/${s.a03.house.id}/paz-y-salvo`, hdr)).status, 404);
+  assert.equal((await fetch(`${s.base}/r/${tok(s.a03)}/estado`)).status, 404);
+}));

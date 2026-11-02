@@ -529,3 +529,46 @@ li.expense .amount { margin-left: auto; text-align: right; white-space: nowrap; 
 a.card.cuentas-link { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: .75rem; }
 a.card.cuentas-link > span { display: grid; min-width: 0; text-align: left; }
 a.card.cuentas-link > svg { flex: none; }
+
+/* ---- printable documents (estado de cuenta, paz y salvo) ---- */
+body.doc-page { background: var(--ground); }
+.doc { width: min(100%, 760px); margin-inline: auto; padding: 1rem 1rem 3rem; display: grid; gap: 1rem; }
+.doc-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; }
+.doc-sheet { background: #fff; color: #0b2e25; border: 1px solid var(--line); border-radius: 20px; padding: 1.5rem; display: grid; gap: 1rem; }
+.doc-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; border-bottom: 2px solid var(--ink); padding-bottom: .75rem; }
+.doc-sheet h1 { font-size: 1.6rem; }
+.doc-meta, .doc-totals { margin: 0; display: grid; gap: .4rem; }
+.doc-meta div, .doc-totals div { display: flex; justify-content: space-between; gap: 1rem; }
+.doc-meta dt, .doc-totals dt { color: var(--muted); }
+.doc-meta dd, .doc-totals dd { margin: 0; font-weight: 700; text-align: right; }
+.doc-totals { border-top: 1px solid var(--line); padding-top: .75rem; }
+.doc-totals .strong dd { color: var(--bad-fg); }
+.doc-table { min-width: 0; }
+.doc-table th, .doc-table td { padding: .55rem .4rem; text-align: left; border-bottom: 1px solid var(--line); font-size: .9rem; }
+.doc-table .num { text-align: right; }
+.doc-lead { font-size: 1.1rem; line-height: 1.6; }
+.doc-code { border: 2px dashed var(--ink); border-radius: 16px; padding: 1rem; display: grid; gap: .35rem; justify-items: center; text-align: center; }
+.doc-code-value { font-size: 2rem; letter-spacing: .12em; font-variant-numeric: tabular-nums; }
+@media print {
+  body.doc-page { background: #fff; }
+  .noprint { display: none !important; }
+  .doc { padding: 0; width: 100%; }
+  .doc-sheet { border: 0; padding: 0; border-radius: 0; }
+}
+.doc-code-value { white-space: nowrap; }
+@media (max-width: 480px) { .doc-code-value { font-size: 1.55rem; letter-spacing: .06em; } }
+
+/* The estado de cuenta is a real table, also on a phone (the generic mobile "cards" rule must not break it). */
+@media (max-width: 560px) {
+  table.doc-table { min-width: 0; font-size: .85rem; }
+  table.doc-table thead { display: table-header-group; }
+  table.doc-table tbody tr { display: table-row; padding: 0; border: 0; }
+  table.doc-table td { display: table-cell; padding: .55rem .3rem; border-bottom: 1px solid var(--line); }
+  table.doc-table td:nth-child(1)::before { content: none; }
+  table.doc-table .pill { white-space: normal; }
+}
+
+.doc-table td small { display: block; }
+.doc-table td:nth-child(1) { text-transform: capitalize; }
+.doc-table td:nth-child(1) small { text-transform: none; }
+@media (max-width: 360px) { .doc-code-value { font-size: 1.3rem; letter-spacing: .04em; } .doc-sheet { padding: 1.1rem; } }
