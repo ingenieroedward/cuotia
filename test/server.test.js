@@ -1082,7 +1082,7 @@ test("Por cobrar: quién debe, desde cuándo y cuánto, con los botones para act
   assert.match(page, /<h1>Por cobrar<\/h1>/);
   assert.match(page, /\$90\.000/, "total: 60.000 de Sandra + 30.000 de Diana");
   assert.match(page, /2 casas con cuotas pendientes/);
-  assert.match(page, /1 casa deben meses anteriores/);
+  assert.match(page, /1 casa tiene cuotas vencidas/);
   assert.ok(page.indexOf("Sandra Duque Arias") < page.indexOf("Diana Pérez"), "quien arrastra meses va primero");
   assert.doesNotMatch(page, /Carlos Mejía/, "ni casas de otro conjunto");
   const sandra = page.slice(page.indexOf("Sandra Duque Arias"), page.indexOf("Diana Pérez"));
@@ -1133,7 +1133,7 @@ test("Resumen: elegir el mes, ver lo atrasado y registrar el pago desde la propi
 
   // The arrears card and the "collect first" list.
   assert.match(page, /Atrasadas/);
-  assert.match(page, /\$30\.000<\/span>\s*<span class="small">1 casa deben meses anteriores/);
+  assert.match(page, /\$30\.000<\/span>\s*<span class="small">1 casa tiene cuotas vencidas/);
   assert.match(page, /href="\/panel\/cobros\?f=atrasadas"/);
   assert.match(page, /Para cobrar primero/);
   assert.match(page, /Ver quién debe/);
@@ -1367,4 +1367,32 @@ test("sin JavaScript la búsqueda del servidor también ignora acentos y acepta 
     assert.deepEqual(await find("PEREZ"), ["Diana Pérez"], `${path} PEREZ`);
     assert.deepEqual(await find("zzz"), [], `${path} zzz`);
   }
+}));
+
+test("fechas de pago: se guardan por conjunto, se validan y el residente las ve", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const save = (fields) => form(`${s.base}/panel/ajustes/fechas`, { _csrf: csrf, ...fields }, cookie);
+
+  assert.match((await save({ desde: "1", hasta: "10" })).headers.get("location"), /m=fechas$/);
+  const tenants = s.store.tenants;
+  assert.deepEqual([tenants.get(s.a.id).openDay, tenants.get(s.a.id).dueDay], [1, 10]);
+  assert.deepEqual([tenants.get(s.b.id).openDay, tenants.get(s.b.id).dueDay], [null, null], "el otro conjunto no cambia");
+
+  const ajustes = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  assert.match(ajustes, /name="hasta"[^>]*value="10"/);
+  s.A.dues.generate(currentPeriod());
+  s.B.dues.generate(currentPeriod());
+  const resident = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
+  assert.match(resident, /Paga del 1 al 10 de /);
+  assert.doesNotMatch(await (await fetch(`${s.base}/r/${s.b01.accessToken}`)).text(), /Paga del/);
+
+  for (const bad of [{ desde: "11", hasta: "10" }, { desde: "0", hasta: "10" }, { desde: "1", hasta: "29" }, { desde: "x", hasta: "5" }, { desde: "1.5", hasta: "5" }]) {
+    assert.match((await save(bad)).headers.get("location"), /m=fechasbad/, JSON.stringify(bad));
+  }
+  assert.equal(tenants.get(s.a.id).dueDay, 10, "los intentos malos no cambiaron nada");
+  assert.equal((await form(`${s.base}/panel/ajustes/fechas`, { desde: "2", hasta: "3" }, cookie)).status, 403, "sin token no se guarda");
+
+  assert.match((await save({ desde: "", hasta: "" })).headers.get("location"), /m=fechas$/);
+  assert.equal(tenants.get(s.a.id).dueDay, null, "vacío = sin fechas");
 }));

@@ -1,13 +1,16 @@
-import { currentPeriod } from "./text.js";
+import { bogotaDay, currentPeriod } from "./text.js";
 
 /**
  * Who owes what, month by month. `pending` are the unpaid dues (store.dues.listPending), `houses` the active houses
  * (only they can owe). Returns one entry per house with something pending, the ones with the oldest debt first, then
  * the biggest: that is the order a treasurer wants to chase them in.
  *
- * "Overdue" (atrasada) means a due of a month before `period`; this month's due is just "pending" until the month ends.
+ * "Overdue" (atrasada/vencida) means a due of a month before `period`, or this month's once the conjunto's last day to
+ * pay (`dueDay`, optional) has gone by (`day` is today's day of the month). Without a `dueDay` this month's due is just
+ * "pending" until the month ends. Every due in a group carries `late`.
  */
-export function groupDebts(pending, houses, period = currentPeriod()) {
+export function groupDebts(pending, houses, period = currentPeriod(), { dueDay = null, day = bogotaDay() } = {}) {
+  const isLate = (p) => p < period || (dueDay != null && p === period && day > dueDay);
   const byId = new Map(houses.map((h) => [h.id, h]));
   const groups = new Map();
   for (const due of pending) {
@@ -15,18 +18,19 @@ export function groupDebts(pending, houses, period = currentPeriod()) {
     if (!house) continue;
     if (!groups.has(house.id)) groups.set(house.id, { house, dues: [], totalCents: 0 });
     const g = groups.get(house.id);
-    g.dues.push(due);
+    g.dues.push({ ...due, late: isLate(due.period) });
     g.totalCents += due.amountCents;
   }
   const list = [...groups.values()].map((g) => {
     g.dues.sort((a, b) => a.period.localeCompare(b.period) || a.conceptName.localeCompare(b.conceptName));
-    const late = g.dues.filter((d) => d.period < period);
+    const late = g.dues.filter((d) => d.late);
     return {
       ...g,
       overdueCount: late.length,
       overdueCents: late.reduce((sum, d) => sum + d.amountCents, 0),
       oldest: g.dues[0].period,
       months: [...new Set(g.dues.map((d) => d.period))],
+      lateMonths: [...new Set(late.map((d) => d.period))],
     };
   });
   list.sort((a, b) =>

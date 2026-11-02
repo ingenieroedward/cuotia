@@ -267,7 +267,7 @@ export function createApp({ config, store }) {
     const period = currentPeriod();
     const houses = ledger.houses.list();
     // Who owes what, across months: the sidebar badge, "Por cobrar", the dashboard and the payment form all read this.
-    const groups = groupDebts(ledger.dues.listPending(), houses, period);
+    const groups = groupDebts(ledger.dues.listPending(), houses, period, { dueDay: s.tenant.dueDay });
     const debts = { groups, totals: debtTotals(groups) };
     // What the sidebar and tab bar show on every page.
     const base = {
@@ -373,6 +373,20 @@ export function createApp({ config, store }) {
         if (secret.length < 8 || secret.length > 200 || /\s/.test(secret)) return redirect(res, "/panel/ajustes?m=secbad");
         store.tenants.setPagoradarSecret(s.tenant.id, encryptSecret(secret, config.masterKey));
         return redirect(res, "/panel/ajustes?m=sec");
+      }
+
+      if (path === "/panel/ajustes/fechas") {
+        const day = (name) => {
+          const raw = String(form.get(name) ?? "").trim();
+          if (!raw) return null;
+          const n = Number(raw);
+          return Number.isInteger(n) && n >= 1 && n <= 28 ? n : NaN;
+        };
+        const openDay = day("desde");
+        const dueDay = day("hasta");
+        if (Number.isNaN(openDay) || Number.isNaN(dueDay) || (openDay != null && dueDay != null && dueDay < openDay)) return redirect(res, "/panel/ajustes?m=fechasbad");
+        store.tenants.setDates(s.tenant.id, { openDay, dueDay });
+        return redirect(res, "/panel/ajustes?m=fechas");
       }
 
       if (path === "/panel/ajustes/cobro") {

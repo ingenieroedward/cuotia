@@ -35,3 +35,13 @@ test("el mes en curso no es atraso: solo lo es un mes anterior", () => {
   const [h] = groupDebts([due("a", "2026-11")], [house("a", "1")], "2026-12");
   assert.equal(h.overdueCount, 1, "al llegar diciembre, noviembre ya es atraso");
 });
+
+test("fecha límite: pasado el último día para pagar, la cuota de este mes es vencida; ese día todavía no", () => {
+  const h = [house("a", "1")];
+  const p = [due("a", "2026-11")];
+  assert.equal(groupDebts(p, h, "2026-11", { dueDay: 10, day: 10 })[0].overdueCount, 0, "el día 10 todavía está a tiempo");
+  const [late] = groupDebts(p, h, "2026-11", { dueDay: 10, day: 11 });
+  assert.deepEqual([late.overdueCount, late.overdueCents, late.lateMonths, late.dues[0].late], [1, 3_000_000, ["2026-11"], true]);
+  assert.equal(groupDebts(p, h, "2026-11", { dueDay: null, day: 28 })[0].overdueCount, 0, "sin fecha límite no hay vencimiento antes de fin de mes");
+  assert.equal(groupDebts([due("a", "2026-10")], h, "2026-11", { dueDay: 10, day: 1 })[0].overdueCount, 1, "un mes anterior siempre es atraso");
+});

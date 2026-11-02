@@ -1,6 +1,6 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { MANUAL_LABELS, bankLabel, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
+import { MANUAL_LABELS, bankLabel, bogotaDay, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -66,6 +66,8 @@ const FLASH = {
   undoc: () => ({ kind: "ok", text: "Pago anulado: las cuotas que cubría volvieron a pendiente." }),
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
+  fechas: () => ({ kind: "ok", text: "Fechas de pago guardadas. Los residentes ya las ven y las cuotas se marcan vencidas después del último día." }),
+  fechasbad: () => ({ kind: "err", text: "Escribe días entre 1 y 28, y el último día no puede ser antes del primero." }),
   cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
   clave: () => ({ kind: "ok", text: "Contraseña cambiada. En los demás dispositivos tendrás que entrar de nuevo." }),
   clavemal: () => ({ kind: "err", text: "La contraseña actual no es correcta." }),
@@ -268,7 +270,7 @@ const PILLS = {
 };
 
 /** "oct", "nov"… with the year only when it isn't this year: the months a house owes, as small chips. */
-const monthChips = (group, period) => group.months.map((m) => html`<span class="mchip${m < period ? " bad" : ""}">${monthShort(m)}${m.slice(0, 4) === period.slice(0, 4) ? "" : ` ${m.slice(2, 4)}`}</span>`);
+const monthChips = (group, period) => group.months.map((m) => html`<span class="mchip${group.lateMonths.includes(m) ? " bad" : ""}">${monthShort(m)}${m.slice(0, 4) === period.slice(0, 4) ? "" : ` ${m.slice(2, 4)}`}</span>`);
 
 /** The state of a house in one pill: up to date, owes this month only, or owes earlier months. */
 function houseStatus(group, period) {
@@ -321,8 +323,8 @@ export function panelPage(args) {
 
   const rowPill = (d) => {
     if (d.status === "paid") return STATUS.paid;
-    if (d.period < current) return PILLS.late;
     const g = byHouse.get(d.houseId);
+    if (g?.dues.find((x) => x.id === d.id)?.late) return PILLS.late;
     return g?.overdueCount ? PILLS.debt(g.months.length) : STATUS.pending;
   };
 
@@ -393,7 +395,7 @@ export function panelPage(args) {
         ? html`<a class="stat late-card" href="/panel/cobros?f=atrasadas">
             <span class="eyebrow">Atrasadas</span>
             <span class="stat-number">${peso(totals.overdueCents)}</span>
-            <span class="small">${totals.overdueHouses} casa${totals.overdueHouses === 1 ? "" : "s"} deben meses anteriores</span>
+            <span class="small">${totals.overdueHouses} casa${totals.overdueHouses === 1 ? " tiene" : "s tienen"} cuotas vencidas</span>
             <span class="stat-link">Ver las atrasadas →</span>
           </a>`
         : ""}
@@ -502,7 +504,7 @@ export function cobrosPage(args) {
     <div class="stat late-card grow${totals.overdueDues ? "" : " calm"}">
       <span class="eyebrow">Atrasadas</span>
       <span class="stat-number big">${peso(totals.overdueCents)}</span>
-      <span class="small">${totals.overdueHouses ? `${totals.overdueHouses} casa${totals.overdueHouses === 1 ? "" : "s"} deben meses anteriores` : "Nadie debe meses anteriores."}</span>
+      <span class="small">${totals.overdueHouses ? `${totals.overdueHouses} casa${totals.overdueHouses === 1 ? " tiene" : "s tienen"} cuotas vencidas` : "Nadie tiene cuotas vencidas."}</span>
     </div>
   </section>
 
@@ -615,7 +617,7 @@ export function pagoManualPage(args) {
           <input type="hidden" name="casa" value="${selected.house.id}">
           <fieldset>
             <legend>¿Qué cuotas cubre?</legend>
-            ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${checked(d, i) ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}${d.period < current ? html` <span class="pill bad small"><i></i>Atrasada</span>` : ""}</span><b>${peso(d.amountCents)}</b></label>`)}
+            ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${checked(d, i) ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}${d.late ? html` <span class="pill bad small"><i></i>${d.period < current ? "Atrasada" : "Vencida"}</span>` : ""}</span><b>${peso(d.amountCents)}</b></label>`)}
             ${selected.dues.length > 1 ? html`<a class="small" href="/panel/pagos/nuevo?casa=${selected.house.id}&amp;todas=1">Marcar todas (${peso(selected.totalCents)})</a>` : ""}
             <small class="muted">Se registra la suma de las cuotas marcadas, exacta. Si pagó otro valor, anótalo en la nota y avísale al vecino.</small>
           </fieldset>
@@ -676,6 +678,17 @@ export function ajustesPage(args) {
       ${csrfField(csrf)}
       <label>Secreto del webhook<input type="password" name="secret" minlength="8" maxlength="200" required autocomplete="off" placeholder="${tenant.pagoradarConfigured ? "•••••••• (pega uno nuevo para cambiarlo)" : "Pega el secreto de pagoradar"}"></label>
       <button class="btn" type="submit">Guardar secreto</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Fechas de pago</h2>
+    <p class="muted small">Del 1 al 28. Los residentes ven “Paga del 1 al 10”. Pasado el último día, la cuota del mes se marca como <b>vencida</b> en Por cobrar y en el Resumen. Aun así, los pagos se reciben y se asignan en cualquier día. Déjalos vacíos si no quieres fechas.</p>
+    <form class="grid-form" method="post" action="/panel/ajustes/fechas">
+      ${csrfField(csrf)}
+      <label>Se empieza a pagar el día<input type="number" name="desde" min="1" max="28" inputmode="numeric" value="${tenant.openDay ?? ""}" placeholder="1"></label>
+      <label>Último día para pagar<input type="number" name="hasta" min="1" max="28" inputmode="numeric" value="${tenant.dueDay ?? ""}" placeholder="10"></label>
+      <button class="btn" type="submit">Guardar fechas</button>
     </form>
   </section>
 
@@ -912,9 +925,20 @@ export function linkPage(args) {
 
 const firstName = (full) => String(full ?? "").trim().split(/\s+/)[0] || "vecino";
 
-export function residentPage({ tenant, house, dues, period, token }) {
+/** "Paga del 1 al 10 de noviembre" (or just one end), for the resident; "" when the conjunto set no dates. */
+export function paymentWindow(tenant, period) {
+  const month = periodLabel(period).split(" ")[0];
+  if (tenant.openDay && tenant.dueDay) return `Paga del ${tenant.openDay} al ${tenant.dueDay} de ${month}`;
+  if (tenant.dueDay) return `Paga hasta el ${tenant.dueDay} de ${month}`;
+  if (tenant.openDay) return `Se paga desde el ${tenant.openDay} de ${month}`;
+  return "";
+}
+
+export function residentPage({ tenant, house, dues, period, token, day = bogotaDay() }) {
   const open = dues.filter((d) => d.period === period && d.status === "pending");
   const behind = dues.filter((d) => d.period < period && d.status === "pending");
+  const windowText = paymentWindow(tenant, period);
+  const overdue = behind.length > 0 || (tenant.dueDay != null && open.length > 0 && day > tenant.dueDay);
   const owed = [...open, ...behind];
   const total = owed.reduce((s, d) => s + d.amountCents, 0);
   return layout("Mi cuota", html`
@@ -925,10 +949,11 @@ export function residentPage({ tenant, house, dues, period, token }) {
   <section class="hero" aria-label="Tu cuota">
     <div class="row">
       <span class="eyebrow">${owed.length ? "Tu cuota" : "Vigilancia"} · ${periodLabel(period).split(" ")[0]}</span>
-      ${owed.length ? STATUS.pending : STATUS.paid}
+      ${owed.length ? (overdue ? html`<span class="pill bad"><i></i>Vencida</span>` : STATUS.pending) : STATUS.paid}
     </div>
     ${owed.length
       ? html`<span class="hero-number">${peso(total)}</span>
+        ${windowText ? html`<span class="hero-sub">${windowText}</span>` : ""}
         <span class="hero-sub">${behind.length ? `Incluye ${behind.length} mes${behind.length === 1 ? "" : "es"} anterior${behind.length === 1 ? "" : "es"}` : [...new Set(owed.map((d) => d.conceptName))].join(" + ")}</span>
         <a class="btn lime big" href="/r/${token}/pagar">Pagar ahora ${icon("arrow", 20, 2.5)}</a>`
       : html`<span class="hero-number">Al día</span><span class="hero-sub">No tienes cuotas pendientes. ¡Gracias!</span>`}
