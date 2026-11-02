@@ -42,3 +42,38 @@ test("nombres y montos", () => {
   assert.equal(peso(3_000_000), "$30.000");
   assert.equal(peso(135_000_000), "$1.350.000");
 });
+
+import { base32Decode, base32Encode, csrfToken, csrfValid, decryptSecret, encryptSecret, matchTotp, newTotpSecret, totpCode } from "../src/security.js";
+
+test("TOTP: vector del RFC 6238, ventana de ±1 paso y rechazo de basura", () => {
+  const secret = base32Encode(Buffer.from("12345678901234567890"));
+  assert.equal(totpCode(secret, 1), "287082", "T=59 s del RFC 6238");
+  assert.equal(base32Decode(secret).toString(), "12345678901234567890");
+
+  const s = newTotpSecret();
+  const now = 1_700_000_000_000;
+  const step = Math.floor(now / 30_000);
+  assert.equal(matchTotp(s, totpCode(s, step), now), step);
+  assert.equal(matchTotp(s, totpCode(s, step - 1), now), step - 1, "reloj atrasado un paso");
+  assert.equal(matchTotp(s, totpCode(s, step + 2), now), null, "fuera de la ventana");
+  assert.equal(matchTotp(s, "abcdef", now), null);
+  assert.equal(matchTotp(s, "", now), null);
+  assert.equal(matchTotp(s, ` ${totpCode(s, step).slice(0, 3)} ${totpCode(s, step).slice(3)} `, now), step, "acepta espacios");
+});
+
+test("el secreto se cifra con MASTER_KEY y no se puede leer con otra clave", () => {
+  const key = "ab".repeat(32);
+  const enc = encryptSecret("JBSWY3DPEHPK3PXP", key);
+  assert.ok(!enc.includes("JBSWY3DP"));
+  assert.equal(decryptSecret(enc, key), "JBSWY3DPEHPK3PXP");
+  assert.notEqual(encryptSecret("JBSWY3DPEHPK3PXP", key), enc, "cada cifrado usa un IV nuevo");
+  assert.throws(() => decryptSecret(enc, "cd".repeat(32)));
+  assert.throws(() => encryptSecret("x", "corta"), /MASTER_KEY/);
+});
+
+test("token anti-CSRF atado a la sesión", () => {
+  assert.equal(csrfValid("sesion-1", csrfToken("sesion-1")), true);
+  assert.equal(csrfValid("sesion-2", csrfToken("sesion-1")), false);
+  assert.equal(csrfValid("sesion-1", ""), false);
+  assert.equal(csrfValid(undefined, "x"), false);
+});

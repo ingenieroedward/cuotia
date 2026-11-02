@@ -91,6 +91,13 @@ const MIGRATIONS = [
   );
   CREATE INDEX dues_by_period ON dues (tenant_id, period);
   `,
+  /* V2: two-step login. The TOTP secret is stored encrypted (security.js); totp_last_step blocks replaying a code. */
+  `
+  ALTER TABLE users ADD COLUMN totp_secret TEXT;
+  ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'full';
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
@@ -103,6 +110,10 @@ const dueRow = (r) => ({
   status: r.status, paymentId: r.payment_id, paidAt: r.paid_at,
   houseCode: r.house_code, residentName: r.resident_name, conceptName: r.concept_name,
 });
+const userRow = (r) => !r ? null : {
+  id: r.id, tenantId: r.tenant_id, email: r.email, passwordHash: r.password_hash, role: r.role,
+  totpSecret: r.totp_secret, totpEnabled: !!r.totp_enabled,
+};
 const paymentRow = (r) => !r ? null : {
   id: r.id, externalId: r.external_id, payerName: r.payer_name, payerNorm: r.payer_norm, amountCents: r.amount_cents,
   bank: r.bank, method: r.method, paidAt: r.paid_at, houseId: r.house_id, status: r.status,
@@ -156,26 +167,44 @@ export function openStore(path = ":memory:") {
       return id;
     },
     byEmail(email) {
-      const r = db.prepare("SELECT * FROM users WHERE email = ?").get(String(email).trim().toLowerCase());
-      return r && { id: r.id, tenantId: r.tenant_id, email: r.email, passwordHash: r.password_hash, role: r.role };
+      return userRow(db.prepare("SELECT * FROM users WHERE email = ?").get(String(email).trim().toLowerCase()));
+    },
+    byId: (id) => userRow(db.prepare("SELECT * FROM users WHERE id = ?").get(id)),
+    /** Stores a not-yet-confirmed (encrypted) secret; it only counts after `enableTotp`. */
+    setTotpSecret: (userId, encrypted) => void db.prepare("UPDATE users SET totp_secret = ?, totp_enabled = 0, totp_last_step = 0 WHERE id = ?").run(encrypted, userId),
+    enableTotp: (userId) => void db.prepare("UPDATE users SET totp_enabled = 1 WHERE id = ?").run(userId),
+    /** True once per time step: a code that was already used is refused, even inside its validity window. */
+    claimTotpStep(userId, step) {
+      return Number(db.prepare("UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?").run(step, userId, step).changes) === 1;
     },
   };
 
   const sessions = {
     /** Returns the raw token (only its hash is stored). */
-    create(userId, ttlMs = 12 * 3600_000) {
+    /**
+     * stage "pending" = password accepted, waiting for the 2-step code; "setup" = must enroll a TOTP first;
+     * "full" = fully signed in. A pending/setup session is short and opens nothing but the /2fa page.
+     */
+    create(userId, { stage = "full", ttlMs = 12 * 3600_000 } = {}) {
       const token = newToken();
-      db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)").run(sha256(token), userId, new Date(Date.now() + ttlMs).toISOString());
+      db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, stage) VALUES (?, ?, ?, ?)").run(sha256(token), userId, new Date(Date.now() + ttlMs).toISOString(), stage);
       return token;
     },
     resolve(token) {
       if (!token) return null;
       const r = db.prepare(
-        `SELECT u.id AS user_id, u.email, u.role, u.tenant_id FROM sessions s JOIN users u ON u.id = s.user_id
+        `SELECT u.id AS user_id, u.email, u.role, u.tenant_id, s.stage FROM sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ? AND s.expires_at > ?`,
       ).get(sha256(token), nowIso());
       if (!r) return null;
-      return { user: { id: r.user_id, email: r.email, role: r.role, tenantId: r.tenant_id }, tenant: tenants.get(r.tenant_id) };
+      return { stage: r.stage, user: { id: r.user_id, email: r.email, role: r.role, tenantId: r.tenant_id }, tenant: tenants.get(r.tenant_id) };
+    },
+    /** After a valid code: a fresh full session replaces the pending one, so the cookie value changes at privilege change. */
+    promote(token, ttlMs = 12 * 3600_000) {
+      const s = sessions.resolve(token);
+      if (!s) return null;
+      sessions.delete(token);
+      return sessions.create(s.user.id, { stage: "full", ttlMs });
     },
     delete: (token) => void db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token)),
     purgeExpired: () => void db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(nowIso()),
@@ -206,6 +235,13 @@ export function openStore(path = ":memory:") {
       },
       get: (id) => houseRow(houseOf(id)),
       list: () => db.prepare("SELECT * FROM houses WHERE tenant_id = ? AND active = 1 ORDER BY code").all(tenantId).map(houseRow),
+      /** The old personal link stops working; the new token is returned once (only its hash is stored). */
+      rotateToken(houseId) {
+        ownHouse(houseId);
+        const token = newToken(24);
+        db.prepare("UPDATE houses SET access_hash = ? WHERE id = ? AND tenant_id = ?").run(sha256(token), houseId, tenantId);
+        return token;
+      },
     };
 
     const aliases = {
@@ -275,6 +311,22 @@ export function openStore(path = ":memory:") {
         return { created: Number(r.changes) === 1, payment: paymentRow(row) };
       },
       get: (id) => paymentRow(db.prepare("SELECT * FROM payments WHERE id = ? AND tenant_id = ?").get(id, tenantId)),
+      /** A payment in cash: settles the house's oldest open due for that due's amount. */
+      recordCash(houseId, paidAt = nowIso()) {
+        return tx(() => {
+          ownHouse(houseId);
+          const due = db.prepare("SELECT * FROM dues WHERE tenant_id = ? AND house_id = ? AND status = 'pending' ORDER BY period LIMIT 1").get(tenantId, houseId);
+          if (!due) throw new Error("Esa casa no tiene cuotas pendientes");
+          const id = newId("pg");
+          const house = houseRow(houseOf(houseId));
+          db.prepare(
+            `INSERT INTO payments (id, tenant_id, external_id, payer_name, payer_norm, amount_cents, bank, method, paid_at, house_id, status, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, NULL, 'cash', ?, ?, 'assigned', ?)`,
+          ).run(id, tenantId, `cash_${id}`, `Efectivo · ${house.residentName}`, "EFECTIVO", due.amount_cents, paidAt, houseId, nowIso());
+          dues.settle(due.id, id, paidAt);
+          return { paymentId: id, dueId: due.id, amountCents: due.amount_cents };
+        });
+      },
       listUnassigned: () => db.prepare("SELECT * FROM payments WHERE tenant_id = ? AND status = 'unassigned' ORDER BY paid_at DESC").all(tenantId).map(paymentRow),
       /** Gives an unassigned payment to a house, settles its oldest open due of that amount, and (optionally) remembers the payer's name. */
       assign(paymentId, houseId, { rememberAlias = true } = {}) {

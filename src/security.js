@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCb);
@@ -67,4 +67,87 @@ export class AttemptLimiter {
   clear(key) {
     this.hits.delete(key);
   }
+}
+
+// ---- Encrypting secrets at rest (the TOTP secret) with MASTER_KEY (64 hex chars) ----
+
+const keyBuf = (hex) => {
+  if (!/^[0-9a-f]{64}$/i.test(String(hex))) throw new Error("MASTER_KEY debe ser de 64 caracteres hexadecimales (openssl rand -hex 32)");
+  return Buffer.from(hex, "hex");
+};
+
+/** AES-256-GCM; output "iv.tag.ciphertext" in base64url. */
+export function encryptSecret(plain, masterKeyHex) {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", keyBuf(masterKeyHex), iv);
+  const data = Buffer.concat([c.update(String(plain), "utf8"), c.final()]);
+  return [iv, c.getAuthTag(), data].map((b) => b.toString("base64url")).join(".");
+}
+
+export function decryptSecret(stored, masterKeyHex) {
+  const [iv, tag, data] = String(stored).split(".").map((p) => Buffer.from(p, "base64url"));
+  const d = createDecipheriv("aes-256-gcm", keyBuf(masterKeyHex), iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(data), d.final()]).toString("utf8");
+}
+
+// ---- TOTP (RFC 6238: HMAC-SHA1, 6 digits, 30 s), compatible with Google/Microsoft Authenticator, 1Password... ----
+
+const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+export function base32Encode(buf) {
+  let bits = 0, value = 0, out = "";
+  for (const byte of buf) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) { out += B32[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += B32[(value << (5 - bits)) & 31];
+  return out;
+}
+
+export function base32Decode(str) {
+  let bits = 0, value = 0;
+  const out = [];
+  for (const ch of String(str).toUpperCase().replace(/[\s=-]/g, "")) {
+    const i = B32.indexOf(ch);
+    if (i < 0) throw new Error("Base32 inválido");
+    value = (value << 5) | i;
+    bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return Buffer.from(out);
+}
+
+export const newTotpSecret = () => base32Encode(randomBytes(20));
+export const totpStep = (now = Date.now()) => Math.floor(now / 1000 / 30);
+
+export function totpCode(secretB32, step = totpStep()) {
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+  const h = createHmac("sha1", base32Decode(secretB32)).update(counter).digest();
+  const o = h[h.length - 1] & 15;
+  const n = ((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(n % 1_000_000).padStart(6, "0");
+}
+
+/** The step the code belongs to (±1 step of clock drift), or null. */
+export function matchTotp(secretB32, code, now = Date.now()) {
+  const given = String(code ?? "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(given)) return null;
+  const base = totpStep(now);
+  for (const step of [base, base - 1, base + 1]) {
+    const expected = Buffer.from(totpCode(secretB32, step));
+    if (timingSafeEqual(expected, Buffer.from(given))) return step;
+  }
+  return null;
+}
+
+/** Form token tied to the session: an attacker's page can't know it (the cookie is HttpOnly). */
+export const csrfToken = (sessionToken) => createHmac("sha256", String(sessionToken)).update("cuotia-csrf").digest("base64url");
+export function csrfValid(sessionToken, given) {
+  if (!sessionToken || !given) return false;
+  const a = Buffer.from(csrfToken(sessionToken));
+  const b = Buffer.from(String(given));
+  return a.length === b.length && timingSafeEqual(a, b);
 }

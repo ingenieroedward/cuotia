@@ -10,7 +10,7 @@ Cuotia collects recurring community fees (vigilancia now, administración later)
 
 ```bash
 npm test                         # node:test, test/**/*.test.js
-PAGORADAR_WEBHOOK_SECRET=dev npm start
+PAGORADAR_WEBHOOK_SECRET=dev MASTER_KEY=$(openssl rand -hex 32) npm start
 npm run admin -- crear-conjunto --slug ibiza --nombre "Jardines de Ibiza" --correo tesorera@ejemplo.com --llave @llave --titular "Titular"
 npm run admin -- agregar-casa --conjunto ibiza --codigo 14 --residente "Sandra Duque"   # prints the resident's personal link
 npm run admin -- generar-cuotas --conjunto ibiza --periodo 2026-11
@@ -28,7 +28,9 @@ pagoradar ──signed webhook──▶ POST /webhooks/pagoradar ─▶ pagorada
 - **`src/store.js`**: single SQLite DB, migrations `V1`… by `PRAGMA user_version` (never edit an earlier one). **Tenant isolation rule: all data of a conjunto is reached through `store.forTenant(id)`**, which closes over the tenant id. Never add a query on tenant data outside it. The only global lookups are `tenants`, `users`, `sessions` and `residentByToken` (the unguessable token is the credential). Every method that takes a house/payment id re-checks it belongs to the tenant. `test/isolation.test.js` guards this: extend it whenever you add a repo method.
 - **`src/pagoradar.js`**: `ingestEvent` maps a verified event to ledger changes. The conjunto is `data.account.tenantRef` (= tenant id, set on the pagoradar receiving account), so a payment lands only in the conjunto whose bank account received it. It auto-settles only when the payer matches **one** house (remembered alias, else unique name match) **and** that house has an open due for exactly the amount; everything else goes to the "por asignar" queue. Never guess. Idempotent by pagoradar payment id (`payments.external_id` UNIQUE).
 - **Matching model:** dues are charged at the exact base amount (no unique-amount trick). `payments.assign(..., {rememberAlias})` teaches Cuotia the payer's name for next time.
-- **`src/security.js`**: scrypt passwords, session/resident tokens (only SHA-256 hashes stored), pagoradar signature check (same algorithm as pagoradar's SDK: `Pagoradar-Signature: t=…,v1=HMAC(secret,"t.body")`, 5-minute tolerance), login attempt limiter.
+- **`src/security.js`**: scrypt passwords, session/resident tokens (only SHA-256 hashes stored), pagoradar signature check (same algorithm as pagoradar's SDK: `Pagoradar-Signature: t=…,v1=HMAC(secret,"t.body")`, 5-minute tolerance), attempt limiter, AES-256-GCM `encryptSecret/decryptSecret` with `MASTER_KEY`, TOTP (RFC 6238, no library), per-session CSRF token.
+- **Login is two steps and mandatory.** Password → a short session with `stage` `pending` (has TOTP) or `setup` (must enroll); only `/2fa` accepts it. A valid code → `sessions.promote` issues a *new* `full` session (token changes at privilege change). TOTP secrets are stored encrypted; `users.claimTotpStep` makes each code single-use. Lose `MASTER_KEY` and nobody can sign in: back it up. Every panel route requires `stage === "full"`.
+- **Every panel POST** checks same Origin **and** the session's `_csrf` form field (`csrfToken(sessionToken)`, HMAC of the HttpOnly cookie value). Flash messages come from a fixed list keyed by `?m=`; never reflect query text. **`Referrer-Policy` must stay `same-origin`**: with `no-referrer` browsers post forms with `Origin: null` and the Origin check refuses every login (found by a real-browser run; `fetch` tests can't see it).
 - **`src/views.js` + `src/http.js`**: server-rendered HTML. The `html` tagged template escapes every interpolation unless it is `html`/`raw()` output; use it for all markup. CSP is `default-src 'self'` with no inline styles or scripts: use classes in `public/app.css`, never `style=""`.
 - **Design:** tokens and layout in `public/app.css`, from the approved mockups (ink `#0b1b2b` + lime `#c6f25c`, Plus Jakarta Sans, mobile first, light/dark). The mockup canvas: https://claude.ai/artifact/57BSgLaPW6LwbXJpm8bk8L
 
@@ -41,7 +43,8 @@ pagoradar ──signed webhook──▶ POST /webhooks/pagoradar ─▶ pagorada
 
 ## Not built yet (next steps)
 
-- Two-step login (TOTP) and passkeys for the treasurer, as in pagoradar. Today: password + HttpOnly/SameSite=Strict session + Origin check + attempt limiter.
-- Panel actions: assign unassigned payments, generate dues, register a cash payment, add/edit houses (the logic exists in `store.js`; only the HTML/forms are missing; use the CLI meanwhile).
+- Passkeys; password change and reset (an admin has to reset a lost authenticator today: clear `totp_secret`/`totp_enabled` in the DB).
+- Edit/deactivate houses, rename residents, edit aliases, a payments history page, CSV export.
 - Self-hosted font files (the CSP blocks Google Fonts; falls back to the system font).
-- Operator panel to create conjuntos, invitations, WhatsApp reminders, public transparency page, expenses.
+- Operator panel to create conjuntos (CLI only today), invitations for more treasurers, WhatsApp reminders, public transparency page, expenses, administración as a second concept.
+- Cuotia doesn't create pagoradar charges: residents pay the exact amount to the conjunto's Bre-B key and the payer's name does the matching.

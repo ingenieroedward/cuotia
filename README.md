@@ -26,7 +26,7 @@ Requiere Node ≥ 22.5. No tiene dependencias.
 
 ```bash
 npm test
-PAGORADAR_WEBHOOK_SECRET=dev PUBLIC_URL=http://localhost:3000 npm start
+PAGORADAR_WEBHOOK_SECRET=dev MASTER_KEY=$(openssl rand -hex 32) PUBLIC_URL=http://localhost:3000 npm start
 ```
 
 Crear el primer conjunto, una casa y las cuotas del mes:
@@ -54,12 +54,20 @@ se registra una sola vez.
 ## Desplegar en Dokploy
 
 *Create Service → Docker Compose* con este repositorio. Variables: `PAGORADAR_WEBHOOK_SECRET`,
-`PUBLIC_URL`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
+`MASTER_KEY` (`openssl rand -hex 32`; **guárdala**: cifra el doble factor y sin ella nadie puede entrar), `PUBLIC_URL`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
 `cuotia-data` (`/app/data/cuotia.db`): respáldalo. Monitor a `/health`.
+
+## El panel del tesorero
+
+Entra con correo y contraseña y luego con un **código de 6 dígitos** de una app (Google Authenticator,
+Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra la clave para agregarla. Desde el panel:
+
+- **Resumen** del mes: recaudado, al día, pendientes.
+- **Por asignar:** elige la casa de cada pago desconocido; Cuotia recuerda el nombre.
+- **Generar cuotas** del mes, **pago en efectivo** y **Casas** (agregar, enlace personal por WhatsApp).
 
 ## Estado
 
-Esqueleto funcional: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
-alias, login del tesorero, panel de lectura y página del residente. Pendiente: doble factor, acciones del
-panel (asignar pagos, generar cuotas, pago en efectivo), tipografía propia, panel del operador y
-página de transparencia. Ver `CLAUDE.md`.
+Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
+alias, doble factor, panel completo y página del residente (responsive, claro y oscuro). Pendiente: passkeys,
+editar casas, historial y CSV, tipografía propia, panel del operador, transparencia. Ver `CLAUDE.md`.

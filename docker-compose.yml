@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     environment:
       PAGORADAR_WEBHOOK_SECRET: ${PAGORADAR_WEBHOOK_SECRET:?falta el secreto del webhook de pagoradar}
+      MASTER_KEY: ${MASTER_KEY:?falta MASTER_KEY (openssl rand -hex 32)}
       PUBLIC_URL: ${PUBLIC_URL:?falta la URL pública, ej. https://cuotia.tudominio.com}
       PORT: "3000"
       DATABASE_PATH: /app/data/cuotia.db

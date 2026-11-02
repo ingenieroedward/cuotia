@@ -41,3 +41,11 @@ export function periodLabel(period) {
   const [y, m] = period.split("-");
   return `${MONTHS[Number(m) - 1] ?? m} ${y}`;
 }
+
+/** "2026-11-02T15:22:53Z" -> "2 nov" (Colombia time). */
+export function shortDate(iso) {
+  return new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", day: "numeric", month: "short" }).format(new Date(iso)).replace(".", "");
+}
+
+const BANKS = { nequi: "Nequi", nequi_negocios: "Nequi Negocios", bancolombia: "Bancolombia" };
+export const bankLabel = (bank) => BANKS[bank] ?? (bank ? String(bank) : "Banco");

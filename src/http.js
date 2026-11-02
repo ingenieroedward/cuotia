@@ -30,7 +30,9 @@ const SECURITY_HEADERS = {
   "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
-  "Referrer-Policy": "no-referrer",
+  // Not "no-referrer": browsers then send `Origin: null` on form posts and our same-origin check would refuse every login.
+  // "same-origin" still keeps a resident's /r/<token> link from leaking to other sites.
+  "Referrer-Policy": "same-origin",
 };
 
 export function send(res, status, body, headers = {}) {

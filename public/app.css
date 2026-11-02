@@ -109,7 +109,9 @@ td { padding: .8rem .5rem; border-top: 1px solid var(--line); font-size: .9rem; 
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .list li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 0; border-top: 1px solid var(--line); }
 .list li:first-child { border-top: 0; }
-.key { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; background: var(--ground); border-radius: 12px; padding: .75rem 1rem; margin: 0 0 .5rem; word-break: break-all; }
+.key { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; background: var(--ground); border-radius: 12px; padding: .75rem 1rem; margin: 0 0 .5rem; overflow-wrap: break-word; }
+.key.secret { font-size: 1.15rem; letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.key.url { font-size: .95rem; font-weight: 700; word-break: break-all; }
 
 @media (min-width: 720px) {
   .topbar { padding: 1.25rem 2rem; }
@@ -118,3 +120,55 @@ td { padding: .8rem .5rem; border-top: 1px solid var(--line); font-size: .9rem; 
   .hero { padding: 2rem 2.25rem; }
 }
 @media (prefers-reduced-motion: no-preference) { .btn { transition: transform .08s ease; } .btn:active { transform: scale(.98); } }
+
+/* ---- panel actions, tabs, forms ---- */
+.tabs { display: none; gap: .25rem; }
+.tabs a { min-height: 44px; display: inline-flex; align-items: center; padding: 0 .9rem; border-radius: 12px; color: var(--muted); font-weight: 700; text-decoration: none; }
+.tabs a[aria-current="page"] { background: var(--ink); color: var(--lime); }
+@media (min-width: 720px) { .tabs { display: flex; } }
+@media (max-width: 719px) {
+  .topbar { flex-wrap: wrap; }
+  .tabs { display: flex; order: 3; width: 100%; }
+  .tabs a { flex: 1; justify-content: center; background: var(--surface); border: 1px solid var(--line); }
+}
+
+.flash { border-radius: 14px; padding: .8rem 1rem; margin: 0; font-weight: 600; }
+.flash.ok { background: var(--ok-bg); color: var(--ok-fg); }
+.flash.info { background: var(--info-bg); color: var(--info-fg); }
+.flash.err { background: var(--warn-bg); color: var(--warn-fg); }
+
+select, input[type="text"], input[type="tel"] {
+  min-height: 48px; padding: 0 .9rem; font: inherit; color: inherit; background: var(--ground);
+  border: 1.5px solid var(--line); border-radius: 12px; width: 100%;
+}
+select:focus-visible, input:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+input.code { font-size: 1.6rem; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; }
+.btn.small { min-height: 44px; padding: 0 1rem; font-size: .875rem; }
+a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+a.btn.ghost { color: var(--text); }
+
+.row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.row.wrap { flex-wrap: wrap; }
+.count { background: var(--info-bg); color: var(--info-fg); border-radius: 999px; padding: .1rem .55rem; font-size: .8rem; vertical-align: middle; }
+.list.stack li { flex-direction: column; align-items: stretch; gap: .6rem; }
+.assign { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.assign select { flex: 1 1 220px; width: auto; }
+.check { flex-direction: row; align-items: center; gap: .5rem; font-weight: 500; min-height: 44px; }
+.check input { width: 20px; height: 20px; accent-color: var(--ink); }
+.grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .9rem; align-items: end; }
+.steps { margin: 0; padding-left: 1.2rem; }
+.card .btn + .btn { margin-top: .25rem; }
+
+/* Phones: the houses table becomes one card per house instead of scrolling sideways. */
+@media (max-width: 560px) {
+  table { min-width: 0; }
+  thead { display: none; }
+  tbody tr { display: grid; grid-template-columns: 1fr auto; gap: .2rem .75rem; align-items: center; padding: .85rem 0; border-top: 1px solid var(--line); }
+  tbody tr:first-child { border-top: 0; }
+  td { border: 0; padding: 0; }
+  td:nth-child(1)::before { content: "Casa "; font-weight: 500; color: var(--muted); }
+  td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  td:nth-child(2) { grid-column: 1; grid-row: 2; font-weight: 600; }
+  td:nth-child(3) { grid-column: 2; grid-row: 1; justify-self: end; }
+  td:nth-child(4) { grid-column: 2; grid-row: 2; justify-self: end; }
+}
