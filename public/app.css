@@ -497,3 +497,12 @@ li.member > span { display: grid; min-width: 0; }
   input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="range"]):not([type="submit"]):not([type="button"]),
   select, textarea { font-size: 16px !important; }
 }
+
+/* iPhone Safari sizes date and number fields from their own content, not from the card: they spilled out of it.
+   Native appearance off + min-width 0 on the field and on every grid/flex parent lets the card's width win. */
+label, .grid-form > *, .stack-form > *, fieldset > * { min-width: 0; }
+input, select, textarea { max-width: 100%; min-width: 0; }
+input[type="date"], input[type="number"] { -webkit-appearance: none; appearance: none; display: block; width: 100%; line-height: 1.2; }
+input[type="date"] { min-height: 48px; text-align: left; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; min-width: 0; margin: 0; }
+input[type="date"]::-webkit-datetime-edit { padding: 0; }
