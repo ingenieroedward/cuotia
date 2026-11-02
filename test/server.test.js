@@ -653,6 +653,9 @@ test("siempre claro, como el diseño: sin modo oscuro automático", () => withSe
   assert.match(css, /color-scheme:\s*light only/);
   const page = await (await fetch(`${s.base}/login`)).text();
   assert.match(page, /<meta name="color-scheme" content="light">/);
+  // iPhone zooms into any field under 16px: every text field is 16px on touch screens (a pinch zoom is still allowed).
+  assert.match(css, /select,\s*textarea \{ font-size: 16px !important; \}/);
+  assert.doesNotMatch(await (await fetch(`${s.base}/login`)).text(), /maximum-scale|user-scalable=no/);
   // The approved palette (taken from the mockups) is what the tokens say.
   for (const [name, hex] of [["ink", "#0b4a3a"], ["accent", "#c9efdc"], ["hero-bg", "#c9efdc"], ["ground", "#f3f8f6"], ["surface", "#ffffff"], ["muted", "#56756b"], ["line", "#d9e7e1"]]) {
     assert.match(css, new RegExp(`--${name}:\\s*${hex}`), name);
