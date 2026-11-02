@@ -1,4 +1,5 @@
 import { html, raw } from "./http.js";
+import { qrSvg } from "./qr.js";
 import { bankLabel, lastPeriods, peso, periodLabel, shortDate, shortDateTime } from "./text.js";
 
 const BRAND_MARK = html`<span class="brand"><span class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>cuotia</span>`;
@@ -100,10 +101,12 @@ export function twoFaPage({ stage, error, secret, uri, email }) {
     ${stage === "setup"
       ? html`<p class="muted">Antes de entrar, agrega Cuotia a una app de códigos (Google Authenticator, Microsoft Authenticator, 1Password…).</p>
         <ol class="steps">
-          <li>En la app elige <b>agregar cuenta</b> y escribe esta clave:</li>
+          <li>En la app elige <b>agregar cuenta</b> y <b>escanea este código</b>:</li>
         </ol>
+        <div class="qr">${raw(qrSvg(uri, { label: "Código QR para agregar Cuotia a tu app de códigos" }))}</div>
+        <p class="muted small">¿No puedes escanearlo? Escribe esta clave en la app:</p>
         <p class="key secret" translate="no">${grouped}</p>
-        <p class="small"><a href="${uri}">Abrir directamente en mi app</a> <span class="muted">(en el celular)</span></p>
+        <p class="small"><a href="${uri}">Abrir directamente en mi app</a> <span class="muted">(si estás en el celular)</span></p>
         <p class="muted small">Cuenta: ${email}. Guarda la clave en un lugar seguro: si pierdes el celular, un administrador tendrá que restablecerla.</p>`
       : html`<p class="muted">Escribe el código de 6 dígitos de tu app.</p>`}
     ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
