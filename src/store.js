@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { namesMatch, normalizeName, periodRange } from "./text.js";
+import { MANUAL_LABELS, namesMatch, normalizeName, periodRange } from "./text.js";
 import { newToken, sha256 } from "./security.js";
 
 /**
@@ -107,9 +107,14 @@ const MIGRATIONS = [
   `
   ALTER TABLE users ADD COLUMN display_name TEXT;
   `,
+  /* V5: a free note on manual payments ("lo trajo la esposa", "consignación del 2 de nov"). */
+  `
+  ALTER TABLE payments ADD COLUMN note TEXT;
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
+
 const newId = (prefix) => `${prefix}_${randomBytes(8).toString("hex")}`;
 
 const tenantRow = (r) => !r ? null : {
@@ -137,6 +142,9 @@ const userRow = (r) => !r ? null : {
 const paymentRow = (r) => !r ? null : {
   id: r.id, externalId: r.external_id, payerName: r.payer_name, payerNorm: r.payer_norm, amountCents: r.amount_cents,
   bank: r.bank, method: r.method, paidAt: r.paid_at, houseId: r.house_id, status: r.status,
+  note: r.note ?? null,
+  // Registered by hand in Cuotia (no pagoradar notice behind it), as opposed to a bank notice.
+  manual: /^(cash|manual)_/.test(r.external_id),
 };
 
 export function openStore(path = ":memory:") {
@@ -341,6 +349,8 @@ export function openStore(path = ":memory:") {
       // A deactivated house's unpaid dues don't show; its paid ones keep counting.
       listByPeriod: (period) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.period = ? AND (h.active = 1 OR d.status = 'paid') ORDER BY h.code, c.name`).all(tenantId, period).map(dueRow),
       listForHouse: (houseId) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.house_id = ? ORDER BY d.period DESC, c.name`).all(tenantId, houseId).map(dueRow),
+      /** Unpaid dues of active houses, oldest first: what a manual payment can settle. */
+      listPending: () => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.status = 'pending' AND h.active = 1 ORDER BY h.code, d.period, c.name`).all(tenantId).map(dueRow),
       /** The oldest unpaid due of this house for exactly this amount. */
       oldestOpen(houseId, amountCents) {
         const r = db.prepare("SELECT * FROM dues WHERE tenant_id = ? AND house_id = ? AND amount_cents = ? AND status = 'pending' ORDER BY period LIMIT 1").get(tenantId, houseId, amountCents);
@@ -350,13 +360,14 @@ export function openStore(path = ":memory:") {
       receiptForHouse(houseId, dueId) {
         const r = db.prepare(
           `SELECT d.id, d.period, d.amount_cents, d.paid_at, c.name AS concept_name, h.code AS house_code, h.resident_name,
-                  p.method, p.bank, p.payer_name
+                  p.method, p.bank, p.payer_name, p.external_id, p.note
            FROM dues d JOIN houses h ON h.id = d.house_id JOIN concepts c ON c.id = d.concept_id JOIN payments p ON p.id = d.payment_id
            WHERE d.id = ? AND d.house_id = ? AND d.tenant_id = ? AND d.status = 'paid'`,
         ).get(dueId, houseId, tenantId);
         return r && {
           id: r.id, period: r.period, amountCents: r.amount_cents, paidAt: r.paid_at, conceptName: r.concept_name,
           houseCode: r.house_code, residentName: r.resident_name, method: r.method, bank: r.bank, payerName: r.payer_name,
+          manual: /^(cash|manual)_/.test(r.external_id), note: r.note ?? null,
           number: `${r.period}-${r.id.slice(-4).toUpperCase()}`,
         };
       },
@@ -380,21 +391,37 @@ export function openStore(path = ":memory:") {
         return { created: Number(r.changes) === 1, payment: paymentRow(row) };
       },
       get: (id) => paymentRow(db.prepare("SELECT * FROM payments WHERE id = ? AND tenant_id = ?").get(id, tenantId)),
-      /** A payment in cash: settles the house's oldest open due for that due's amount. */
-      recordCash(houseId, paidAt = nowIso()) {
+      /**
+       * A payment taken by hand, with or without pagoradar: cash, a transfer or anything else the treasurer received.
+       * It settles exactly the chosen dues of one house (one payment can cover several months) for their total, so a
+       * resident can't end up half-paid. All or nothing: a due that isn't this house's, or isn't pending, aborts it.
+       */
+      recordManual({ houseId, dueIds, method = "cash", bank = null, paidAt = nowIso(), note = null }) {
         return tx(() => {
-          ownHouse(houseId);
-          const due = db.prepare("SELECT * FROM dues WHERE tenant_id = ? AND house_id = ? AND status = 'pending' ORDER BY period LIMIT 1").get(tenantId, houseId);
-          if (!due) throw new Error("Esa casa no tiene cuotas pendientes");
+          const house = houseRow(ownHouse(houseId));
+          const ids = [...new Set(dueIds ?? [])];
+          if (ids.length === 0) throw new Error("Elige al menos una cuota");
+          if (!MANUAL_LABELS[method]) throw new Error("Medio de pago desconocido");
+          const rows = ids.map((id) => db.prepare("SELECT * FROM dues WHERE id = ? AND house_id = ? AND tenant_id = ? AND status = 'pending'").get(id, houseId, tenantId));
+          if (rows.some((r) => !r)) throw new Error("Una de las cuotas no está pendiente en esa casa");
+          const total = rows.reduce((sum, r) => sum + r.amount_cents, 0);
           const id = newId("pg");
-          const house = houseRow(houseOf(houseId));
           db.prepare(
-            `INSERT INTO payments (id, tenant_id, external_id, payer_name, payer_norm, amount_cents, bank, method, paid_at, house_id, status, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, NULL, 'cash', ?, ?, 'assigned', ?)`,
-          ).run(id, tenantId, `cash_${id}`, `Efectivo · ${house.residentName}`, "EFECTIVO", due.amount_cents, paidAt, houseId, nowIso());
-          dues.settle(due.id, id, paidAt);
-          return { paymentId: id, dueId: due.id, amountCents: due.amount_cents };
+            `INSERT INTO payments (id, tenant_id, external_id, payer_name, payer_norm, amount_cents, bank, method, paid_at, house_id, status, note, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'assigned', ?, ?)`,
+          ).run(id, tenantId, `manual_${id}`, `${MANUAL_LABELS[method]} · ${house.residentName}`, MANUAL_LABELS[method].toUpperCase(), total,
+            String(bank ?? "").trim().slice(0, 40) || null, method, paidAt, houseId, String(note ?? "").trim().slice(0, 120) || null, nowIso());
+          for (const r of rows) dues.settle(r.id, id, paidAt);
+          return { paymentId: id, dueIds: ids, amountCents: total };
         });
+      },
+      /** A cash payment of the house's oldest open due (kept for the command line and old callers). */
+      recordCash(houseId, paidAt = nowIso()) {
+        ownHouse(houseId);
+        const due = db.prepare("SELECT id FROM dues WHERE tenant_id = ? AND house_id = ? AND status = 'pending' ORDER BY period LIMIT 1").get(tenantId, houseId);
+        if (!due) throw new Error("Esa casa no tiene cuotas pendientes");
+        const r = payments.recordManual({ houseId, dueIds: [due.id], method: "cash", paidAt });
+        return { paymentId: r.paymentId, dueId: due.id, amountCents: r.amountCents };
       },
       /**
        * Payment history, newest first. Filters: `period` ("YYYY-MM", Colombia time), `status`, `houseId`, `q`
@@ -442,7 +469,7 @@ export function openStore(path = ":memory:") {
       },
       /**
        * Undoes an assignment: the due goes back to pending. A bank payment returns to "por asignar" (and the name
-       * learned for that house is forgotten); a cash payment, which only exists in Cuotia, is deleted.
+       * learned for that house is forgotten); a manual payment, which only exists in Cuotia, is deleted.
        */
       revert(paymentId) {
         return tx(() => {
@@ -450,7 +477,7 @@ export function openStore(path = ":memory:") {
           if (!p) throw new Error("Ese pago no existe en este conjunto");
           if (p.status !== "assigned") throw new Error("Ese pago no está asignado");
           db.prepare("UPDATE dues SET status = 'pending', payment_id = NULL, paid_at = NULL WHERE tenant_id = ? AND payment_id = ?").run(tenantId, paymentId);
-          if (p.method === "cash") {
+          if (p.manual) {
             db.prepare("DELETE FROM payments WHERE id = ? AND tenant_id = ?").run(paymentId, tenantId);
             return { deleted: true };
           }

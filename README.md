@@ -82,6 +82,10 @@ Cuotia solo usa `payment.received`; los demás eventos solo confirman la conexi�
 - **Importar casas.** En **Casas → Importar varias casas**: pega una lista desde Excel o Google Sheets (`código`, `nombre`,
   `celular`; una por línea). Cuotia crea las casas, sus cuotas y un **enlace personal** para cada una, con botón de WhatsApp.
   Los enlaces se muestran **una sola vez**.
+- **Pagos manuales (con o sin pagoradar).** En **Pagos → Registrar pago**: elige la casa, marca **uno o varios meses** que cubre,
+  cómo pagó (efectivo, transferencia u otro, con el banco si quieres), la **fecha** en que pagó y una nota. Queda en el historial y
+  en el recibo del vecino, y se puede **deshacer**. Sirve para el efectivo, para cuando aún no conectas pagoradar o cuando un aviso
+  del banco no llegó. Pagoradar es opcional.
 - **Ajustes:** cambia la llave Bre-B y el titular que ven los residentes, el secreto de pagoradar y tu contraseña (al cambiarla
   se cierran las sesiones de otros dispositivos).
 - **Perdí el celular del código / la contraseña** (lo hace quien administra el servidor, desde la terminal del contenedor):
@@ -130,6 +134,7 @@ Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra un **cód
 - **Por asignar:** elige la casa de cada pago desconocido; Cuotia recuerda el nombre.
 - **Generar cuotas** del mes, **pago en efectivo** y **Casas**: agregar, **editar** (código, residente, celular),
   agregar o quitar los **nombres con los que paga** cada casa, **desactivar** y reactivar, y el enlace personal por WhatsApp.
+- **Registrar pago** a mano (efectivo, transferencia…), uno o varios meses.
 - **Pagos:** historial con filtros (mes, estado, búsqueda), páginas, **descarga para Excel (CSV)** y **Deshacer**: una
   asignación equivocada vuelve a “Por asignar” (y Cuotia olvida el nombre), un pago en efectivo se anula.
 

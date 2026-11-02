@@ -7,8 +7,8 @@ import {
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
-import { bankLabel, bogotaDateTime, csvCell, currentPeriod, parseHouseLines, periodLabel, peso, slugify } from "./text.js";
-import { ajustesPage, casaPage, casasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
+import { bogotaDateTime, csvCell, currentPeriod, parseHouseLines, paymentMedium, periodLabel, peso, slugify } from "./text.js";
+import { ajustesPage, casaPage, casasPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -279,6 +279,20 @@ export function createApp({ config, store }) {
       }));
     }
 
+    if (method === "GET" && path === "/panel/pagos/nuevo") {
+      // Houses with something to pay, in house order, each with its pending dues.
+      const byHouse = new Map();
+      for (const d of ledger.dues.listPending()) {
+        if (!byHouse.has(d.houseId)) byHouse.set(d.houseId, { house: { id: d.houseId, code: d.houseCode, residentName: d.residentName }, dues: [] });
+        byHouse.get(d.houseId).dues.push(d);
+      }
+      return send(res, 200, pagoManualPage({
+        ...base, flash: flashOf(url.searchParams), groups: [...byHouse.values()],
+        selected: byHouse.get(url.searchParams.get("casa")) ?? null,
+        today: bogotaDateTime(new Date().toISOString()).slice(0, 10),
+      }));
+    }
+
     if (method === "GET" && (path === "/panel/pagos" || path === "/panel/pagos.csv")) {
       const f = historyFilters(url.searchParams);
       if (path === "/panel/pagos.csv") return sendCsv(res, ledger, f);
@@ -341,9 +355,16 @@ export function createApp({ config, store }) {
         return back(dueId ? "asig" : "asigsin");
       }
 
-      if (path === "/panel/efectivo") {
-        ledger.payments.recordCash(String(form.get("house") ?? ""));
-        return back("efec");
+      if (path === "/panel/pagos/nuevo") {
+        const houseId = String(form.get("casa") ?? "");
+        const paidAt = manualPaidAt(String(form.get("fecha") ?? ""));
+        const dueIds = form.getAll("cuota").map(String);
+        if (!paidAt || dueIds.length === 0) return redirect(res, `/panel/pagos/nuevo?casa=${encodeURIComponent(houseId)}&m=manualbad`);
+        ledger.payments.recordManual({
+          houseId, dueIds, method: String(form.get("medio") ?? "cash"), paidAt,
+          bank: String(form.get("banco") ?? ""), note: String(form.get("nota") ?? ""),
+        });
+        return redirect(res, "/panel/pagos?m=manual");
       }
 
       if (path === "/panel/casas/importar") {
@@ -428,6 +449,16 @@ export function createApp({ config, store }) {
     return send(res, 404, notFoundPage());
   }
 
+  /**
+   * "YYYY-MM-DD" typed by the treasurer → the instant to record, or null if it isn't a real date, is in the future (Colombia
+   * time) or is absurdly old. Today means "now"; a past day means noon that day in Colombia, so it lands in the right month.
+   */
+  function manualPaidAt(date) {
+    const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date)) || date > today || date < "2024-01-01") return null;
+    return date === today ? new Date().toISOString() : `${date}T17:00:00.000Z`;
+  }
+
   /** Validated house fields from a form, or null. */
   function houseForm(form) {
     const code = String(form.get("code") ?? "").trim().slice(0, 12);
@@ -454,7 +485,7 @@ export function createApp({ config, store }) {
     const { rows } = ledger.payments.list({ period: f.period, status: f.status, q: f.q, limit: 20000, offset: 0 });
     const head = ["Fecha", "Pagador", "Banco o medio", "Casa", "Residente", "Cuota", "Monto (COP)", "Estado"];
     const lines = rows.map((p) => [
-      bogotaDateTime(p.paidAt), p.payerName, p.method === "cash" ? "Efectivo" : bankLabel(p.bank), p.houseCode ?? "", p.residentName ?? "",
+      bogotaDateTime(p.paidAt), p.payerName, paymentMedium(p), p.houseCode ?? "", p.residentName ?? "",
       p.duePeriod ? `${p.conceptName} ${periodLabel(p.duePeriod)}` : "", Math.round(p.amountCents / 100), p.status === "assigned" ? "Asignado" : "Por asignar",
     ].map(csvCell).join(";"));
     const body = `\uFEFF${[head.map(csvCell).join(";"), ...lines].join("\r\n")}\r\n`;
