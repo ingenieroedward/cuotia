@@ -417,3 +417,14 @@ td.act .btn { white-space: nowrap; }
 .addmonths { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; padding: .75rem 1rem; background: var(--ground); border-radius: 14px; }
 .addmonths-buttons { display: inline-flex; flex-wrap: wrap; gap: .4rem; }
 details.addmonth-all { margin-bottom: .75rem; }
+
+details.add-house { padding: 0 1.25rem; }
+details.add-house summary { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: .75rem; cursor: pointer; list-style: none; }
+details.add-house summary::-webkit-details-marker { display: none; }
+details.add-house[open] { padding-bottom: 1.25rem; }
+details.add-house[open] summary { margin-bottom: .5rem; }
+
+.proof { display: grid; gap: .75rem; }
+.proof-img { display: block; max-width: 100%; max-height: 22rem; border-radius: 14px; border: 1px solid var(--line); background: var(--ground); object-fit: contain; }
+.proof-box { display: grid; gap: .5rem; padding: .9rem; border: 1px solid var(--line); border-radius: 14px; background: var(--ground); }
+input[type="file"] { width: 100%; padding: .6rem; border: 1px dashed var(--line); border-radius: 12px; background: var(--ground); font: inherit; }

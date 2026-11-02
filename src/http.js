@@ -53,6 +53,11 @@ export function redirect(res, location, headers = {}) {
 
 /** The exact request body as text (the webhook signature covers these bytes). Rejects bodies over `limit`. */
 export async function readBody(req, limit = 256 * 1024) {
+  return (await readBuffer(req, limit)).toString("utf8");
+}
+
+/** The raw request body (an upload). Rejects bodies over `limit` with status 413. */
+export async function readBuffer(req, limit) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -60,7 +65,7 @@ export async function readBody(req, limit = 256 * 1024) {
     if (size > limit) throw Object.assign(new Error("Cuerpo demasiado grande"), { status: 413 });
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 /** A malformed %-sequence (a damaged or hostile cookie) must not crash the request: keep the raw text, it just won't match a session. */

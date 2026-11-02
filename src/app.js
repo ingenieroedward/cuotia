@@ -1,15 +1,16 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { parseCookies, readBody, redirect, sameOrigin, send, sendJson } from "./http.js";
+import { parseCookies, readBody, readBuffer, redirect, sameOrigin, send, sendJson } from "./http.js";
 import {
   AttemptLimiter, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, hashPassword, matchTotp, newTotpSecret, safeEqual,
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
 import { debtTotals, groupDebts } from "./debts.js";
+import { MAX_PROOF_BYTES, parseMultipart, sniffProof } from "./upload.js";
 import { bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
-import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -45,6 +46,7 @@ export function createApp({ config, store }) {
   const loginLimiter = new AttemptLimiter();
   const setupLimiter = new AttemptLimiter({ max: 10, windowMs: 15 * 60_000 });
   const codeLimiter = new AttemptLimiter({ max: 5, windowMs: 10 * 60_000 });
+  const proofLimiter = new AttemptLimiter({ max: 12, windowMs: 60 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
 
@@ -97,8 +99,12 @@ export function createApp({ config, store }) {
       return redirect(res, "/login", setCookie("", 0));
     }
 
+    // A resident uploads a proof of payment (photo or PDF). Same personal-link credential, same-origin only.
+    const upload = method === "POST" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})\/comprobante$/);
+    if (upload) return residentUpload(req, res, upload[1]);
+
     // A resident's personal link: the unguessable token is the credential.
-    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar|manifest\.webmanifest)|\/recibo\/(du_[a-f0-9]+))?$/);
+    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar|comprobante|manifest\.webmanifest)|\/recibo\/(du_[a-f0-9]+))?$/);
     if (r) {
       const [, token, extra, receiptId] = r;
       const pay = extra === "pagar";
@@ -112,18 +118,53 @@ export function createApp({ config, store }) {
         const receipt = ledger.dues.receiptForHouse(found.house.id, receiptId);
         return receipt ? send(res, 200, receiptPage({ tenant: found.tenant, receipt, token })) : send(res, 404, notFoundPage());
       }
+      if (extra === "comprobante") {
+        return send(res, 200, residentProofPage({ ...found, dues, token, proofs: ledger.proofs.listForHouse(found.house.id), sent: url.searchParams.get("m") === "enviado" }));
+      }
       if (pay) {
         // Nothing left to pay (the bank confirmed while the page was open): go back to the home, which says "Al día".
         if (!dues.some((d) => d.status === "pending")) return redirect(res, `/r/${token}`);
-        return send(res, 200, residentPayPage({ ...found, dues, token }));
+        return send(res, 200, residentPayPage({ ...found, dues, token, proofs: ledger.proofs.listForHouse(found.house.id) }));
       }
-      return send(res, 200, residentPage({ ...found, dues, period: currentPeriod(), token }));
+      return send(res, 200, residentPage({ ...found, dues, period: currentPeriod(), token, proofs: ledger.proofs.listForHouse(found.house.id) }));
     }
 
     // ---- Everything below needs a fully signed-in treasurer ----
     if (path === "/" || path === "/panel" || path.startsWith("/panel/")) return panel(req, res, url, path, method);
 
     return send(res, 404, notFoundPage());
+  }
+
+  async function residentUpload(req, res, token) {
+    const found = store.residentByToken(token);
+    if (!found) return send(res, 404, notFoundPage());
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const ledger = store.forTenant(found.tenant.id);
+    const dues = ledger.dues.listForHouse(found.house.id);
+    const show = (error, status = 400) => send(res, status, residentProofPage({ ...found, dues, token, proofs: ledger.proofs.listForHouse(found.house.id), error }));
+    const key = `proof:${found.house.id}`;
+    if (proofLimiter.blocked(key)) return show("Has enviado muchos comprobantes. Espera un rato e inténtalo de nuevo.", 429);
+    let body;
+    try {
+      body = await readBuffer(req, MAX_PROOF_BYTES + 64 * 1024);
+    } catch (e) {
+      if (e.status === 413) return show("El archivo pesa más de 5 MB. Toma la foto con menos calidad o envía una captura de pantalla.", 413);
+      throw e;
+    }
+    proofLimiter.fail(key);
+    const parsed = parseMultipart(body, req.headers["content-type"]);
+    const file = parsed?.files.archivo;
+    if (!file || file.data.length === 0) return show("Elige la foto o el PDF del comprobante.");
+    if (file.data.length > MAX_PROOF_BYTES) return show("El archivo pesa más de 5 MB.", 413);
+    const mime = sniffProof(file.data);
+    if (!mime) return show("Solo se aceptan fotos (JPG, PNG, WebP) o PDF.");
+    try {
+      ledger.proofs.create({ houseId: found.house.id, mime, data: file.data, note: parsed.fields.nota });
+    } catch (e) {
+      if (/esperando revisión/.test(e.message)) return show(e.message);
+      throw e;
+    }
+    return redirect(res, `/r/${token}/comprobante?m=enviado`);
   }
 
   async function pagoradarWebhook(req, res, tenantId) {
@@ -272,7 +313,7 @@ export function createApp({ config, store }) {
     // What the sidebar and tab bar show on every page.
     const base = {
       tenant: s.tenant, user: s.user, csrf,
-      badge: ledger.payments.countUnassigned(), owing: groups.length, houseCount: houses.length,
+      badge: ledger.payments.countUnassigned() + ledger.proofs.countPending(), owing: groups.length, houseCount: houses.length,
       cuota: ledger.concepts.list()[0] ? peso(ledger.concepts.list()[0].amountCents) : "",
     };
 
@@ -280,16 +321,18 @@ export function createApp({ config, store }) {
       // Any month that has dues can be looked at; "mes" outside that list falls back to the current one.
       const months = [...new Set([period, ...ledger.dues.periods()])].sort().reverse();
       const asked = url.searchParams.get("mes");
-      const selected = months.includes(asked) ? asked : period;
-      const at = months.indexOf(selected);
+      // Any month up to 24 back can be opened, even one that was never generated (the page then offers to create it).
+      const selected = months.includes(asked) || validPastPeriod(asked) ? asked : period;
       return send(res, 200, panelPage({
         ...base,
         flash: flashOf(url.searchParams),
         summary: ledger.summary(selected),
         dues: ledger.dues.listByPeriod(selected),
         unassigned: ledger.payments.listUnassigned(),
+        proofs: ledger.proofs.listPending(),
         houses, debts, current: period,
-        prevPeriod: months[at + 1] ?? null, nextPeriod: months[at - 1] ?? null,
+        prevPeriod: validPastPeriod(shiftPeriod(selected, -1)) ? shiftPeriod(selected, -1) : null,
+        nextPeriod: selected < period ? shiftPeriod(selected, 1) : null,
         addable: lastPeriods(period, 13).slice(1).filter((m) => !months.includes(m)).slice(0, 6),
         recent: ledger.payments.list({ limit: 4 }).rows,
         filter: ["pagadas", "pendientes"].includes(url.searchParams.get("f")) ? url.searchParams.get("f") : "",
@@ -325,10 +368,25 @@ export function createApp({ config, store }) {
       }));
     }
 
+    const proofFile = method === "GET" && path.match(/^\/panel\/comprobantes\/(pf_[a-f0-9]+)\/archivo$/);
+    if (proofFile) {
+      const file = ledger.proofs.file(proofFile[1]);
+      if (!file) return send(res, 404, notFoundPage());
+      // Untrusted bytes: served as what they were verified to be, never sniffed, never executed; a PDF is downloaded.
+      return send(res, 200, file.data, {
+        "Content-Type": file.mime,
+        "Content-Disposition": file.mime === "application/pdf" ? 'attachment; filename="comprobante.pdf"' : "inline",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Cache-Control": "private, no-store",
+      });
+    }
+
     if (method === "GET" && path === "/panel/pagos/nuevo") {
+      const proof = ledger.proofs.meta(String(url.searchParams.get("comprobante") ?? ""));
       // ?casa= opens that house's form; ?cuota= ticks one due (the row's button), ?todas=1 ticks them all.
       return send(res, 200, pagoManualPage({
         ...base, flash: flashOf(url.searchParams), debts, current: period,
+        proof: proof?.status === "pending" ? proof : null,
         selected: groups.find((g) => g.house.id === url.searchParams.get("casa")) ?? null,
         missing: (() => {
           const g = groups.find((x) => x.house.id === url.searchParams.get("casa"));
@@ -346,6 +404,8 @@ export function createApp({ config, store }) {
       const f = historyFilters(url.searchParams);
       if (path === "/panel/pagos.csv") return sendCsv(res, ledger, f);
       const result = ledger.payments.list({ ...f, limit: PAGE_SIZE, offset: (f.p - 1) * PAGE_SIZE });
+      const proofOf = ledger.payments.proofsByPayment(result.rows.map((r) => r.id));
+      for (const row of result.rows) row.proof = proofOf.get(row.id) ?? null;
       return send(res, 200, pagosPage({
         ...base, flash: flashOf(url.searchParams), result, period,
         filters: { mes: f.period ?? "", estado: f.status ?? "", q: f.q, p: f.p },
@@ -423,6 +483,12 @@ export function createApp({ config, store }) {
         return back(dueId ? "asig" : "asigsin");
       }
 
+      const rejectProof = path.match(/^\/panel\/comprobantes\/(pf_[a-f0-9]+)\/rechazar$/);
+      if (rejectProof) {
+        ledger.proofs.reject(rejectProof[1]);
+        return back("comprech");
+      }
+
       if (path === "/panel/pagos/nuevo") {
         const houseId = String(form.get("casa") ?? "");
         const paidAt = manualPaidAt(String(form.get("fecha") ?? ""));
@@ -431,6 +497,7 @@ export function createApp({ config, store }) {
         ledger.payments.recordManual({
           houseId, dueIds, method: String(form.get("medio") ?? "cash"), paidAt,
           bank: String(form.get("banco") ?? ""), note: String(form.get("nota") ?? ""),
+          proofId: String(form.get("comprobante") ?? "") || null,
         });
         return redirect(res, "/panel/cobros?m=manual");
       }

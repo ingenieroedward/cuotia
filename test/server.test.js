@@ -1396,3 +1396,87 @@ test("fechas de pago: se guardan por conjunto, se validan y el residente las ve"
   assert.match((await save({ desde: "", hasta: "" })).headers.get("location"), /m=fechas$/);
   assert.equal(tenants.get(s.a.id).dueDay, null, "vacío = sin fechas");
 }));
+
+const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("imagen de prueba")]);
+const uploadProof = (s, token, bytes, { name = "foto.png", type = "image/png", nota = "", headers = {} } = {}) => {
+  const fd = new FormData();
+  fd.append("nota", nota);
+  fd.append("archivo", new Blob([bytes], { type }), name);
+  return fetch(`${s.base}/r/${token}/comprobante`, { method: "POST", body: fd, redirect: "manual", headers });
+};
+
+test("comprobante: el residente lo sube, el tesorero lo ve y lo confirma al registrar el pago", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  s.B.dues.generate(currentPeriod());
+  const page = await (await fetch(`${s.base}/r/${s.a14.accessToken}/comprobante`)).text();
+  assert.match(page, /enctype="multipart\/form-data"/);
+  assert.doesNotMatch(page, /http-equiv="refresh"/, "sin refresco: borraría el archivo elegido");
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text(), /Subir comprobante/);
+
+  // Not a photo or PDF (HTML, SVG), empty and missing files are refused; nothing is stored.
+  assert.equal((await uploadProof(s, s.a14.accessToken, "<script>alert(1)</script>", { name: "x.png", type: "image/png" })).status, 400);
+  assert.equal((await uploadProof(s, s.a14.accessToken, "<svg></svg>", { name: "x.svg", type: "image/svg+xml" })).status, 400);
+  assert.equal((await uploadProof(s, s.a14.accessToken, Buffer.alloc(0))).status, 400);
+  assert.equal((await uploadProof(s, s.a14.accessToken, Buffer.concat([PNG_BYTES, Buffer.alloc(5 * 1024 * 1024)]))).status, 413, "más de 5 MB");
+  assert.equal(s.A.proofs.countPending(), 0);
+  assert.equal((await uploadProof(s, s.a14.accessToken, PNG_BYTES, { headers: { origin: "https://malo.example" } })).status, 403);
+  assert.equal((await uploadProof(s, "x".repeat(30), PNG_BYTES)).status, 404);
+
+  const ok = await uploadProof(s, s.a14.accessToken, PNG_BYTES, { nota: "Pagué por Nequi" });
+  assert.equal(ok.status, 303);
+  assert.match(ok.headers.get("location"), /\/comprobante\?m=enviado$/);
+  assert.equal(s.A.proofs.countPending(), 1);
+  assert.equal(s.B.proofs.countPending(), 0, "el otro conjunto no lo tiene");
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /está en revisión/);
+
+  // The treasurer sees it, with the file served locked down.
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const panelHtml = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
+  assert.match(panelHtml, /Comprobantes por revisar/);
+  assert.match(panelHtml, /Pagué por Nequi/);
+  const [pf] = s.A.proofs.listPending();
+  const file = await fetch(`${s.base}/panel/comprobantes/${pf.id}/archivo`, { headers: { cookie } });
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get("content-type"), "image/png");
+  assert.equal(file.headers.get("x-content-type-options"), "nosniff");
+  assert.match(file.headers.get("content-security-policy"), /default-src 'none'/);
+  assert.ok(Buffer.from(await file.arrayBuffer()).equals(PNG_BYTES));
+  const anon = await fetch(`${s.base}/panel/comprobantes/${pf.id}/archivo`, { redirect: "manual" });
+  assert.equal(anon.headers.get("location"), "/login", "sin sesión no hay archivo");
+
+  // The other conjunto's treasurer can neither see nor reject it.
+  const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  assert.equal((await fetch(`${s.base}/panel/comprobantes/${pf.id}/archivo`, { headers: { cookie: other.cookie } })).status, 404);
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes");
+  const bad = await form(`${s.base}/panel/comprobantes/${pf.id}/rechazar`, { _csrf: otherCsrf }, other.cookie);
+  assert.ok([302, 303, 404, 500].includes(bad.status));
+  assert.equal(s.A.proofs.countPending(), 1, "no lo rechazó");
+
+  // Recording the payment with the proof attached accepts it; undoing the payment puts it back in the queue.
+  const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
+  const form1 = await (await fetch(`${s.base}/panel/pagos/nuevo?casa=${s.a14.house.id}&comprobante=${pf.id}`, { headers: { cookie } })).text();
+  assert.ok(form1.includes(`name="comprobante" value="${pf.id}"`));
+  const due = s.A.dues.listForHouse(s.a14.house.id)[0];
+  const pay = new URLSearchParams({ _csrf: csrf, casa: s.a14.house.id, medio: "transfer", fecha: `${currentPeriod()}-01`, comprobante: pf.id });
+  pay.append("cuota", due.id);
+  const paid = await post(`${s.base}/panel/pagos/nuevo`, pay, { ...FORM, cookie });
+  assert.match(paid.headers.get("location"), /m=manual$/);
+  assert.equal(s.A.proofs.meta(pf.id).status, "accepted");
+  const paymentId = s.A.proofs.meta(pf.id).paymentId;
+  assert.match(await (await fetch(`${s.base}/panel/pagos`, { headers: { cookie } })).text(), /Ver comprobante/);
+
+  await form(`${s.base}/panel/pagos/${paymentId}/deshacer`, { _csrf: csrf }, cookie);
+  assert.equal(s.A.proofs.meta(pf.id).status, "pending", "al deshacer el pago, el comprobante vuelve a la bandeja");
+
+  // Rejecting one also tells the resident.
+  assert.match((await form(`${s.base}/panel/comprobantes/${pf.id}/rechazar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=comprech/);
+  assert.equal(s.A.proofs.meta(pf.id).status, "rejected");
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /no pudo confirmar/);
+
+  // A proof can't back a payment of another house.
+  const again = s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES });
+  assert.throws(() => s.A.payments.recordManual({ houseId: s.a03.house.id, dueIds: [s.A.dues.listForHouse(s.a03.house.id)[0].id], proofId: again.id }), /comprobante/);
+  assert.throws(() => s.B.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }), /no existe|otro conjunto|casa/i);
+  for (let i = 0; i < 3; i++) try { s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }); } catch {}
+  assert.throws(() => s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }), /esperando revisión/);
+}));

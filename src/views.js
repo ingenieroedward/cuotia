@@ -66,6 +66,7 @@ const FLASH = {
   undoc: () => ({ kind: "ok", text: "Pago anulado: las cuotas que cubría volvieron a pendiente." }),
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
+  comprech: () => ({ kind: "ok", text: "Comprobante rechazado. El residente verá que no se pudo confirmar." }),
   fechas: () => ({ kind: "ok", text: "Fechas de pago guardadas. Los residentes ya las ven y las cuotas se marcan vencidas después del último día." }),
   fechasbad: () => ({ kind: "err", text: "Escribe días entre 1 y 28, y el último día no puede ser antes del primero." }),
   cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
@@ -221,6 +222,11 @@ const STATUS = {
   pending: html`<span class="pill warn"><i></i>Pendiente</span>`,
 };
 
+/** A proof of payment as the treasurer sees it: the photo inline, a PDF as a link. */
+const proofView = (p) => p.mime === "application/pdf"
+  ? html`<a class="btn ghost small" href="/panel/comprobantes/${p.id}/archivo">Descargar el PDF</a>`
+  : html`<a href="/panel/comprobantes/${p.id}/archivo" target="_blank" rel="noopener"><img class="proof-img" src="/panel/comprobantes/${p.id}/archivo" alt="Comprobante de la casa ${p.houseCode}" loading="lazy"></a>`;
+
 const houseOptions = (houses) => houses.map((h) => html`<option value="${h.id}">Casa ${h.code} · ${h.residentName}</option>`);
 const payMethod = paymentMedium;
 
@@ -305,7 +311,7 @@ const panelHref = ({ mes, f, current }) => {
 };
 
 export function panelPage(args) {
-  const { tenant, user, csrf, flash, summary, dues, unassigned, houses, recent = [], filter = "", current, prevPeriod, nextPeriod, debts, addable = [] } = args;
+  const { tenant, user, csrf, flash, summary, dues, unassigned, proofs = [], houses, recent = [], filter = "", current, prevPeriod, nextPeriod, debts, addable = [] } = args;
   const { groups, totals } = debts;
   const byHouse = new Map(groups.map((g) => [g.house.id, g]));
   const selected = summary.period;
@@ -402,6 +408,27 @@ export function panelPage(args) {
     </div>
   </section>
 
+  ${proofs.length
+    ? html`<section class="card" id="comprobantes">
+        <h2>Comprobantes por revisar <span class="count">${proofs.length}</span></h2>
+        <p class="muted small">Los residentes los suben desde su enlace. Revisa que el valor y el banco coincidan y registra el pago: la cuota queda pagada con el comprobante guardado.</p>
+        <ul class="list stack">${proofs.map((pf) => {
+          const g = byHouse.get(pf.houseId);
+          return html`<li class="proof">
+            <div class="row"><span><b>Casa ${pf.houseCode} · ${pf.residentName}</b><small class="muted">${shortDateTime(pf.createdAt)}${pf.note ? ` · “${pf.note}”` : ""}</small></span>${g ? html`<b>Debe ${peso(g.totalCents)}</b>` : html`<span class="pill ok"><i></i>Al día</span>`}</div>
+            ${proofView(pf)}
+            <div class="actions">
+              ${g ? html`<a class="btn small" href="/panel/pagos/nuevo?casa=${pf.houseId}&amp;comprobante=${pf.id}&amp;todas=1">Registrar pago</a>` : html`<span class="muted small">Esta casa no debe nada: no hay cuota que pagar.</span>`}
+              <details class="undo"><summary>Rechazar</summary>
+                <p class="muted small">El comprobante no se borra, pero sale de esta lista y el residente verá que no se pudo confirmar.</p>
+                <form method="post" action="/panel/comprobantes/${pf.id}/rechazar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, rechazar</button></form>
+              </details>
+            </div>
+          </li>`;
+        })}</ul>
+      </section>`
+    : ""}
+
   ${unassigned.length
     ? html`<section class="card" id="por-asignar">
         <h2>Por asignar <span class="count">${unassigned.length}</span></h2>
@@ -430,8 +457,8 @@ export function panelPage(args) {
         </div>
       </div>
       ${dues.length === 0
-        ? html`<p class="muted">Aún no hay cuotas para este mes.</p>
-          ${selected === current ? html`<form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<button class="btn" type="submit">Generar cuotas de ${periodLabel(selected)}</button></form>` : ""}`
+        ? html`<p class="muted">Aún no hay cuotas para ${periodLabel(selected)}.${selected === current ? "" : " Si en ese mes ya se cobraba, créalas y luego registra los pagos con su fecha."}</p>
+          <form method="post" action="/panel/cuotas/generar">${csrfField(csrf)}<input type="hidden" name="mes" value="${selected}"><button class="btn" type="submit">Generar cuotas de ${periodLabel(selected)}</button></form>`
         : html`${selected === current && addable.length && dues.length
           ? html`<details class="undo addmonth-all">
               <summary>¿Falta un mes anterior (por ejemplo octubre)?</summary>
@@ -535,6 +562,17 @@ export function casasPage(args) {
   <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}${debts.groups.length ? ` · ${debts.groups.length} con deuda` : ""}</span></div>
   ${flashBox(flash)}
 
+  <details class="card add-house"${houses.length === 0 || flash?.kind === "err" ? raw(" open") : ""}>
+    <summary><span class="btn small">+ Agregar casa</span><a class="btn ghost small" href="/panel/casas/importar">Importar varias casas</a></summary>
+    <form class="grid-form" method="post" action="/panel/casas">
+      ${csrfField(csrf)}
+      <label>Código<input type="text" name="code" maxlength="12" required placeholder="14"></label>
+      <label>Residente<input type="text" name="residente" maxlength="80" required placeholder="Sandra Duque"></label>
+      <label>Celular (opcional)<input type="tel" name="telefono" maxlength="20" inputmode="tel" placeholder="3001234567"></label>
+      <button class="btn" type="submit">Agregar y ver enlace</button>
+    </form>
+  </details>
+
   <section class="card">
     <div class="row wrap"><h2>Listado</h2>
       <form class="searchbar" method="get" action="/panel/casas" role="search">
@@ -561,17 +599,6 @@ export function casasPage(args) {
         })}</ul><p class="muted" id="sin-casas" hidden>Ninguna casa coincide.</p>`}
   </section>
 
-  <section class="card">
-    <div class="row wrap"><h2>Agregar casa</h2><a class="btn ghost small" href="/panel/casas/importar">Importar varias casas</a></div>
-    <form class="grid-form" method="post" action="/panel/casas">
-      ${csrfField(csrf)}
-      <label>Código<input type="text" name="code" maxlength="12" required placeholder="14"></label>
-      <label>Residente<input type="text" name="residente" maxlength="80" required placeholder="Sandra Duque"></label>
-      <label>Celular (opcional)<input type="tel" name="telefono" maxlength="20" inputmode="tel" placeholder="3001234567"></label>
-      <button class="btn" type="submit">Agregar y ver enlace</button>
-    </form>
-  </section>
-
   ${inactive.length
     ? html`<section class="card">
         <h2>Casas desactivadas</h2>
@@ -589,7 +616,7 @@ export function casasPage(args) {
 
 /** Register a payment by hand. Step 1: who owes (a list you tap). Step 2: which months, how it was paid, when. */
 export function pagoManualPage(args) {
-  const { csrf, flash, debts, current, selected, missing = [], preselect = [], all = false, today, q = "" } = args;
+  const { csrf, flash, debts, current, selected, proof = null, missing = [], preselect = [], all = false, today, q = "" } = args;
   const monthButton = (m) => `+ ${monthName(m)}${m.slice(0, 4) === current.slice(0, 4) ? "" : ` ${m.slice(0, 4)}`}`;
   const methods = Object.entries(MANUAL_LABELS);
   const list = debts.groups.filter((g) => matchesSearch(q, `${g.house.code} ${g.house.residentName}`));
@@ -615,6 +642,9 @@ export function pagoManualPage(args) {
         <form class="stack-form" method="post" action="/panel/pagos/nuevo">
           ${csrfField(csrf)}
           <input type="hidden" name="casa" value="${selected.house.id}">
+          ${proof && proof.houseId === selected.house.id
+            ? html`<input type="hidden" name="comprobante" value="${proof.id}"><div class="proof-box"><span class="eyebrow dim">Comprobante que subió ${proof.residentName}</span>${proofView(proof)}${proof.note ? html`<p class="muted small">“${proof.note}”</p>` : ""}</div>`
+            : ""}
           <fieldset>
             <legend>¿Qué cuotas cubre?</legend>
             ${selected.dues.map((d, i) => html`<label class="check due-pick"><input type="checkbox" name="cuota" value="${d.id}"${checked(d, i) ? raw(" checked") : ""}><span>${monthName(d.period)} ${d.period.slice(0, 4)} · ${d.conceptName}${d.late ? html` <span class="pill bad small"><i></i>${d.period < current ? "Atrasada" : "Vencida"}</span>` : ""}</span><b>${peso(d.amountCents)}</b></label>`)}
@@ -784,6 +814,7 @@ export function pagoItem(p, csrf) {
       </span>
       <span class="amount"><b>${peso(p.amountCents)}</b>${PAY_STATUS[p.status]}</span>
     </div>
+    ${p.proof ? html`<a class="small" href="/panel/comprobantes/${p.proof.id}/archivo" target="_blank" rel="noopener">Ver comprobante</a>` : ""}
     ${p.status === "assigned" ? undoControl(p, csrf) : html`<a class="small" href="/panel#por-asignar">Asignar a una casa →</a>`}
   </li>`;
 }
@@ -934,7 +965,36 @@ export function paymentWindow(tenant, period) {
   return "";
 }
 
-export function residentPage({ tenant, house, dues, period, token, day = bogotaDay() }) {
+const PROOF_STATUS = {
+  pending: html`<span class="pill warn"><i></i>En revisión</span>`,
+  accepted: html`<span class="pill ok"><i></i>Confirmado</span>`,
+  rejected: html`<span class="pill bad"><i></i>No se pudo confirmar</span>`,
+};
+
+/** Upload a photo or PDF of the payment. It has no auto-refresh on purpose: a refresh would clear the chosen file. */
+export function residentProofPage({ tenant, house, dues, token, proofs = [], error = "", sent = false }) {
+  const owed = dues.filter((d) => d.status === "pending").reduce((s, d) => s + d.amountCents, 0);
+  return layout("Subir comprobante", html`
+<main class="narrow res">
+  <header class="backbar"><a href="/r/${token}" aria-label="Volver">${icon("back", 24, 2.2)}</a><h1>Subir comprobante</h1></header>
+  <section class="card">
+    ${sent ? html`<p class="flash ok" role="status">¡Listo! El tesorero revisará tu comprobante y registrará el pago.</p>` : ""}
+    ${error ? html`<p class="flash err" role="alert">${error}</p>` : ""}
+    <p class="muted">Casa ${house.code} · ${tenant.name}${owed ? html` · debes <b>${peso(owed)}</b>` : ""}</p>
+    <form class="stack-form" method="post" action="/r/${token}/comprobante" enctype="multipart/form-data">
+      <label>Foto o PDF del comprobante (máximo 5 MB)<input type="file" name="archivo" accept="image/jpeg,image/png,image/webp,application/pdf" required></label>
+      <label>Nota para el tesorero (opcional)<input type="text" name="nota" maxlength="200" placeholder="Pagué desde la cuenta de mi esposo"></label>
+      <button class="btn big" type="submit">Enviar comprobante</button>
+    </form>
+    <p class="muted small">Solo el tesorero de ${tenant.name} puede verlo. El pago queda registrado cuando él lo confirme.</p>
+  </section>
+  ${proofs.length
+    ? html`<section class="card"><h2>Tus comprobantes</h2><ul class="list">${proofs.map((p) => html`<li class="due"><span class="due-text"><b>${shortDateTime(p.createdAt)}</b><small class="muted">${p.mime === "application/pdf" ? "PDF" : "Foto"}</small></span>${PROOF_STATUS[p.status]}</li>`)}</ul></section>`
+    : ""}
+</main>`, { manifest: `/r/${token}/manifest.webmanifest` });
+}
+
+export function residentPage({ tenant, house, dues, period, token, proofs = [], day = bogotaDay() }) {
   const open = dues.filter((d) => d.period === period && d.status === "pending");
   const behind = dues.filter((d) => d.period < period && d.status === "pending");
   const windowText = paymentWindow(tenant, period);
@@ -959,6 +1019,9 @@ export function residentPage({ tenant, house, dues, period, token, day = bogotaD
       : html`<span class="hero-number">Al día</span><span class="hero-sub">No tienes cuotas pendientes. ¡Gracias!</span>`}
   </section>
 
+  ${proofs.some((p) => p.status === "pending") ? html`<p class="flash info" role="status">Enviaste un comprobante y está en revisión. <a href="/r/${token}/comprobante">Ver</a></p>` : ""}
+  ${proofs[0]?.status === "rejected" && owed.length ? html`<p class="flash err" role="status">El tesorero no pudo confirmar tu último comprobante. Revisa el valor o <a href="/r/${token}/comprobante">súbelo de nuevo</a>.</p>` : ""}
+
   <section class="card">
     <h2>Tus pagos</h2>
     ${dues.length
@@ -973,7 +1036,7 @@ export function residentPage({ tenant, house, dues, period, token, day = bogotaD
 }
 
 /** How to pay: the Bre-B key to copy and the exact amount. It refreshes itself so it turns into "Al día" once the bank confirms. */
-export function residentPayPage({ tenant, house, dues, token }) {
+export function residentPayPage({ tenant, house, dues, token, proofs = [] }) {
   const owed = dues.filter((d) => d.status === "pending");
   const total = owed.reduce((s, d) => s + d.amountCents, 0);
   return layout("Pagar", html`
@@ -999,6 +1062,12 @@ export function residentPayPage({ tenant, house, dues, token }) {
         </ol>
       </section>`
     : html`<section class="card"><p>El tesorero aún no ha configurado cómo pagar. Escríbele para que te indique.</p></section>`}
+
+  <section class="card">
+    ${proofs.some((p) => p.status === "pending")
+      ? html`<p>Tu comprobante está <b>en revisión</b>. <a href="/r/${token}/comprobante">Ver</a></p>`
+      : html`<p><b>¿Ya pagaste?</b> Sube la foto del comprobante para que el tesorero lo confirme más rápido.</p><a class="btn ghost" href="/r/${token}/comprobante">Subir comprobante</a>`}
+  </section>
 
   <p class="waiting" role="status"><span class="pulse"></span>${tenant.pagoradarConfigured
     ? "Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme."
