@@ -8,7 +8,7 @@ import {
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
 import { currentPeriod } from "./text.js";
-import { casasPage, flashOf, linkPage, loginPage, notFoundPage, panelPage, residentPage, twoFaPage } from "./views.js";
+import { ajustesPage, casasPage, flashOf, linkPage, loginPage, notFoundPage, panelPage, residentPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -44,20 +44,9 @@ export function createApp({ config, store }) {
       return send(res, 200, readFileSync(join(PUBLIC_DIR, file)), { "Content-Type": type, "Cache-Control": "public, max-age=300" });
     }
 
-    // pagoradar → Cuotia. The signature covers the exact body, so verify before parsing.
-    if (method === "POST" && path === "/webhooks/pagoradar") {
-      const body = await readBody(req);
-      if (!verifyPagoradarSignature(body, req.headers["pagoradar-signature"], config.pagoradarWebhookSecret)) {
-        return sendJson(res, 400, { error: "Firma inválida" });
-      }
-      let event;
-      try {
-        event = JSON.parse(body);
-      } catch {
-        return sendJson(res, 400, { error: "JSON inválido" });
-      }
-      return sendJson(res, 200, ingestEvent(store, event));
-    }
+    // pagoradar → Cuotia, one URL and one secret per conjunto. The signature covers the exact body: verify before parsing.
+    const hook = path.match(/^\/webhooks\/pagoradar\/(ten_[a-f0-9]+)$/);
+    if (method === "POST" && hook) return pagoradarWebhook(req, res, hook[1]);
 
     if (path === "/login") {
       if (method === "GET") {
@@ -92,6 +81,27 @@ export function createApp({ config, store }) {
     if (path === "/" || path === "/panel" || path.startsWith("/panel/")) return panel(req, res, url, path, method);
 
     return send(res, 404, notFoundPage());
+  }
+
+  async function pagoradarWebhook(req, res, tenantId) {
+    const body = await readBody(req);
+    const tenant = store.tenants.get(tenantId);
+    if (!tenant) return sendJson(res, 404, { error: "Conjunto desconocido" });
+    const encrypted = store.tenants.pagoradarSecret(tenant.id);
+    // Not configured yet: a 503 makes pagoradar keep retrying until the treasurer saves the secret.
+    if (!encrypted) return sendJson(res, 503, { error: "Este conjunto aún no tiene configurado el secreto de pagoradar" });
+    const secret = decryptSecret(encrypted, config.masterKey);
+    if (!verifyPagoradarSignature(body, req.headers["pagoradar-signature"], secret)) {
+      return sendJson(res, 400, { error: "Firma inválida" });
+    }
+    let event;
+    try {
+      event = JSON.parse(body);
+    } catch {
+      return sendJson(res, 400, { error: "JSON inválido" });
+    }
+    store.tenants.touchPagoradar(tenant.id);
+    return sendJson(res, 200, ingestEvent(store, event, tenant.id));
   }
 
   // ---------- login ----------
@@ -189,6 +199,10 @@ export function createApp({ config, store }) {
       return send(res, 200, casasPage({ ...base, flash: flashOf(url.searchParams), houses: ledger.houses.list() }));
     }
 
+    if (method === "GET" && path === "/panel/ajustes") {
+      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
+    }
+
     if (method !== "POST") return send(res, 404, notFoundPage());
 
     // Every state change: same origin AND the session's form token.
@@ -198,6 +212,13 @@ export function createApp({ config, store }) {
     const back = (m, n) => redirect(res, `/panel?m=${m}${n === undefined ? "" : `&n=${n}`}`);
 
     try {
+      if (path === "/panel/ajustes/pagoradar") {
+        const secret = String(form.get("secret") ?? "").trim();
+        if (secret.length < 8 || secret.length > 200 || /\s/.test(secret)) return redirect(res, "/panel/ajustes?m=secbad");
+        store.tenants.setPagoradarSecret(s.tenant.id, encryptSecret(secret, config.masterKey));
+        return redirect(res, "/panel/ajustes?m=sec");
+      }
+
       if (path === "/panel/cuotas/generar") return back("gen", ledger.dues.generate(period));
 
       const assign = path.match(/^\/panel\/pagos\/(pg_[a-f0-9]+)\/asignar$/);

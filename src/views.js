@@ -24,6 +24,8 @@ const FLASH = {
   asigsin: () => ({ kind: "info", text: "Pago asignado, pero esa casa no tenía una cuota abierta por ese monto." }),
   efec: () => ({ kind: "ok", text: "Pago en efectivo registrado." }),
   dup: () => ({ kind: "err", text: "Ya existe una casa con ese código." }),
+  sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
+  secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
   err: () => ({ kind: "err", text: "No se pudo completar la acción. Revisa los datos e inténtalo de nuevo." }),
 };
 export function flashOf(query) {
@@ -80,6 +82,7 @@ function topbar({ user, csrf, active }) {
   <nav class="tabs" aria-label="Principal">
     <a href="/panel"${active === "resumen" ? raw(' aria-current="page"') : ""}>Resumen</a>
     <a href="/panel/casas"${active === "casas" ? raw(' aria-current="page"') : ""}>Casas</a>
+    <a href="/panel/ajustes"${active === "ajustes" ? raw(' aria-current="page"') : ""}>Ajustes</a>
   </nav>
   <div class="topbar-end">
     <span class="muted small">${user.email}</span>
@@ -187,6 +190,40 @@ ${topbar({ user, csrf, active: "casas" })}
         <span><b>Casa ${h.code}</b><small class="muted">${h.residentName}${h.phone ? ` · ${h.phone}` : ""}</small></span>
         <form method="post" action="/panel/casas/${h.id}/enlace">${csrfField(csrf)}<button class="btn ghost small" type="submit">Enlace personal</button></form>
       </li>`)}</ul>`}
+  </section>
+</main>`);
+}
+
+export function ajustesPage({ tenant, user, csrf, flash, webhookUrl }) {
+  return layout("Ajustes", html`
+${topbar({ user, csrf, active: "ajustes" })}
+<main class="page">
+  <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
+  ${flashBox(flash)}
+
+  <section class="card">
+    <div class="row wrap">
+      <h2>Conexión con pagoradar</h2>
+      ${tenant.pagoradarConfigured
+        ? (tenant.pagoradarLastAt
+          ? html`<span class="pill ok"><i></i>Conectado · último aviso ${shortDate(tenant.pagoradarLastAt)}</span>`
+          : html`<span class="pill warn"><i></i>Secreto guardado · aún sin avisos</span>`)
+        : html`<span class="pill warn"><i></i>Sin configurar</span>`}
+    </div>
+    <p class="muted small">Cada conjunto tiene su propia conexión. En el panel de pagoradar crea una app para este conjunto con esta URL de webhook:</p>
+    <p class="key url" translate="no">${webhookUrl}</p>
+    <p class="muted small">Luego copia el <b>secreto del webhook</b> de esa app y pégalo aquí. Se guarda cifrado y no se vuelve a mostrar.</p>
+    <form class="grid-form" method="post" action="/panel/ajustes/pagoradar" autocomplete="off">
+      ${csrfField(csrf)}
+      <label>Secreto del webhook<input type="password" name="secret" minlength="8" maxlength="200" required autocomplete="off" placeholder="${tenant.pagoradarConfigured ? "•••••••• (pega uno nuevo para cambiarlo)" : "Pega el secreto de pagoradar"}"></label>
+      <button class="btn" type="submit">Guardar secreto</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Cuenta para cobrar</h2>
+    <p class="small">Llave Bre-B: <b>${tenant.payKey ?? "sin configurar"}</b>${tenant.payHolder ? html` · Titular: <b>${tenant.payHolder}</b>` : ""}</p>
+    <p class="muted small">Es la que ven los residentes en su enlace personal.</p>
   </section>
 </main>`);
 }

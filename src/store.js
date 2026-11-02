@@ -98,12 +98,21 @@ const MIGRATIONS = [
   ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'full';
   `,
+  /* V3: each conjunto has its own pagoradar webhook secret (stored encrypted), and we note when its last signed event arrived. */
+  `
+  ALTER TABLE tenants ADD COLUMN pagoradar_secret TEXT;
+  ALTER TABLE tenants ADD COLUMN pagoradar_last_at TEXT;
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
 const newId = (prefix) => `${prefix}_${randomBytes(8).toString("hex")}`;
 
-const tenantRow = (r) => !r ? null : { id: r.id, slug: r.slug, name: r.name, payKey: r.pay_key, payHolder: r.pay_holder };
+const tenantRow = (r) => !r ? null : {
+  id: r.id, slug: r.slug, name: r.name, payKey: r.pay_key, payHolder: r.pay_holder,
+  // The secret itself never travels in the DTO: views get only whether it is set.
+  pagoradarConfigured: !!r.pagoradar_secret, pagoradarLastAt: r.pagoradar_last_at,
+};
 const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active };
 const dueRow = (r) => ({
   id: r.id, houseId: r.house_id, conceptId: r.concept_id, period: r.period, amountCents: r.amount_cents,
@@ -158,6 +167,11 @@ export function openStore(path = ":memory:") {
     get: (id) => tenantRow(db.prepare("SELECT * FROM tenants WHERE id = ?").get(id)),
     bySlug: (slug) => tenantRow(db.prepare("SELECT * FROM tenants WHERE slug = ?").get(slug)),
     list: () => db.prepare("SELECT * FROM tenants ORDER BY name").all().map(tenantRow),
+    /** The encrypted pagoradar webhook secret of this conjunto (or null). Decrypt with `decryptSecret` only to verify a signature. */
+    pagoradarSecret: (id) => db.prepare("SELECT pagoradar_secret FROM tenants WHERE id = ?").get(id)?.pagoradar_secret ?? null,
+    setPagoradarSecret: (id, encrypted) => void db.prepare("UPDATE tenants SET pagoradar_secret = ? WHERE id = ?").run(encrypted, id),
+    /** A correctly signed event arrived (even a test one): the panel shows the connection as alive. */
+    touchPagoradar: (id) => void db.prepare("UPDATE tenants SET pagoradar_last_at = ? WHERE id = ?").run(nowIso(), id),
   };
 
   const users = {

@@ -10,7 +10,7 @@ Cuotia collects recurring community fees (vigilancia now, administración later)
 
 ```bash
 npm test                         # node:test, test/**/*.test.js
-PAGORADAR_WEBHOOK_SECRET=dev MASTER_KEY=$(openssl rand -hex 32) npm start
+MASTER_KEY=$(openssl rand -hex 32) npm start
 npm run admin -- crear-conjunto --slug ibiza --nombre "Jardines de Ibiza" --correo tesorera@ejemplo.com --llave @llave --titular "Titular"
 npm run admin -- agregar-casa --conjunto ibiza --codigo 14 --residente "Sandra Duque"   # prints the resident's personal link
 npm run admin -- generar-cuotas --conjunto ibiza --periodo 2026-11
@@ -21,12 +21,13 @@ No build step, no linter, **no runtime dependencies** (keep it that way: `node:s
 ## Architecture
 
 ```
-pagoradar ──signed webhook──▶ POST /webhooks/pagoradar ─▶ pagoradar.js ingestEvent ─▶ store.forTenant(tenantRef)
+pagoradar ──signed webhook──▶ POST /webhooks/pagoradar/<tenantId> ─▶ verify with THAT tenant's secret ─▶ ingestEvent ─▶ store.forTenant(tenantId)
 ```
 
-- **`src/app.js`**: plain `(req, res)` router. Webhook (HMAC check over the exact body *before* parsing), login/logout, panel, resident link `/r/<token>`, one static file.
+- **`src/app.js`**: plain `(req, res)` router. Per-conjunto webhook `/webhooks/pagoradar/<tenantId>` (HMAC check over the exact body *before* parsing, with the secret of the tenant in the URL), login/logout, panel, resident link `/r/<token>`, one static file.
 - **`src/store.js`**: single SQLite DB, migrations `V1`… by `PRAGMA user_version` (never edit an earlier one). **Tenant isolation rule: all data of a conjunto is reached through `store.forTenant(id)`**, which closes over the tenant id. Never add a query on tenant data outside it. The only global lookups are `tenants`, `users`, `sessions` and `residentByToken` (the unguessable token is the credential). Every method that takes a house/payment id re-checks it belongs to the tenant. `test/isolation.test.js` guards this: extend it whenever you add a repo method.
-- **`src/pagoradar.js`**: `ingestEvent` maps a verified event to ledger changes. The conjunto is `data.account.tenantRef` (= tenant id, set on the pagoradar receiving account), so a payment lands only in the conjunto whose bank account received it. It auto-settles only when the payer matches **one** house (remembered alias, else unique name match) **and** that house has an open due for exactly the amount; everything else goes to the "por asignar" queue. Never guess. Idempotent by pagoradar payment id (`payments.external_id` UNIQUE).
+- **`src/pagoradar.js`**: `ingestEvent` maps a verified event to ledger changes. **The conjunto is the one in the webhook URL** (whose secret signed the event); an optional `data.account.tenantRef` must equal it or the event is ignored (`tenant_mismatch`). It auto-settles only when the payer matches **one** house (remembered alias, else unique name match) **and** that house has an open due for exactly the amount; everything else goes to the "por asignar" queue. Never guess. Idempotent by pagoradar payment id, stored as `<tenantId>:<id>` so two conjuntos' pagoradars can reuse ids.
+- **pagoradar config is per conjunto and lives in the DB, never in env.** `tenants.pagoradar_secret` is AES-GCM encrypted with `MASTER_KEY` (V3); the tenant DTO exposes only `pagoradarConfigured`/`pagoradarLastAt`, never the secret. Set from the panel (`/panel/ajustes`) or `npm run admin -- configurar-pagoradar`. No secret yet → the URL answers 503 so pagoradar retries. Any correctly signed event (even `payment.test`) updates `pagoradar_last_at`, which Ajustes shows as "Conectado". Do not reintroduce a global pagoradar secret.
 - **Matching model:** dues are charged at the exact base amount (no unique-amount trick). `payments.assign(..., {rememberAlias})` teaches Cuotia the payer's name for next time.
 - **`src/security.js`**: scrypt passwords, session/resident tokens (only SHA-256 hashes stored), pagoradar signature check (same algorithm as pagoradar's SDK: `Pagoradar-Signature: t=…,v1=HMAC(secret,"t.body")`, 5-minute tolerance), attempt limiter, AES-256-GCM `encryptSecret/decryptSecret` with `MASTER_KEY`, TOTP (RFC 6238, no library), per-session CSRF token.
 - **Login is two steps and mandatory.** Password → a short session with `stage` `pending` (has TOTP) or `setup` (must enroll); only `/2fa` accepts it. A valid code → `sessions.promote` issues a *new* `full` session (token changes at privilege change). TOTP secrets are stored encrypted; `users.claimTotpStep` makes each code single-use. Lose `MASTER_KEY` and nobody can sign in: back it up. Every panel route requires `stage === "full"`.

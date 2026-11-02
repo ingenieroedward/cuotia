@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createApp } from "../src/app.js";
-import { hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
+import { encryptSecret, hashPassword, signPagoradarBody, totpCode, totpStep } from "../src/security.js";
 import { currentPeriod } from "../src/text.js";
-import { paymentEvent, SECRET, twoConjuntos } from "./fixtures.js";
+import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
 
 const MASTER_KEY = "a".repeat(64);
 const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
@@ -12,9 +12,12 @@ const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
 /** Runs `fn` against a real server and always closes it, so a failed assertion can't leave the test run hanging. */
 async function withServer(fn) {
   const ctx = twoConjuntos();
-  const config = { publicUrl: "http://localhost:3000", secureCookies: false, pagoradarWebhookSecret: SECRET, masterKey: MASTER_KEY };
+  const config = { publicUrl: "http://localhost:3000", secureCookies: false, masterKey: MASTER_KEY };
   await ctx.store.users.create({ tenantId: ctx.a.id, email: "marta@ejemplo.com", passwordHash: await hashPassword("clave-de-marta") });
   await ctx.store.users.create({ tenantId: ctx.b.id, email: "luis@ejemplo.com", passwordHash: await hashPassword("clave-de-luis") });
+  // Each conjunto has its own pagoradar secret, stored encrypted.
+  ctx.store.tenants.setPagoradarSecret(ctx.a.id, encryptSecret(SECRET_A, MASTER_KEY));
+  ctx.store.tenants.setPagoradarSecret(ctx.b.id, encryptSecret(SECRET_B, MASTER_KEY));
   const server = createServer(createApp({ config, store: ctx.store }));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -26,6 +29,7 @@ async function withServer(fn) {
   }
 }
 
+const hookUrl = (s, tenant) => `${s.base}/webhooks/pagoradar/${tenant.id}`;
 const post = (url, body, headers = {}) => fetch(url, { method: "POST", body, redirect: "manual", headers });
 const form = (url, fields, cookie, extra = {}) =>
   post(url, new URLSearchParams(fields), { ...FORM, ...(cookie ? { cookie } : {}), ...extra });
@@ -60,17 +64,87 @@ test("/health responde y las respuestas llevan cabeceras de seguridad", () => wi
 test("webhook: firma inválida 400; firma válida registra el pago; el reintento no duplica", () => withServer(async (s) => {
   s.A.dues.generate(currentPeriod());
   const body = JSON.stringify(paymentEvent({ tenantRef: s.a.id, payerName: "Sandra Duque Arias" }));
+  const url = hookUrl(s, s.a);
 
-  assert.equal((await post(`${s.base}/webhooks/pagoradar`, body, { "Pagoradar-Signature": "t=1,v1=00" })).status, 400);
-  assert.equal((await post(`${s.base}/webhooks/pagoradar`, body)).status, 400, "sin firma");
+  assert.equal((await post(url, body, { "Pagoradar-Signature": "t=1,v1=00" })).status, 400);
+  assert.equal((await post(url, body)).status, 400, "sin firma");
   assert.equal(s.A.summary(currentPeriod()).paidCount, 0);
 
-  const sig = { "Pagoradar-Signature": signPagoradarBody(body, SECRET) };
-  const ok = await post(`${s.base}/webhooks/pagoradar`, body, sig);
+  const sig = { "Pagoradar-Signature": signPagoradarBody(body, SECRET_A) };
+  const ok = await post(url, body, sig);
   assert.equal(ok.status, 200);
   assert.equal((await ok.json()).status, "assigned");
   assert.equal(s.A.summary(currentPeriod()).paidCount, 1);
-  assert.equal((await (await post(`${s.base}/webhooks/pagoradar`, body, sig)).json()).status, "duplicate");
+  assert.equal((await (await post(url, body, sig)).json()).status, "duplicate");
+}));
+
+test("cada conjunto verifica con su propio secreto: el de uno no sirve en la URL del otro", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  s.B.dues.generate(currentPeriod());
+  const body = JSON.stringify(paymentEvent({ payerName: "Sandra Duque Arias" }));
+
+  // Signed with B's secret but sent to A's URL: refused, nothing booked.
+  assert.equal((await post(hookUrl(s, s.a), body, { "Pagoradar-Signature": signPagoradarBody(body, SECRET_B) })).status, 400);
+  assert.equal(s.A.summary(currentPeriod()).paidCount, 0);
+
+  // Each URL accepts only its own secret.
+  assert.equal((await post(hookUrl(s, s.a), body, { "Pagoradar-Signature": signPagoradarBody(body, SECRET_A) })).status, 200);
+  const bodyB = JSON.stringify(paymentEvent({ id: "pay_b", payerName: "Carlos Mejía" }));
+  assert.equal((await post(hookUrl(s, s.b), bodyB, { "Pagoradar-Signature": signPagoradarBody(bodyB, SECRET_B) })).status, 200);
+  assert.equal(s.A.summary(currentPeriod()).paidCount, 1);
+  assert.equal(s.B.summary(currentPeriod()).paidCount, 1);
+
+  // A pagoradar account of A that carries B's tenantRef can't push money into B.
+  const cross = JSON.stringify(paymentEvent({ id: "pay_x", tenantRef: s.b.id, payerName: "Carlos Mejía" }));
+  const r = await post(hookUrl(s, s.a), cross, { "Pagoradar-Signature": signPagoradarBody(cross, SECRET_A) });
+  assert.equal((await r.json()).reason, "tenant_mismatch");
+}));
+
+test("webhook: conjunto desconocido 404; sin secreto configurado 503; el secreto se guarda cifrado", () => withServer(async (s) => {
+  const body = "{}";
+  assert.equal((await post(`${s.base}/webhooks/pagoradar/ten_0000000000000000`, body)).status, 404);
+  assert.equal((await post(`${s.base}/webhooks/pagoradar`, body)).status, 404, "ya no existe la URL global");
+
+  const fresh = s.store.tenants.create({ slug: "nuevo", name: "Conjunto Nuevo" });
+  assert.equal(fresh.pagoradarConfigured, false);
+  assert.equal((await post(hookUrl(s, fresh), body, { "Pagoradar-Signature": signPagoradarBody(body, "lo-que-sea") })).status, 503);
+
+  const stored = s.store.tenants.pagoradarSecret(s.a.id);
+  assert.ok(stored && !stored.includes(SECRET_A), "en la base no está en claro");
+  assert.equal(s.store.tenants.get(s.a.id).pagoradarConfigured, true);
+  assert.equal(JSON.stringify(s.store.tenants.get(s.a.id)).includes(stored), false, "el DTO no lleva el secreto");
+}));
+
+test("un aviso firmado, aunque sea de prueba, marca la conexión como viva", () => withServer(async (s) => {
+  assert.equal(s.store.tenants.get(s.a.id).pagoradarLastAt, null);
+  const body = JSON.stringify({ type: "payment.test", data: {} });
+  assert.equal((await post(hookUrl(s, s.a), body, { "Pagoradar-Signature": "t=1,v1=00" })).status, 400);
+  assert.equal(s.store.tenants.get(s.a.id).pagoradarLastAt, null, "uno sin firma válida no cuenta");
+  assert.equal((await post(hookUrl(s, s.a), body, { "Pagoradar-Signature": signPagoradarBody(body, SECRET_A) })).status, 200);
+  assert.ok(s.store.tenants.get(s.a.id).pagoradarLastAt);
+  assert.equal(s.store.tenants.get(s.b.id).pagoradarLastAt, null, "el otro conjunto no cambia");
+}));
+
+test("Ajustes: el tesorero guarda el secreto de su conjunto sin tocar el de otro", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const page = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  assert.ok(page.includes(`${"http://localhost:3000"}/webhooks/pagoradar/${s.a.id}`), "muestra la URL propia del conjunto");
+  assert.doesNotMatch(page, new RegExp(s.b.id), "no muestra la del otro");
+  assert.doesNotMatch(page, new RegExp(SECRET_A), "nunca muestra el secreto guardado");
+  const csrf = page.match(/name="_csrf" value="([^"]+)"/)[1];
+
+  const before = s.store.tenants.pagoradarSecret(s.b.id);
+  assert.equal((await form(`${s.base}/panel/ajustes/pagoradar`, { secret: "nuevo-secreto-123" }, cookie)).status, 403, "sin token");
+  assert.match((await form(`${s.base}/panel/ajustes/pagoradar`, { _csrf: csrf, secret: "corto" }, cookie)).headers.get("location"), /m=secbad/);
+  assert.match((await form(`${s.base}/panel/ajustes/pagoradar`, { _csrf: csrf, secret: "con espacios aqui" }, cookie)).headers.get("location"), /m=secbad/);
+
+  assert.match((await form(`${s.base}/panel/ajustes/pagoradar`, { _csrf: csrf, secret: "nuevo-secreto-123" }, cookie)).headers.get("location"), /m=sec$/);
+  assert.equal(s.store.tenants.pagoradarSecret(s.b.id), before, "el secreto del otro conjunto no cambió");
+
+  // The new secret works on A's URL, the old one no longer does.
+  const body = JSON.stringify(paymentEvent({ payerName: "X" }));
+  assert.equal((await post(hookUrl(s, s.a), body, { "Pagoradar-Signature": signPagoradarBody(body, SECRET_A) })).status, 400);
+  assert.equal((await post(hookUrl(s, s.a), body, { "Pagoradar-Signature": signPagoradarBody(body, "nuevo-secreto-123") })).status, 200);
 }));
 
 test("la contraseña sola no abre el panel; hace falta el código", () => withServer(async (s) => {
@@ -163,7 +237,7 @@ test("asignar un pago a mano salda la cuota y enseña el nombre", () => withServ
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
   const hook = (id, name) => {
     const body = JSON.stringify(paymentEvent({ id, tenantRef: s.a.id, payerName: name }));
-    return post(`${s.base}/webhooks/pagoradar`, body, { "Pagoradar-Signature": signPagoradarBody(body, SECRET) });
+    return post(hookUrl(s, s.a), body, { "Pagoradar-Signature": signPagoradarBody(body, SECRET_A) });
   };
   assert.equal((await (await hook("pay_a", "Pedro Duque")).json()).status, "unassigned");
 

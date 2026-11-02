@@ -3,18 +3,22 @@ import { normalizeName } from "./text.js";
 /**
  * Turns a verified pagoradar event into ledger changes. Never throws on bad data: it returns what happened.
  *
- * The conjunto comes from `data.account.tenantRef` (set on the pagoradar account when the conjunto is created),
- * so a payment can only ever land in the conjunto whose bank account received it.
+ * The conjunto is the one whose webhook URL (and so whose secret) delivered the event: `tenantId`. If the pagoradar
+ * account also carries a `tenantRef`, it must agree, so a payment can't land in a conjunto other than the one
+ * whose bank account received it, even by a misconfigured pagoradar app.
  *
  * @returns {{ status: "ignored" | "duplicate" | "assigned" | "unassigned", reason?: string, paymentId?: string, dueId?: string }}
  */
-export function ingestEvent(store, event) {
+export function ingestEvent(store, event, tenantId) {
   if (event?.type !== "payment.received") return { status: "ignored", reason: String(event?.type ?? "sin_tipo") };
 
   const d = event.data ?? {};
-  const tenantRef = d.account?.tenantRef;
-  const tenant = typeof tenantRef === "string" ? store.tenants.get(tenantRef) : null;
+  const tenant = store.tenants.get(tenantId);
   if (!tenant) return { status: "ignored", reason: "unknown_tenant" };
+  const tenantRef = d.account?.tenantRef;
+  if (tenantRef !== undefined && tenantRef !== null && tenantRef !== "" && tenantRef !== tenant.id) {
+    return { status: "ignored", reason: "tenant_mismatch" };
+  }
 
   const amountCents = d.amountCents;
   if (typeof d.id !== "string" || !Number.isSafeInteger(amountCents) || amountCents <= 0 || Number.isNaN(Date.parse(d.paidAt))) {
@@ -24,7 +28,8 @@ export function ingestEvent(store, event) {
   const ledger = store.forTenant(tenant.id);
   const payerName = String(d.payerName ?? "").trim();
   const { created, payment } = ledger.payments.record({
-    externalId: d.id,
+    // Namespaced: two conjuntos with their own pagoradar may reuse an id, and one must never block the other.
+    externalId: `${tenant.id}:${d.id}`,
     payerName,
     payerNorm: normalizeName(payerName),
     amountCents,

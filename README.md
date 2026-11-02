@@ -26,7 +26,7 @@ Requiere Node ≥ 22.5. No tiene dependencias.
 
 ```bash
 npm test
-PAGORADAR_WEBHOOK_SECRET=dev MASTER_KEY=$(openssl rand -hex 32) PUBLIC_URL=http://localhost:3000 npm start
+MASTER_KEY=$(openssl rand -hex 32) PUBLIC_URL=http://localhost:3000 npm start
 ```
 
 Crear el primer conjunto, una casa y las cuotas del mes:
@@ -37,23 +37,31 @@ npm run admin -- agregar-casa --conjunto ibiza --codigo 14 --residente "Sandra D
 npm run admin -- generar-cuotas --conjunto ibiza
 ```
 
-`crear-conjunto` imprime el **tenantRef** del conjunto: ponlo en la **cuenta receptora** de ese conjunto
-en pagoradar (campo "referencia externa"). Así pagoradar le dice a Cuotia de qué conjunto es cada pago.
+`crear-conjunto` imprime la **URL del webhook** de ese conjunto (ver abajo).
 
-## Conectar con pagoradar
+## Conectar con pagoradar (una conexión por conjunto)
 
-1. En el panel de pagoradar: **Apps → Nueva app** "Cuotia", con la URL del webhook
-   `https://cuotia.tudominio.com/webhooks/pagoradar`. Copia su **secreto del webhook**.
-2. Por cada conjunto, una **cuenta receptora** con su `tenantRef` (ver arriba) y el Gmail del titular
-   reenviando los avisos del banco, como ya hace pagoradar.
-3. En Cuotia, la variable `PAGORADAR_WEBHOOK_SECRET` con ese secreto.
+Cada conjunto tiene **su propia app en pagoradar, su propia URL de webhook y su propio secreto**; nada se
+comparte entre conjuntos.
 
-Cuotia solo usa `payment.received`; ignora los demás eventos. Un pago repetido (reintento del webhook)
-se registra una sola vez.
+1. Cuotia da a cada conjunto una URL: `https://cuotia.tudominio.com/webhooks/pagoradar/<id-del-conjunto>`
+   (la imprime `crear-conjunto` y aparece en **Ajustes** del panel).
+2. En el panel de pagoradar de ese conjunto: **Apps → Nueva app** con esa URL como webhook, y una **cuenta
+   receptora** con el Gmail del titular reenviando los avisos del banco (como ya hace pagoradar).
+3. Copia el **secreto del webhook** de esa app y pégalo en **Ajustes** de Cuotia (o usa
+   `MASTER_KEY=… npm run admin -- configurar-pagoradar --conjunto ibiza --secreto …`). Se guarda **cifrado** y
+   no se vuelve a mostrar.
+4. Envía el **evento de prueba** desde pagoradar: Ajustes pasa a **Conectado · último aviso …**.
+
+La firma de cada aviso se verifica con el secreto del conjunto de la URL: el secreto de un conjunto no sirve en
+la URL de otro. Si la cuenta de pagoradar lleva un `tenantRef`, debe ser el id del conjunto (opcional).
+Cuotia solo usa `payment.received`; los demás eventos solo confirman la conexión. Un pago repetido
+(reintento del webhook) se registra una sola vez. Mientras un conjunto no tenga secreto, su URL responde
+503 y pagoradar reintenta.
 
 ## Desplegar en Dokploy
 
-*Create Service → Docker Compose* con este repositorio. Variables: `PAGORADAR_WEBHOOK_SECRET`,
+*Create Service → Docker Compose* con este repositorio. Variables:
 `MASTER_KEY` (`openssl rand -hex 32`; **guárdala**: cifra el doble factor y sin ella nadie puede entrar), `PUBLIC_URL`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
 `cuotia-data` (`/app/data/cuotia.db`): respáldalo. Monitor a `/health`.
 

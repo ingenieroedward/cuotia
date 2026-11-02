@@ -1,6 +1,8 @@
 import { openStore } from "../src/store.js";
 
-export const SECRET = "test-webhook-secret";
+/** Each conjunto has its own pagoradar secret. */
+export const SECRET_A = "secreto-pagoradar-de-ibiza";
+export const SECRET_B = "secreto-pagoradar-de-robles";
 
 /** A store with two conjuntos, each with houses and a Vigilancia concept of $30.000. Made-up data only. */
 export function twoConjuntos() {

@@ -6,7 +6,7 @@ import { paymentEvent, twoConjuntos } from "./fixtures.js";
 test("un pago con el nombre del residente salda su cuota solo", () => {
   const { store, a, A, a14 } = twoConjuntos();
   A.dues.generate("2026-11");
-  const r = ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "SANDRA MARIA DUQUE ARIAS" }));
+  const r = ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "SANDRA MARIA DUQUE ARIAS" }), a.id);
   assert.equal(r.status, "assigned");
   const due = A.dues.listForHouse(a14.house.id)[0];
   assert.equal(due.status, "paid");
@@ -17,7 +17,7 @@ test("un pago con el nombre del residente salda su cuota solo", () => {
 test("un nombre desconocido queda por asignar; al asignarlo se recuerda y el siguiente es automático", () => {
   const { store, a, A, a14 } = twoConjuntos();
   A.dues.generate("2026-11");
-  const first = ingestEvent(store, paymentEvent({ id: "pay_1", tenantRef: a.id, payerName: "Pedro Duque" }));
+  const first = ingestEvent(store, paymentEvent({ id: "pay_1", tenantRef: a.id, payerName: "Pedro Duque" }), a.id);
   assert.equal(first.status, "unassigned");
   assert.equal(A.payments.listUnassigned().length, 1);
   assert.equal(A.summary("2026-11").unassignedCount, 1);
@@ -27,50 +27,66 @@ test("un nombre desconocido queda por asignar; al asignarlo se recuerda y el sig
   assert.equal(A.payments.listUnassigned().length, 0);
 
   A.dues.generate("2026-12");
-  const second = ingestEvent(store, paymentEvent({ id: "pay_2", tenantRef: a.id, payerName: "PEDRO DUQUE", paidAt: "2026-12-02T10:00:00.000Z" }));
+  const second = ingestEvent(store, paymentEvent({ id: "pay_2", tenantRef: a.id, payerName: "PEDRO DUQUE", paidAt: "2026-12-02T10:00:00.000Z" }), a.id);
   assert.equal(second.status, "assigned", "el alias aprendido concilia solo");
 });
 
 test("un monto distinto al de la cuota no se concilia solo", () => {
   const { store, a, A, a14 } = twoConjuntos();
   A.dues.generate("2026-11");
-  const r = ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "Sandra Duque Arias", amountCents: 6_000_000 }));
+  const r = ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "Sandra Duque Arias", amountCents: 6_000_000 }), a.id);
   assert.equal(r.status, "unassigned");
   assert.equal(A.dues.listForHouse(a14.house.id)[0].status, "pending");
 });
 
 test("sin cuota abierta tampoco se concilia solo", () => {
   const { store, a } = twoConjuntos();
-  const r = ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "Sandra Duque Arias" }));
-  assert.equal(r.status, "unassigned");
+  assert.equal(ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "Sandra Duque Arias" }), a.id).status, "unassigned");
 });
 
 test("el mismo pago dos veces se registra una sola vez", () => {
   const { store, a, A } = twoConjuntos();
   A.dues.generate("2026-11");
   const ev = paymentEvent({ tenantRef: a.id, payerName: "Sandra Duque Arias" });
-  assert.equal(ingestEvent(store, ev).status, "assigned");
-  assert.equal(ingestEvent(store, ev).status, "duplicate");
+  assert.equal(ingestEvent(store, ev, a.id).status, "assigned");
+  assert.equal(ingestEvent(store, ev, a.id).status, "duplicate");
   assert.equal(A.summary("2026-11").paidCount, 1);
 });
 
-test("un pago cae solo en el conjunto de su cuenta receptora", () => {
-  const { store, b, A, B } = twoConjuntos();
+test("el conjunto es el de la URL: sin tenantRef se acepta, con otro tenantRef se ignora", () => {
+  const { store, a, b, A, B } = twoConjuntos();
   A.dues.generate("2026-11");
   B.dues.generate("2026-11");
-  // The payer matches a house of A, but the bank account belongs to B.
-  const r = ingestEvent(store, paymentEvent({ tenantRef: b.id, payerName: "Sandra Duque Arias" }));
-  assert.equal(r.status, "unassigned");
+
+  // pagoradar account of A carrying B's reference (misconfigured): nothing is booked anywhere.
+  const wrong = ingestEvent(store, paymentEvent({ tenantRef: b.id, payerName: "Sandra Duque Arias" }), a.id);
+  assert.deepEqual([wrong.status, wrong.reason], ["ignored", "tenant_mismatch"]);
   assert.equal(A.summary("2026-11").collectedCents, 0);
-  assert.equal(B.payments.listUnassigned().length, 1);
-  assert.equal(A.payments.listUnassigned().length, 0);
+  assert.equal(B.payments.listUnassigned().length + A.payments.listUnassigned().length, 0);
+
+  // No tenantRef at all: the URL (and its secret) already say which conjunto it is.
+  const bare = paymentEvent({ payerName: "Sandra Duque Arias" });
+  delete bare.data.account.tenantRef;
+  assert.equal(ingestEvent(store, bare, a.id).status, "assigned");
+  assert.equal(B.summary("2026-11").collectedCents, 0, "el otro conjunto no se toca");
 });
 
-test("eventos que no son pagos, sin conjunto o mal formados se ignoran", () => {
+test("dos conjuntos con el mismo id de pago de pagoradar no se bloquean entre sí", () => {
+  const { store, a, b, A, B } = twoConjuntos();
+  A.dues.generate("2026-11");
+  B.dues.generate("2026-11");
+  const sameId = { id: "pay_igual" };
+  assert.equal(ingestEvent(store, paymentEvent({ ...sameId, payerName: "Sandra Duque Arias" }), a.id).status, "assigned");
+  assert.equal(ingestEvent(store, paymentEvent({ ...sameId, payerName: "Carlos Mejía" }), b.id).status, "assigned");
+  assert.equal(A.summary("2026-11").paidCount, 1);
+  assert.equal(B.summary("2026-11").paidCount, 1);
+});
+
+test("eventos que no son pagos, de un conjunto inexistente o mal formados se ignoran", () => {
   const { store, a } = twoConjuntos();
-  assert.equal(ingestEvent(store, { type: "payment.test", data: {} }).status, "ignored");
-  assert.equal(ingestEvent(store, { type: "account.silent", data: {} }).status, "ignored");
-  assert.equal(ingestEvent(store, paymentEvent({ tenantRef: "ten_nada", payerName: "X" })).reason, "unknown_tenant");
-  assert.equal(ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "X", amountCents: -5 })).reason, "invalid_payment");
-  assert.equal(ingestEvent(store, null).status, "ignored");
+  assert.equal(ingestEvent(store, { type: "payment.test", data: {} }, a.id).status, "ignored");
+  assert.equal(ingestEvent(store, { type: "account.silent", data: {} }, a.id).status, "ignored");
+  assert.equal(ingestEvent(store, paymentEvent({ payerName: "X" }), "ten_nada").reason, "unknown_tenant");
+  assert.equal(ingestEvent(store, paymentEvent({ tenantRef: a.id, payerName: "X", amountCents: -5 }), a.id).reason, "invalid_payment");
+  assert.equal(ingestEvent(store, null, a.id).status, "ignored");
 });
