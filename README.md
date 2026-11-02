@@ -117,5 +117,5 @@ La tipografía (Plus Jakarta Sans, licencia OFL) se sirve desde el propio servid
 ## Estado
 
 Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
-alias, doble factor, panel completo y página del residente (responsive, claro y oscuro). Pendiente: passkeys,
+alias, doble factor, panel completo y página del residente (responsive). Pendiente: passkeys,
 tipografía propia, panel del operador, transparencia. Ver `CLAUDE.md`.

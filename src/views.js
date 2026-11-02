@@ -24,6 +24,7 @@ export function layout(title, body, { refresh = 0, bodyClass = "" } = {}) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0B1B2B">
+<meta name="color-scheme" content="light">
 <title>${title} · Cuotia</title>
 ${refresh ? raw(`<meta http-equiv="refresh" content="${Number(refresh)}">`) : ""}
 <link rel="preload" href="/static/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>

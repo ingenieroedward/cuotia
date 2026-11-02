@@ -641,3 +641,15 @@ test("al activar el doble factor se muestra el QR de la misma clave que se escri
   const later = await (await fetch(`${s.base}/2fa`, { headers: { cookie: again } })).text();
   assert.doesNotMatch(later, /class="qr"|class="key secret"/);
 }));
+
+test("siempre claro, como el diseño: sin modo oscuro automático", () => withServer(async (s) => {
+  const css = await (await fetch(`${s.base}/static/app.css`)).text();
+  assert.doesNotMatch(css, /prefers-color-scheme/, "un navegador en modo oscuro debe ver el mismo diseño aprobado");
+  assert.match(css, /color-scheme:\s*light only/);
+  const page = await (await fetch(`${s.base}/login`)).text();
+  assert.match(page, /<meta name="color-scheme" content="light">/);
+  // The approved palette (taken from the mockups) is what the tokens say.
+  for (const [name, hex] of [["ink", "#0b1b2b"], ["lime", "#c6f25c"], ["ground", "#f3f5f8"], ["surface", "#ffffff"], ["muted", "#566274"], ["line", "#e3e8ee"]]) {
+    assert.match(css, new RegExp(`--${name}:\\s*${hex}`), name);
+  }
+}));
