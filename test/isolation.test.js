@@ -375,3 +375,20 @@ test("paz y salvo: el código se emite una vez por casa y día, otro conjunto no
   assert.equal(store.certificates.byCode("AAAAA-AAAAA"), null);
   assert.equal(store.certificates.byCode(""), null);
 });
+
+test("bitácora: cada conjunto ve solo la suya, el filtro escapa comodines y no hay forma de editar un registro", () => {
+  const { A, B } = twoConjuntos();
+  A.audit.record({ userName: "Marta", action: "pagos", summary: "Registró un pago de $30.000 de la casa 14 (efectivo)" });
+  A.audit.record({ userName: "Marta", action: "casas", summary: "Dio de baja la casa 03" });
+  B.audit.record({ userName: "Luis", action: "pagos", summary: "Registró un pago de $30.000 de la casa 01 (efectivo)" });
+  assert.equal(A.audit.list().total, 2);
+  assert.equal(B.audit.list().total, 1);
+  assert.deepEqual(B.audit.list().rows.map((r) => r.userName), ["Luis"]);
+  assert.deepEqual(A.audit.list({ action: "casas" }).rows.map((r) => r.summary), ["Dio de baja la casa 03"]);
+  assert.equal(A.audit.list({ q: "marta" }).total, 2);
+  assert.equal(A.audit.list({ q: "%" }).total, 0, "el % no es un comodín");
+  assert.equal(A.audit.list({ q: "_" }).total, 0, "ni el _");
+  assert.equal(A.audit.list({ limit: 1, offset: 1 }).rows[0].summary.includes("pago"), true, "del más nuevo al más viejo");
+  assert.equal(typeof A.audit.update, "undefined");
+  assert.equal(typeof A.audit.delete, "undefined");
+});

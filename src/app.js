@@ -12,8 +12,9 @@ import { MAX_PROOF_BYTES, parseMultipart, sniffProof } from "./upload.js";
 import { sendPush, validEndpoint, validKeys } from "./webpush.js";
 import { createNotifier } from "./notifier.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
-import { bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
-import { ajustesPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { MANUAL_LABELS, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
+import { AUDIT_ACTIONS } from "./audit.js";
+import { ajustesPage, bitacoraPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -206,6 +207,11 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     return redirect(res, `/r/${token}/comprobante?m=enviado`);
   }
 
+  /** Writes one line in the conjunto's audit log. Never throws: a log failure must not undo what was just done. */
+  const auditFor = (ledger, s) => (action, summary, target = {}) => {
+    try { ledger.audit.record({ userId: s.user.id, userName: s.user.name, action, summary, targetType: target.type ?? null, targetId: target.id ?? null }); } catch { /* the action stands */ }
+  };
+
   /** A paid house hears it on its own phone: "Pago confirmado". Never throws and never delays the answer. */
   function notifyConfirmed(tenantId, paymentId) {
     try {
@@ -298,6 +304,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     } catch {
       return redirect(res, "/panel/cuentas?m=gastobad");
     }
+    auditFor(ledger, s)("gastos", `Registró un gasto de ${peso(amountCents)}: ${String(parsed.fields.descripcion ?? "").trim().slice(0, 80)} (${parsed.fields.categoria})${proof ? ", con soporte" : ""}`);
     return redirect(res, `/panel/cuentas?${spentOn.slice(0, 7) !== period ? `mes=${spentOn.slice(0, 7)}&` : ""}m=gastook`);
   }
 
@@ -463,6 +470,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     codeLimiter.clear(user.id);
     if (s.stage === "setup") store.users.enableTotp(user.id);
     const full = store.sessions.promote(s.token, FULL_TTL_S * 1000);
+    try { store.forTenant(user.tenantId).audit.record({ userId: user.id, userName: user.name, action: "sesion", summary: "Inició sesión" }); } catch { /* the sign-in stands */ }
     return redirect(res, "/panel", setCookie(full, FULL_TTL_S));
   }
 
@@ -607,6 +615,14 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       }));
     }
 
+    if (method === "GET" && path === "/panel/bitacora") {
+      const action = String(url.searchParams.get("tipo") ?? "");
+      const q = String(url.searchParams.get("q") ?? "").trim().slice(0, 60);
+      const page = Math.max(1, Number.parseInt(url.searchParams.get("p") ?? "1", 10) || 1);
+      const result = ledger.audit.list({ action: AUDIT_ACTIONS[action] ? action : null, q, limit: 50, offset: (page - 1) * 50 });
+      return send(res, 200, bitacoraPage({ ...base, result, tipo: AUDIT_ACTIONS[action] ? action : "", q, page, pages: Math.max(1, Math.ceil(result.total / 50)), actions: AUDIT_ACTIONS }));
+    }
+
     const houseDoc = method === "GET" && path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/(estado|paz-y-salvo)$/);
     if (houseDoc) {
       const house = ledger.houses.get(houseDoc[1]);
@@ -630,12 +646,15 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const form = new URLSearchParams(await readBody(req, 8 * 1024));
     if (!csrfValid(s.token, form.get("_csrf"))) return send(res, 403, "Formulario vencido. Recarga la página e inténtalo de nuevo.");
     const back = (m, n) => redirect(res, `/panel?m=${m}${n === undefined ? "" : `&n=${n}`}`);
+    const audit = auditFor(ledger, s);
+    const houseTag = (id) => { const h = ledger.houses.get(id); return h ? `la casa ${h.code}` : "una casa"; };
 
     try {
       if (path === "/panel/ajustes/pagoradar") {
         const secret = String(form.get("secret") ?? "").trim();
         if (secret.length < 8 || secret.length > 200 || /\s/.test(secret)) return redirect(res, "/panel/ajustes?m=secbad");
         store.tenants.setPagoradarSecret(s.tenant.id, encryptSecret(secret, config.masterKey));
+        audit("ajustes", "Guardó el secreto de pagoradar");
         return redirect(res, "/panel/ajustes?m=sec");
       }
 
@@ -660,6 +679,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       if (path === "/panel/equipo/invitar") {
         try {
           const { token, email } = ledger.team.invite({ email: form.get("correo"), name: form.get("nombre"), invitedBy: s.user.id });
+          audit("equipo", `Invitó a ${email} al equipo`);
           return send(res, 200, inviteLinkPage({ ...base, url: `${config.publicUrl}/invitacion/${token}`, email, name: String(form.get("nombre") ?? "").trim().slice(0, 80) }));
         } catch (e) {
           return redirect(res, `/panel/ajustes?m=${/ya tiene/.test(e.message) ? "eqexiste" : "eqbad"}`);
@@ -667,13 +687,17 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       }
       const cancelInvite = path.match(/^\/panel\/equipo\/invitaciones\/(inv_[a-f0-9]+)\/cancelar$/);
       if (cancelInvite) {
+        const pending = ledger.team.invitations().find((i) => i.id === cancelInvite[1]);
         ledger.team.cancelInvitation(cancelInvite[1]);
+        audit("equipo", `Canceló la invitación a ${pending?.email ?? "alguien"}`);
         return redirect(res, "/panel/ajustes?m=eqcanc");
       }
       const removeUser = path.match(/^\/panel\/equipo\/(usr_[a-f0-9]+)\/quitar$/);
       if (removeUser) {
         if (removeUser[1] === s.user.id) return redirect(res, "/panel/ajustes?m=eqyo");
+        const gone = ledger.team.list().find((u) => u.id === removeUser[1]);
         try { ledger.team.remove(removeUser[1]); } catch { return redirect(res, "/panel/ajustes?m=equltimo"); }
+        audit("equipo", `Quitó a ${gone?.name ?? "una persona"} (${gone?.email ?? ""}) del equipo`);
         return redirect(res, "/panel/ajustes?m=eqquit");
       }
 
@@ -681,6 +705,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       if (voidExpense) {
         const e = ledger.expenses.get(voidExpense[1]);
         ledger.expenses.void(voidExpense[1]);
+        audit("gastos", `Anuló el gasto de ${peso(e?.amountCents ?? 0)}: ${e?.description ?? ""}`, { type: "gasto", id: voidExpense[1] });
         return redirect(res, `/panel/cuentas?${e && e.period !== period ? `mes=${e.period}&` : ""}m=gastoanul`);
       }
 
@@ -688,6 +713,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         const opening = parsePesos(String(form.get("saldo") || "0"));
         if (opening === null) return redirect(res, "/panel/cuentas?m=saldobad#ajustes");
         store.tenants.setAccounts(s.tenant.id, { openingCents: opening, showAccounts: form.get("mostrar") === "1" });
+        audit("ajustes", `Cambió el saldo inicial (${peso(opening)}); las cuentas ${form.get("mostrar") === "1" ? "las ven los residentes" : "no las ven los residentes"}`);
         return redirect(res, "/panel/cuentas?m=cuentasok");
       }
 
@@ -695,6 +721,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         const mode = String(form.get("modo") ?? "");
         if (mode !== "auto" && mode !== "manual") return redirect(res, "/panel/ajustes?m=modobad");
         store.tenants.setPayMode(s.tenant.id, mode);
+        audit("ajustes", `Cambió cómo confirma los pagos: ${mode === "auto" ? "automático con pagoradar" : "manual"}`);
         return redirect(res, "/panel/ajustes?m=modo");
       }
 
@@ -709,11 +736,13 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         const dueDay = day("hasta");
         if (Number.isNaN(openDay) || Number.isNaN(dueDay) || (openDay != null && dueDay != null && dueDay < openDay)) return redirect(res, "/panel/ajustes?m=fechasbad");
         store.tenants.setDates(s.tenant.id, { openDay, dueDay });
+        audit("ajustes", `Cambió las fechas de pago: del ${openDay ?? "—"} al ${dueDay ?? "—"}`);
         return redirect(res, "/panel/ajustes?m=fechas");
       }
 
       if (path === "/panel/ajustes/cobro") {
         store.tenants.setPayment(s.tenant.id, { payKey: String(form.get("llave") ?? "").slice(0, 80), payHolder: String(form.get("titular") ?? "").slice(0, 80) });
+        audit("ajustes", "Cambió la cuenta para cobrar (llave y titular)");
         return redirect(res, "/panel/ajustes?m=cobro");
       }
 
@@ -730,6 +759,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         store.users.setPasswordHash(user.id, await hashPassword(nueva));
         store.sessions.deleteForUser(user.id, s.token); // every other device must sign in again with the new password
         loginLimiter.clear(key);
+        audit("seguridad", "Cambió su contraseña");
         return redirect(res, "/panel/ajustes?m=clave");
       }
 
@@ -737,19 +767,24 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         const asked = String(form.get("mes") ?? "") || period;
         if (!validPastPeriod(asked)) return redirect(res, "/panel?m=mesbad");
         const created = ledger.dues.generate(asked);
+        audit("cuotas", `Generó las cuotas de ${periodLabel(asked)} para todas las casas (${created} nuevas)`);
         return redirect(res, `/panel?${asked === period ? "" : `mes=${asked}&`}m=gen&n=${created}`);
       }
 
       const assign = path.match(/^\/panel\/pagos\/(pg_[a-f0-9]+)\/asignar$/);
       if (assign) {
+        const toAssign = ledger.payments.get(assign[1]);
         const { dueId } = ledger.payments.assign(assign[1], String(form.get("house") ?? ""), { rememberAlias: form.get("remember") === "1" });
+        audit("pagos", `Asignó un pago de ${peso(toAssign?.amountCents ?? 0)} (${toAssign?.payerName || "sin nombre"}) a ${houseTag(String(form.get("house") ?? ""))}`, { type: "pago", id: assign[1] });
         if (dueId) notifyConfirmed(s.tenant.id, assign[1]);
         return back(dueId ? "asig" : "asigsin");
       }
 
       const rejectProof = path.match(/^\/panel\/comprobantes\/(pf_[a-f0-9]+)\/rechazar$/);
       if (rejectProof) {
+        const rejected = ledger.proofs.meta(rejectProof[1]);
         ledger.proofs.reject(rejectProof[1]);
+        audit("comprobantes", `Rechazó un comprobante de la casa ${rejected?.houseCode ?? "?"}`, { type: "comprobante", id: rejectProof[1] });
         return back("comprech");
       }
 
@@ -765,6 +800,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           proofId: String(form.get("comprobante") ?? "") || null,
         });
         notifyConfirmed(s.tenant.id, recorded.paymentId);
+        audit("pagos", `Registró un pago de ${peso(recorded.amountCents)} de ${houseTag(houseId)} (${MANUAL_LABELS[String(form.get("medio") ?? "cash")] ?? "otro"})${form.get("comprobante") ? ", con comprobante" : ""}`, { type: "pago", id: recorded.paymentId });
         return redirect(res, "/panel/cobros?m=manual");
       }
 
@@ -782,7 +818,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
             skipped.push({ line: row.line, text: `${row.code} · ${row.residentName}`, reason: `Ya existe la casa ${row.code}` });
           }
         }
-        if (created.length) ledger.dues.generate(period);
+        if (created.length) { ledger.dues.generate(period); audit("casas", `Importó ${created.length} casa${created.length === 1 ? "" : "s"}`); }
         return send(res, 200, importResultPage({ ...base, created, problems: [...errors, ...skipped].sort((a, b) => a.line - b.line) }));
       }
 
@@ -797,6 +833,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           throw e;
         }
         ledger.dues.generate(period);
+        audit("casas", `Agregó la casa ${created.house.code} (${created.house.residentName})`, { type: "casa", id: created.house.id });
         return showLink(res, base, created.house, created.accessToken);
       }
 
@@ -804,7 +841,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       if (link) {
         const house = ledger.houses.get(link[1]);
         if (!house?.active) return redirect(res, "/panel/casas?m=err");
-        return showLink(res, base, house, ledger.houses.rotateToken(house.id));
+        const fresh = ledger.houses.rotateToken(house.id);
+        audit("casas", `Generó un enlace personal nuevo para la casa ${house.code}`, { type: "casa", id: house.id });
+        return showLink(res, base, house, fresh);
       }
 
       const act = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/(editar|alias|desactivar|reactivar|mes)$/);
@@ -817,6 +856,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           const form_ = `/panel/pagos/nuevo?casa=${houseId}`;
           if (!validPastPeriod(asked)) return redirect(res, `${form_}&m=mesbad`);
           ledger.dues.generateForHouse(houseId, asked);
+          audit("cuotas", `Agregó ${periodLabel(asked)} a ${houseTag(houseId)}`, { type: "casa", id: houseId });
           const ticked = ledger.dues.listForHouse(houseId).filter((d) => d.period === asked && d.status === "pending").map((d) => `&cuota=${d.id}`).join("");
           return redirect(res, `${form_}${ticked}&m=mesok`);
         }
@@ -829,13 +869,17 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
             if (/UNIQUE/.test(e.message)) return redirect(res, `${own}?m=dup`);
             throw e;
           }
+          audit("casas", `Editó los datos de la casa ${data.code}`, { type: "casa", id: houseId });
           return redirect(res, `${own}?m=ed`);
         }
         if (action === "alias") {
           const name = String(form.get("name") ?? "").trim().slice(0, 80);
-          return redirect(res, `${own}?m=${name && ledger.aliases.add(houseId, name) ? "aliasok" : "err"}`);
+          const added = name && ledger.aliases.add(houseId, name);
+          if (added) audit("casas", `Agregó el nombre de pago "${name}" a ${houseTag(houseId)}`, { type: "casa", id: houseId });
+          return redirect(res, `${own}?m=${added ? "aliasok" : "err"}`);
         }
         ledger.houses.setActive(houseId, action === "reactivar");
+        audit("casas", `${action === "reactivar" ? "Dio de alta otra vez" : "Dio de baja"} ${houseTag(houseId)}`, { type: "casa", id: houseId });
         if (action === "reactivar") ledger.dues.generate(period);
         return redirect(res, action === "reactivar" ? `${own}?m=react` : "/panel/casas?m=desact");
       }
@@ -843,12 +887,15 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       const unalias = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/alias\/(al_[a-f0-9]+)\/quitar$/);
       if (unalias) {
         const removed = ledger.aliases.remove(unalias[1], unalias[2]);
+        if (removed) audit("casas", `Quitó un nombre de pago de ${houseTag(unalias[1])}`, { type: "casa", id: unalias[1] });
         return redirect(res, `/panel/casas/${unalias[1]}?m=${removed ? "aliasdel" : "err"}`);
       }
 
       const undo = path.match(/^\/panel\/pagos\/(pg_[a-f0-9]+)\/deshacer$/);
       if (undo) {
+        const undone = ledger.payments.get(undo[1]);
         const { deleted } = ledger.payments.revert(undo[1]);
+        audit("pagos", `Deshizo el pago de ${peso(undone?.amountCents ?? 0)} (${deleted ? "manual, anulado" : "vuelve a por asignar"}) de ${houseTag(undone?.houseId)}`, { type: "pago", id: undo[1] });
         return redirect(res, `/panel/pagos?m=${deleted ? "undoc" : "undo"}`);
       }
     } catch (e) {

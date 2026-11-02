@@ -773,6 +773,11 @@ export function ajustesPage(args) {
     </div>
   </section>
 
+  <section class="card">
+    <div class="row wrap"><h2>Bitácora</h2><a class="btn ghost small" href="/panel/bitacora">Ver quién hizo qué</a></div>
+    <p class="muted small">Cada pago, cambio de casa, gasto y ajuste queda anotado con la persona y la hora.</p>
+  </section>
+
   <section class="card" id="equipo">
     <h2>Equipo</h2>
     <p class="muted small">Quienes pueden entrar al panel de ${tenant.name}. Cada persona tiene su propia contraseña y su propio código de verificación. Todas pueden hacer lo mismo: invita solo a gente de confianza.</p>
@@ -1151,6 +1156,42 @@ export function residentCuentasPage({ tenant, token, period, current, books, exp
   </section>
   <p class="muted small center-text">${period === current ? "Estas cuentas se actualizan cada vez que el tesorero registra un pago o un gasto." : ""}</p>
 </main>`, { manifest: `/r/${token}/manifest.webmanifest` });
+}
+
+/** Who did what: the conjunto's audit log, newest first. Read-only. */
+export function bitacoraPage(args) {
+  const { tenant, result, tipo, q, page, pages, actions } = args;
+  const link = (extra = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries({ tipo, q, p: page, ...extra })) if (v && !(k === "p" && Number(v) <= 1)) qs.set(k, String(v));
+    return `/panel/bitacora${qs.toString() ? `?${qs}` : ""}`;
+  };
+  return panelLayout("Bitácora", { ...args, active: "ajustes" }, html`
+  <div class="heading"><h1>Bitácora</h1><span class="muted">${tenant.name} · ${result.total} registro${result.total === 1 ? "" : "s"}</span></div>
+  <p><a href="/panel/ajustes">← Volver a Ajustes</a></p>
+  <section class="card">
+    <p class="muted small">Quién hizo qué en el panel. No se puede editar ni borrar. Nunca guarda contraseñas ni secretos, solo la frase de lo que se hizo.</p>
+    <form class="filters" method="get" action="/panel/bitacora">
+      <label>Tipo
+        <select name="tipo"><option value="">Todos</option>${Object.entries(actions).map(([k, label]) => html`<option value="${k}"${tipo === k ? raw(" selected") : ""}>${label}</option>`)}</select>
+      </label>
+      <label>Buscar<input type="text" name="q" value="${q}" maxlength="60" placeholder="Nombre o texto"></label>
+      <button class="btn wide" type="submit">Filtrar</button>
+    </form>
+  </section>
+  <section class="card">
+    ${result.rows.length
+      ? html`<ul class="list stack">${result.rows.map((r) => html`<li class="audit">
+          <span class="who"><b>${r.userName}</b><small class="muted">${shortDateTime(r.at)} · ${actions[r.action] ?? r.action}</small></span>
+          <span class="audit-text">${r.summary}</span>
+        </li>`)}</ul>
+        ${pages > 1 ? html`<nav class="pager" aria-label="Páginas">
+          ${page > 1 ? html`<a class="btn ghost small" href="${link({ p: page - 1 })}">← Más recientes</a>` : html`<span></span>`}
+          <span class="muted small">Página ${page} de ${pages}</span>
+          ${page < pages ? html`<a class="btn ghost small" href="${link({ p: page + 1 })}">Más antiguos →</a>` : html`<span></span>`}
+        </nav>` : ""}`
+      : html`<p class="muted">No hay registros con ese filtro.</p>`}
+  </section>`);
 }
 
 /** Shown once to the treasurer after inviting: the link to send. */

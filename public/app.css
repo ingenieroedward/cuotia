@@ -572,3 +572,8 @@ body.doc-page { background: var(--ground); }
 .doc-table td:nth-child(1) { text-transform: capitalize; }
 .doc-table td:nth-child(1) small { text-transform: none; }
 @media (max-width: 360px) { .doc-code-value { font-size: 1.3rem; letter-spacing: .04em; } .doc-sheet { padding: 1.1rem; } }
+
+/* ---- audit log ---- */
+li.audit { display: grid; gap: .25rem; }
+.audit-text { overflow-wrap: anywhere; }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1rem; flex-wrap: wrap; }

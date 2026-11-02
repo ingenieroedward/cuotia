@@ -225,6 +225,22 @@ const MIGRATIONS = [
     UNIQUE (tenant_id, house_id, kind, issued_on)
   );
   `,
+  /* V14: audit log. Append-only (nothing updates or deletes a row). It keeps the person's name as it was, because the
+     user may be removed later; `summary` is a fixed sentence and never carries a secret, a password or a file. */
+  `
+  CREATE TABLE audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    at TEXT NOT NULL,
+    user_id TEXT,
+    user_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT
+  );
+  CREATE INDEX audit_by_tenant ON audit_log (tenant_id, id);
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -784,6 +800,30 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** Who did what in this conjunto. Append-only. */
+    const audit = {
+      record({ userId = null, userName, action, summary, targetType = null, targetId = null }) {
+        db.prepare("INSERT INTO audit_log (tenant_id, at, user_id, user_name, action, summary, target_type, target_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(tenantId, nowIso(), userId, String(userName ?? "Cuotia").slice(0, 80), String(action).slice(0, 30), String(summary).slice(0, 300), targetType, targetId);
+      },
+      /** Newest first. `action` filters one kind; `q` searches the sentence and the person (wildcards are escaped). */
+      list({ action = null, q = "", limit = 50, offset = 0 } = {}) {
+        const where = ["tenant_id = ?"];
+        const args = [tenantId];
+        if (action) { where.push("action = ?"); args.push(action); }
+        const needle = String(q ?? "").trim().toLowerCase();
+        if (needle) {
+          where.push("(LOWER(summary) LIKE ? ESCAPE '\\' OR LOWER(user_name) LIKE ? ESCAPE '\\')");
+          const like = `%${needle.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+          args.push(like, like);
+        }
+        const total = Number(db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE ${where.join(" AND ")}`).get(...args).n);
+        const rows = db.prepare(`SELECT id, at, user_name, action, summary FROM audit_log WHERE ${where.join(" AND ")} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset)
+          .map((r) => ({ id: r.id, at: r.at, userName: r.user_name, action: r.action, summary: r.summary }));
+        return { rows, total };
+      },
+    };
+
     /** Certificates issued for this conjunto's houses (see the global `certificates.byCode` to verify one). */
     const certificates = {
       /** The code of today's certificate for this house and kind, made on the first call and the same afterwards. */
@@ -906,7 +946,7 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, expenses, books, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, expenses, books, matchHouse, summary };
   }
 
   return { db, tenants, users, invitations, certificates, settings, sessions, residentByToken, forTenant, close: () => db.close() };
