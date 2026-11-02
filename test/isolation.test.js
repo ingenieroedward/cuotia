@@ -280,3 +280,43 @@ test("comprobantes: un conjunto no los ve, no los baja, no los rechaza y no los 
   assert.equal(A.proofs.meta(id).status, "pending", "nada cambió");
   assert.ok(A.proofs.file(id).data.equals(data));
 });
+
+test("equipo: un conjunto no ve, no quita ni cancela invitaciones de otro, y la última persona no se puede quitar", () => {
+  const { store, A, B, a, b } = twoConjuntos();
+  const ua = store.users.create({ tenantId: a.id, email: "marta@ejemplo.com", passwordHash: "x" });
+  const ub = store.users.create({ tenantId: b.id, email: "luis@ejemplo.com", passwordHash: "x" });
+  assert.deepEqual(A.team.list().map((u) => u.email), ["marta@ejemplo.com"]);
+  assert.deepEqual(B.team.list().map((u) => u.email), ["luis@ejemplo.com"]);
+  assert.throws(() => B.team.remove(ua), /no es de este conjunto/);
+  assert.throws(() => A.team.remove(ua), /al menos una persona/, "ni la única de su propio conjunto");
+
+  const { token } = A.team.invite({ email: "Pedro@Ejemplo.com", name: "Pedro" });
+  const [inv] = A.team.invitations();
+  assert.equal(B.team.invitations().length, 0);
+  assert.throws(() => B.team.cancelInvitation(inv.id), /no existe en este conjunto/);
+  assert.throws(() => A.team.invite({ email: "marta@ejemplo.com" }), /ya tiene una cuenta/, "ni un correo de otro conjunto");
+  assert.throws(() => A.team.invite({ email: "luis@ejemplo.com" }), /ya tiene una cuenta/);
+  assert.throws(() => A.team.invite({ email: "no-es-correo" }), /correo válido/);
+
+  const { userId, tenantId } = store.invitations.accept(token, { passwordHash: "h", name: "Pedro Gómez" });
+  assert.equal(tenantId, a.id, "entra al conjunto que lo invitó, no a otro");
+  assert.equal(store.users.byId(userId).tenantId, a.id);
+  assert.throws(() => store.invitations.accept(token, { passwordHash: "h" }), /no existe o ya venció/, "el enlace sirve una vez");
+  assert.equal(store.invitations.byToken(token), null);
+  assert.equal(B.team.list().length, 1);
+
+  // Inviting again replaces the previous link.
+  const first = A.team.invite({ email: "ana@ejemplo.com" }).token;
+  const second = A.team.invite({ email: "ana@ejemplo.com" }).token;
+  assert.equal(store.invitations.byToken(first), null);
+  assert.ok(store.invitations.byToken(second));
+  assert.equal(A.team.invitations().length, 1);
+
+  // Expired links stop working.
+  store.db.prepare("UPDATE invitations SET expires_at = ?").run(new Date(Date.now() - 1000).toISOString());
+  assert.equal(store.invitations.byToken(second), null);
+
+  A.team.remove(userId);
+  assert.equal(store.users.byId(userId), null);
+  assert.ok(B.team.list().some((u) => u.id === ub));
+});

@@ -1480,3 +1480,48 @@ test("comprobante: el residente lo sube, el tesorero lo ve y lo confirma al regi
   for (let i = 0; i < 3; i++) try { s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }); } catch {}
   assert.throws(() => s.A.proofs.create({ houseId: s.a14.house.id, mime: "image/png", data: PNG_BYTES }), /esperando revisión/);
 }));
+
+test("equipo: el tesorero invita, la otra persona crea su cuenta con el enlace y entra con su propio 2FA", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /<h2>Equipo<\/h2>/);
+
+  // Bad and taken emails are refused.
+  assert.match((await form(`${s.base}/panel/equipo/invitar`, { _csrf: csrf, correo: "nada" }, cookie)).headers.get("location"), /m=eqbad/);
+  assert.match((await form(`${s.base}/panel/equipo/invitar`, { _csrf: csrf, correo: "luis@ejemplo.com" }, cookie)).headers.get("location"), /m=eqexiste/);
+  assert.equal((await form(`${s.base}/panel/equipo/invitar`, { correo: "pedro@ejemplo.com" }, cookie)).status, 403, "sin token no invita");
+
+  const res = await form(`${s.base}/panel/equipo/invitar`, { _csrf: csrf, correo: "pedro@ejemplo.com", nombre: "Pedro Gómez" }, cookie);
+  assert.equal(res.status, 200);
+  const link = /http:\/\/localhost:3000(\/invitacion\/[A-Za-z0-9_-]+)/.exec(await res.text())[1];
+
+  // The link is public but only works once and only for what it says.
+  assert.equal((await fetch(`${s.base}/invitacion/${"x".repeat(30)}`)).status, 404);
+  const open = await (await fetch(`${s.base}${link}`)).text();
+  assert.match(open, /Te invitaron a Jardines de Ibiza/);
+  assert.match(open, /value="pedro@ejemplo.com" readonly/);
+  assert.equal((await form(`${s.base}${link}`, { nombre: "Pedro", clave: "corta", clave2: "corta" })).status, 400);
+  assert.equal((await form(`${s.base}${link}`, { nombre: "Pedro", clave: "una-clave-larga-1", clave2: "otra-distinta-22" })).status, 400);
+  const done = await form(`${s.base}${link}`, { nombre: "Pedro Gómez", clave: "clave-de-pedro-1", clave2: "clave-de-pedro-1" });
+  assert.match(done.headers.get("location"), /\/login\?m=invitado/);
+  assert.equal((await fetch(`${s.base}${link}`)).status, 404, "ya se usó");
+
+  // He signs in like anyone: password, then he must enroll his own 2-step code; he lands in HIS conjunto only.
+  const pedro = await signIn(s.base, "pedro@ejemplo.com", "clave-de-pedro-1");
+  const panelHtml = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: pedro.cookie } })).text();
+  assert.match(panelHtml, /Jardines de Ibiza/);
+  assert.doesNotMatch(panelHtml, /Los Robles/);
+  assert.match(panelHtml, /Pedro Gómez/);
+
+  // Removing him signs him out and keeps the data; he can't remove himself; Luis (other conjunto) can't touch him.
+  const pedroId = s.store.users.byEmail("pedro@ejemplo.com").id;
+  const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes");
+  assert.match((await form(`${s.base}/panel/equipo/${pedroId}/quitar`, { _csrf: otherCsrf }, other.cookie)).headers.get("location"), /m=equltimo/);
+  assert.ok(s.store.users.byEmail("pedro@ejemplo.com"), "Luis no pudo quitarlo");
+  const own = s.store.users.byEmail("marta@ejemplo.com").id;
+  assert.match((await form(`${s.base}/panel/equipo/${own}/quitar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=eqyo/);
+  assert.match((await form(`${s.base}/panel/equipo/${pedroId}/quitar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=eqquit/);
+  assert.equal(s.store.users.byEmail("pedro@ejemplo.com"), null);
+  assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie: pedro.cookie }, redirect: "manual" })).headers.get("location"), "/login");
+}));

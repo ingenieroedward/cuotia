@@ -428,3 +428,6 @@ details.add-house[open] summary { margin-bottom: .5rem; }
 .proof-img { display: block; max-width: 100%; max-height: 22rem; border-radius: 14px; border: 1px solid var(--line); background: var(--ground); object-fit: contain; }
 .proof-box { display: grid; gap: .5rem; padding: .9rem; border: 1px solid var(--line); border-radius: 14px; background: var(--ground); }
 input[type="file"] { width: 100%; padding: .6rem; border: 1px dashed var(--line); border-radius: 12px; background: var(--ground); font: inherit; }
+
+li.member { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+li.member > span { display: grid; min-width: 0; }

@@ -134,6 +134,21 @@ const MIGRATIONS = [
   CREATE INDEX proofs_by_tenant ON proofs (tenant_id, status, created_at);
   CREATE INDEX proofs_by_house ON proofs (house_id, created_at);
   `,
+  /* V8: invitations for more people on the same conjunto (the link is the credential; only its hash is stored). */
+  `
+  CREATE TABLE invitations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    email TEXT NOT NULL,
+    display_name TEXT,
+    token_hash TEXT NOT NULL UNIQUE,
+    invited_by TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+  );
+  CREATE INDEX invitations_by_tenant ON invitations (tenant_id, used_at);
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
@@ -239,6 +254,27 @@ export function openStore(path = ":memory:") {
     /** True once per time step: a code that was already used is refused, even inside its validity window. */
     claimTotpStep(userId, step) {
       return Number(db.prepare("UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?").run(step, userId, step).changes) === 1;
+    },
+  };
+
+  const INVITE_TTL_MS = 7 * 24 * 3600_000;
+  /** An invitation that can still be used, by the secret in its link. Global by design, like `residentByToken`. */
+  const invitations = {
+    byToken(token) {
+      if (!token) return null;
+      const r = db.prepare("SELECT * FROM invitations WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?").get(sha256(token), nowIso());
+      return r ? { id: r.id, tenantId: r.tenant_id, email: r.email, name: r.display_name, tenant: tenants.get(r.tenant_id) } : null;
+    },
+    /** The invited person chooses their password: creates the user in the inviting conjunto and burns the link. */
+    accept(token, { passwordHash, name }) {
+      return tx(() => {
+        const inv = invitations.byToken(token);
+        if (!inv) throw new Error("La invitación no existe o ya venció");
+        if (users.byEmail(inv.email)) throw new Error("Ese correo ya tiene una cuenta");
+        const userId = users.create({ tenantId: inv.tenantId, email: inv.email, passwordHash, name: name || inv.name });
+        db.prepare("UPDATE invitations SET used_at = ? WHERE id = ?").run(nowIso(), inv.id);
+        return { userId, tenantId: inv.tenantId };
+      });
     },
   };
 
@@ -587,6 +623,42 @@ export function openStore(path = ":memory:") {
     }
 
 
+    /** The people who can sign in to this conjunto, and the invitations still open. */
+    const team = {
+      list: () => db.prepare("SELECT * FROM users WHERE tenant_id = ? ORDER BY created_at").all(tenantId).map((r) => ({
+        id: r.id, email: r.email, name: greetingName(r.display_name, r.email), totpEnabled: !!r.totp_enabled, createdAt: r.created_at,
+      })),
+      invitations: () => db.prepare("SELECT * FROM invitations WHERE tenant_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at").all(tenantId, nowIso())
+        .map((r) => ({ id: r.id, email: r.email, name: r.display_name, expiresAt: r.expires_at, createdAt: r.created_at })),
+      /** Returns the raw token (shown once). One open invitation per email: inviting again replaces the old link. */
+      invite({ email, name = null, invitedBy = null }) {
+        const clean = String(email ?? "").trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean) || clean.length > 120) throw new Error("Escribe un correo válido");
+        if (users.byEmail(clean)) throw new Error("Ese correo ya tiene una cuenta");
+        return tx(() => {
+          db.prepare("DELETE FROM invitations WHERE tenant_id = ? AND email = ? AND used_at IS NULL").run(tenantId, clean);
+          const token = newToken(24);
+          db.prepare("INSERT INTO invitations (id, tenant_id, email, display_name, token_hash, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            .run(newId("inv"), tenantId, clean, String(name ?? "").trim().slice(0, 80) || null, sha256(token), invitedBy, nowIso(), new Date(Date.now() + INVITE_TTL_MS).toISOString());
+          return { token, email: clean };
+        });
+      },
+      cancelInvitation(id) {
+        const r = db.prepare("DELETE FROM invitations WHERE id = ? AND tenant_id = ? AND used_at IS NULL").run(id, tenantId);
+        if (Number(r.changes) !== 1) throw new Error("Esa invitación no existe en este conjunto");
+      },
+      /** Takes someone off the conjunto and signs them out everywhere. Never the last person, so the conjunto can't lock itself. */
+      remove(userId) {
+        return tx(() => {
+          const u = db.prepare("SELECT id FROM users WHERE id = ? AND tenant_id = ?").get(userId, tenantId);
+          if (!u) throw new Error("Esa persona no es de este conjunto");
+          if (Number(db.prepare("SELECT COUNT(*) AS n FROM users WHERE tenant_id = ?").get(tenantId).n) <= 1) throw new Error("Debe quedar al menos una persona con acceso");
+          db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+          db.prepare("DELETE FROM users WHERE id = ? AND tenant_id = ?").run(userId, tenantId);
+        });
+      },
+    };
+
     /** Proofs of payment uploaded by residents. The file bytes are only returned by `get`; lists never carry them. */
     const MAX_PENDING_PER_HOUSE = 3;
     const proofMeta = (r) => ({
@@ -629,8 +701,8 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, matchHouse, summary };
   }
 
-  return { db, tenants, users, sessions, residentByToken, forTenant, close: () => db.close() };
+  return { db, tenants, users, invitations, sessions, residentByToken, forTenant, close: () => db.close() };
 }

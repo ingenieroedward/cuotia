@@ -67,6 +67,12 @@ const FLASH = {
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
   comprech: () => ({ kind: "ok", text: "Comprobante rechazado. El residente verá que no se pudo confirmar." }),
+  eqbad: () => ({ kind: "err", text: "Escribe un correo válido para la invitación." }),
+  eqexiste: () => ({ kind: "err", text: "Ese correo ya tiene una cuenta en Cuotia." }),
+  eqcanc: () => ({ kind: "ok", text: "Invitación cancelada: su enlace ya no sirve." }),
+  eqquit: () => ({ kind: "ok", text: "Listo: esa persona ya no puede entrar y sus sesiones se cerraron." }),
+  eqyo: () => ({ kind: "err", text: "No puedes quitarte a ti mismo. Pídele a otra persona del equipo que lo haga." }),
+  equltimo: () => ({ kind: "err", text: "No se pudo quitar: debe quedar al menos una persona con acceso." }),
   fechas: () => ({ kind: "ok", text: "Fechas de pago guardadas. Los residentes ya las ven y las cuotas se marcan vencidas después del último día." }),
   fechasbad: () => ({ kind: "err", text: "Escribe días entre 1 y 28, y el último día no puede ser antes del primero." }),
   cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
@@ -686,7 +692,7 @@ export function pagoManualPage(args) {
 
 
 export function ajustesPage(args) {
-  const { tenant, csrf, flash, webhookUrl } = args;
+  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId } = args;
   return panelLayout("Ajustes", { ...args, active: "ajustes" }, html`
   <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
   ${flashBox(flash)}
@@ -730,6 +736,28 @@ export function ajustesPage(args) {
       <label>Llave Bre-B<input type="text" name="llave" maxlength="80" value="${tenant.payKey ?? ""}" placeholder="@mi.llave"></label>
       <label>Titular de la cuenta<input type="text" name="titular" maxlength="80" value="${tenant.payHolder ?? ""}" placeholder="Quien recibe el dinero"></label>
       <button class="btn" type="submit">Guardar</button>
+    </form>
+  </section>
+
+  <section class="card" id="equipo">
+    <h2>Equipo</h2>
+    <p class="muted small">Quienes pueden entrar al panel de ${tenant.name}. Cada persona tiene su propia contraseña y su propio código de verificación. Todas pueden hacer lo mismo: invita solo a gente de confianza.</p>
+    <ul class="list">${team.map((u) => html`<li class="member">
+      <span><b>${u.name}${u.id === meId ? " (tú)" : ""}</b><small class="muted">${u.email}${u.totpEnabled ? "" : " · aún no activa su código"}</small></span>
+      ${u.id === meId ? "" : html`<details class="undo"><summary>Quitar</summary>
+        <p class="muted small">${u.name} ya no podrá entrar y se cerrarán sus sesiones. Lo que registró se conserva.</p>
+        <form method="post" action="/panel/equipo/${u.id}/quitar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, quitar</button></form>
+      </details>`}
+    </li>`)}</ul>
+    ${invites.length ? html`<h3>Invitaciones pendientes</h3><ul class="list">${invites.map((i) => html`<li class="member">
+      <span><b>${i.name || i.email}</b><small class="muted">${i.email} · vence ${shortDate(i.expiresAt)}</small></span>
+      <form method="post" action="/panel/equipo/invitaciones/${i.id}/cancelar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Cancelar</button></form>
+    </li>`)}</ul>` : ""}
+    <form class="grid-form" method="post" action="/panel/equipo/invitar">
+      ${csrfField(csrf)}
+      <label>Nombre<input type="text" name="nombre" maxlength="80" placeholder="Pedro Gómez"></label>
+      <label>Correo<input type="email" name="correo" maxlength="120" required placeholder="pedro@ejemplo.com"></label>
+      <button class="btn" type="submit">Invitar</button>
     </form>
   </section>
 
@@ -948,6 +976,41 @@ export function linkPage(args) {
       <a class="btn ghost" href="/panel/casas">Volver a casas</a>
     </div>
   </section>`);
+}
+
+/** Shown once to the treasurer after inviting: the link to send. */
+export function inviteLinkPage(args) {
+  const { url, email, name } = args;
+  const text = `Hola${name ? ` ${name.split(/\s+/)[0]}` : ""}, te invito al panel de ${args.tenant.name} en Cuotia. Crea tu contraseña aquí (el enlace vence en 7 días): ${url}`;
+  return panelLayout("Invitación", { ...args, active: "ajustes" }, html`
+  <div class="heading"><h1>Invitación lista</h1><span class="muted">${email}</span></div>
+  <section class="card">
+    <p class="small">Envíale este enlace a ${name || email}. <b>Solo se muestra ahora</b>; si lo pierdes, vuelve a invitar al mismo correo y el anterior deja de servir. Sirve una sola vez y vence en 7 días.</p>
+    <p class="key url" translate="no" id="enlace">${url}</p>
+    <div class="actions">
+      <button class="btn" type="button" data-copy="${url}" data-copy-target="#enlace">Copiar enlace</button>
+      <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(text)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
+      <a class="btn ghost" href="/panel/ajustes#equipo">Volver a Ajustes</a>
+    </div>
+  </section>`);
+}
+
+/** The invited person chooses their name and password. Their email is fixed by the invitation. */
+export function inviteAcceptPage({ inv, token, error, name }) {
+  return layout("Crear mi cuenta", html`
+<main class="center">
+  <form class="card setup" method="post" action="/invitacion/${token}">
+    ${BRAND_MARK}
+    <h1>Te invitaron a ${inv.tenant.name}</h1>
+    <p class="muted">Crea tu contraseña. Después te pediremos activar el código de verificación en tu celular.</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    <label>Correo<input type="email" value="${inv.email}" readonly></label>
+    <label>Tu nombre<input type="text" name="nombre" maxlength="80" required autocomplete="name" value="${name ?? inv.name ?? ""}"></label>
+    <label>Contraseña (mínimo 10 caracteres)<input type="password" name="clave" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+    <label>Repite la contraseña<input type="password" name="clave2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+    <button class="btn" type="submit">Crear mi cuenta</button>
+  </form>
+</main>`);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
