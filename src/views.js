@@ -73,6 +73,8 @@ const FLASH = {
   eqquit: () => ({ kind: "ok", text: "Listo: esa persona ya no puede entrar y sus sesiones se cerraron." }),
   eqyo: () => ({ kind: "err", text: "No puedes quitarte a ti mismo. Pídele a otra persona del equipo que lo haga." }),
   equltimo: () => ({ kind: "err", text: "No se pudo quitar: debe quedar al menos una persona con acceso." }),
+  modo: () => ({ kind: "ok", text: "Guardado. Los residentes ya ven el mensaje que corresponde a cómo confirmas los pagos." }),
+  modobad: () => ({ kind: "err", text: "Elige una de las dos opciones." }),
   fechas: () => ({ kind: "ok", text: "Fechas de pago guardadas. Los residentes ya las ven y las cuotas se marcan vencidas después del último día." }),
   fechasbad: () => ({ kind: "err", text: "Escribe días entre 1 y 28, y el último día no puede ser antes del primero." }),
   cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
@@ -698,6 +700,17 @@ export function ajustesPage(args) {
   ${flashBox(flash)}
 
   <section class="card">
+    <h2>¿Cómo confirmas los pagos?</h2>
+    <p class="muted small">Es lo que el residente lee en su pantalla de pago. Elige <b>manual</b> si tú registras cada pago (con o sin comprobante).</p>
+    <form class="stack-form" method="post" action="/panel/ajustes/modo">
+      ${csrfField(csrf)}
+      <label class="check"><input type="radio" name="modo" value="manual"${tenant.payMode === "manual" ? raw(" checked") : ""}><span><b>Manual</b> · el residente sube su comprobante o te avisa, y tú registras el pago</span></label>
+      <label class="check"><input type="radio" name="modo" value="auto"${tenant.payMode === "auto" ? raw(" checked") : ""}><span><b>Automático con pagoradar</b> · el banco avisa y la cuota se marca sola</span></label>
+      <button class="btn" type="submit">Guardar</button>
+    </form>
+  </section>
+
+  <section class="card">
     <div class="row wrap">
       <h2>Conexión con pagoradar</h2>
       ${tenant.pagoradarConfigured
@@ -1131,12 +1144,14 @@ export function residentPayPage({ tenant, house, dues, token, proofs = [] }) {
   <section class="card">
     ${proofs.some((p) => p.status === "pending")
       ? html`<p>Tu comprobante está <b>en revisión</b>. <a href="/r/${token}/comprobante">Ver</a></p>`
-      : html`<p><b>¿Ya pagaste?</b> Sube la foto del comprobante para que el tesorero lo confirme más rápido.</p><a class="btn ghost" href="/r/${token}/comprobante">Subir comprobante</a>`}
+      : tenant.payMode === "auto"
+        ? html`<p><b>¿Ya pagaste?</b> Sube la foto del comprobante para que el tesorero lo confirme más rápido.</p><a class="btn ghost" href="/r/${token}/comprobante">Subir comprobante</a>`
+        : html`<p><b>Después de pagar</b>, sube la foto del comprobante. El tesorero lo revisa y marca tu cuota como pagada.</p><a class="btn" href="/r/${token}/comprobante">Subir comprobante</a>`}
   </section>
 
-  <p class="waiting" role="status"><span class="pulse"></span>${tenant.pagoradarConfigured
-    ? "Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme."
-    : "Cuando pagues, avísale al tesorero para que registre tu pago. Esta pantalla se actualiza cuando lo haga."}</p>
+  ${tenant.payMode === "auto"
+    ? html`<p class="waiting" role="status"><span class="pulse"></span>Esperando tu pago. Esta pantalla se actualiza sola cuando el banco lo confirme.</p>`
+    : html`<p class="note" role="status">Tu cuota queda <b>pagada</b> cuando el tesorero registre tu pago. Esta pantalla se actualiza cuando lo haga.</p>`}
   <p class="muted small center-text">Paga siempre el valor exacto. Si pagas otro valor, el tesorero lo asignará a mano.</p>
 </main>`, { refresh: 20, manifest: `/r/${token}/manifest.webmanifest` });
 }

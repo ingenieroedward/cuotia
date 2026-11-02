@@ -486,6 +486,13 @@ export function createApp({ config, store }) {
         return redirect(res, "/panel/ajustes?m=eqquit");
       }
 
+      if (path === "/panel/ajustes/modo") {
+        const mode = String(form.get("modo") ?? "");
+        if (mode !== "auto" && mode !== "manual") return redirect(res, "/panel/ajustes?m=modobad");
+        store.tenants.setPayMode(s.tenant.id, mode);
+        return redirect(res, "/panel/ajustes?m=modo");
+      }
+
       if (path === "/panel/ajustes/fechas") {
         const day = (name) => {
           const raw = String(form.get(name) ?? "").trim();

@@ -860,7 +860,7 @@ test("sin pagoradar todo funciona a mano: se registran los pagos y el residente 
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
 
   const pay = await (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text();
-  assert.match(pay, /avísale al tesorero/);
+  assert.match(pay, /pagada<\/b> cuando el tesorero registre tu pago/);
   assert.doesNotMatch(pay, /cuando el banco lo confirme/);
   assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Es opcional\.<\/b> Sin pagoradar/);
 
@@ -1524,4 +1524,30 @@ test("equipo: el tesorero invita, la otra persona crea su cuenta con el enlace y
   assert.match((await form(`${s.base}/panel/equipo/${pedroId}/quitar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=eqquit/);
   assert.equal(s.store.users.byEmail("pedro@ejemplo.com"), null);
   assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie: pedro.cookie }, redirect: "manual" })).headers.get("location"), "/login");
+}));
+
+test("cómo se confirman los pagos: el tesorero elige manual o automático y el residente lee el mensaje que corresponde", () => withServer(async (s) => {
+  // This conjunto HAS a pagoradar secret saved, yet the treasurer registers payments by hand.
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const pay = async () => (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text();
+
+  assert.equal(s.store.tenants.get(s.a.id).payMode, "auto", "sin elegir nada, un secreto guardado significa automático");
+  assert.match(await pay(), /cuando el banco lo confirme/);
+
+  assert.match((await form(`${s.base}/panel/ajustes/modo`, { _csrf: csrf, modo: "manual" }, cookie)).headers.get("location"), /m=modo$/);
+  const manual = await pay();
+  assert.doesNotMatch(manual, /cuando el banco lo confirme|Esperando tu pago/);
+  assert.match(manual, /Después de pagar/);
+  assert.match(manual, /cuando el tesorero registre tu pago/);
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /value="manual" checked/);
+  assert.equal(s.store.tenants.get(s.b.id).payMode, "auto", "el otro conjunto no cambió");
+
+  assert.match((await form(`${s.base}/panel/ajustes/modo`, { _csrf: csrf, modo: "raro" }, cookie)).headers.get("location"), /m=modobad/);
+  assert.equal(s.store.tenants.get(s.a.id).payMode, "manual");
+  assert.equal((await form(`${s.base}/panel/ajustes/modo`, { modo: "auto" }, cookie)).status, 403);
+
+  await form(`${s.base}/panel/ajustes/modo`, { _csrf: csrf, modo: "auto" }, cookie);
+  assert.match(await pay(), /cuando el banco lo confirme/);
 }));

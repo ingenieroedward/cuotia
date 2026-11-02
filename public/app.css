@@ -477,3 +477,5 @@ li.member > span { display: grid; min-width: 0; }
 }
 
 .btn.danger { background: var(--bad-fg); color: #fff; border: 0; }
+
+.note { padding: .9rem 1rem; border-radius: 14px; background: var(--ground); border: 1px solid var(--line); font-size: .9375rem; }
