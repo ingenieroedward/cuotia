@@ -36,9 +36,10 @@ const SECURITY_HEADERS = {
 };
 
 export function send(res, status, body, headers = {}) {
-  const text = body instanceof Raw ? body.s : String(body);
+  // A Buffer (a font, say) goes out untouched; anything else is text.
+  const payload = Buffer.isBuffer(body) ? body : body instanceof Raw ? body.s : String(body);
   res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...SECURITY_HEADERS, ...headers });
-  res.end(text);
+  res.end(payload);
 }
 
 export function sendJson(res, status, obj) {

@@ -103,6 +103,10 @@ const MIGRATIONS = [
   ALTER TABLE tenants ADD COLUMN pagoradar_secret TEXT;
   ALTER TABLE tenants ADD COLUMN pagoradar_last_at TEXT;
   `,
+  /* V4: the treasurer's name, for the greeting ("Hola, Marta"). */
+  `
+  ALTER TABLE users ADD COLUMN display_name TEXT;
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
@@ -119,9 +123,16 @@ const dueRow = (r) => ({
   status: r.status, paymentId: r.payment_id, paidAt: r.paid_at,
   houseCode: r.house_code, residentName: r.resident_name, conceptName: r.concept_name,
 });
+/** The name shown in "Hola, …": the one given, else the part of the email before the first dot, dash or plus. */
+const greetingName = (name, email) => {
+  const given = String(name ?? "").trim().split(/\s+/)[0];
+  if (given) return given;
+  const local = String(email ?? "").split("@")[0].split(/[._+-]/)[0];
+  return local ? local[0].toUpperCase() + local.slice(1) : "";
+};
 const userRow = (r) => !r ? null : {
   id: r.id, tenantId: r.tenant_id, email: r.email, passwordHash: r.password_hash, role: r.role,
-  totpSecret: r.totp_secret, totpEnabled: !!r.totp_enabled,
+  totpSecret: r.totp_secret, totpEnabled: !!r.totp_enabled, name: greetingName(r.display_name, r.email),
 };
 const paymentRow = (r) => !r ? null : {
   id: r.id, externalId: r.external_id, payerName: r.payer_name, payerNorm: r.payer_norm, amountCents: r.amount_cents,
@@ -175,9 +186,9 @@ export function openStore(path = ":memory:") {
   };
 
   const users = {
-    create({ tenantId, email, passwordHash, role = "tesorero" }) {
+    create({ tenantId, email, passwordHash, role = "tesorero", name = null }) {
       const id = newId("usr");
-      db.prepare("INSERT INTO users (id, tenant_id, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, tenantId, email.trim().toLowerCase(), passwordHash, role, nowIso());
+      db.prepare("INSERT INTO users (id, tenant_id, email, password_hash, role, display_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, tenantId, email.trim().toLowerCase(), passwordHash, role, name?.trim() || null, nowIso());
       return id;
     },
     byEmail(email) {
@@ -207,11 +218,11 @@ export function openStore(path = ":memory:") {
     resolve(token) {
       if (!token) return null;
       const r = db.prepare(
-        `SELECT u.id AS user_id, u.email, u.role, u.tenant_id, s.stage FROM sessions s JOIN users u ON u.id = s.user_id
+        `SELECT u.id AS user_id, u.email, u.role, u.tenant_id, u.display_name, s.stage FROM sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ? AND s.expires_at > ?`,
       ).get(sha256(token), nowIso());
       if (!r) return null;
-      return { stage: r.stage, user: { id: r.user_id, email: r.email, role: r.role, tenantId: r.tenant_id }, tenant: tenants.get(r.tenant_id) };
+      return { stage: r.stage, user: { id: r.user_id, email: r.email, role: r.role, tenantId: r.tenant_id, name: greetingName(r.display_name, r.email) }, tenant: tenants.get(r.tenant_id) };
     },
     /** After a valid code: a fresh full session replaces the pending one, so the cookie value changes at privilege change. */
     promote(token, ttlMs = 12 * 3600_000) {
@@ -328,6 +339,20 @@ export function openStore(path = ":memory:") {
         const r = db.prepare("SELECT * FROM dues WHERE tenant_id = ? AND house_id = ? AND amount_cents = ? AND status = 'pending' ORDER BY period LIMIT 1").get(tenantId, houseId, amountCents);
         return r ? { id: r.id, period: r.period, amountCents: r.amount_cents } : null;
       },
+      /** A paid due of this house with the payment that settled it: what a resident's receipt shows. Null if not paid or not theirs. */
+      receiptForHouse(houseId, dueId) {
+        const r = db.prepare(
+          `SELECT d.id, d.period, d.amount_cents, d.paid_at, c.name AS concept_name, h.code AS house_code, h.resident_name,
+                  p.method, p.bank, p.payer_name
+           FROM dues d JOIN houses h ON h.id = d.house_id JOIN concepts c ON c.id = d.concept_id JOIN payments p ON p.id = d.payment_id
+           WHERE d.id = ? AND d.house_id = ? AND d.tenant_id = ? AND d.status = 'paid'`,
+        ).get(dueId, houseId, tenantId);
+        return r && {
+          id: r.id, period: r.period, amountCents: r.amount_cents, paidAt: r.paid_at, conceptName: r.concept_name,
+          houseCode: r.house_code, residentName: r.resident_name, method: r.method, bank: r.bank, payerName: r.payer_name,
+          number: `${r.period}-${r.id.slice(-4).toUpperCase()}`,
+        };
+      },
       settle(dueId, paymentId, paidAt) {
         const r = db.prepare("UPDATE dues SET status = 'paid', payment_id = ?, paid_at = ? WHERE id = ? AND tenant_id = ? AND status = 'pending'").run(paymentId, paidAt, dueId, tenantId);
         return Number(r.changes) === 1;
@@ -427,6 +452,7 @@ export function openStore(path = ":memory:") {
           return { deleted: false };
         });
       },
+      countUnassigned: () => Number(db.prepare("SELECT COUNT(*) AS n FROM payments WHERE tenant_id = ? AND status = 'unassigned'").get(tenantId).n),
       listUnassigned: () => db.prepare("SELECT * FROM payments WHERE tenant_id = ? AND status = 'unassigned' ORDER BY paid_at DESC").all(tenantId).map(paymentRow),
       /** Gives an unassigned payment to a house, settles its oldest open due of that amount, and (optionally) remembers the payer's name. */
       assign(paymentId, houseId, { rememberAlias = true } = {}) {
@@ -459,8 +485,13 @@ export function openStore(path = ":memory:") {
       ).all(tenantId, period);
       const pick = (s) => rows.find((r) => r.status === s) ?? { n: 0, cents: 0 };
       const un = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents FROM payments WHERE tenant_id = ? AND status = 'unassigned'").get(tenantId);
+      // What came in during the last 7 days, from the dues of this period that were settled in that time.
+      const week = db.prepare(
+        `SELECT COALESCE(SUM(d.amount_cents), 0) AS cents FROM dues d WHERE d.tenant_id = ? AND d.period = ? AND d.status = 'paid' AND d.paid_at >= ?`,
+      ).get(tenantId, period, new Date(Date.now() - 7 * 86400_000).toISOString());
       return {
         period,
+        weekCents: Number(week.cents),
         expectedCents: Number(pick("paid").cents) + Number(pick("pending").cents),
         collectedCents: Number(pick("paid").cents),
         paidCount: Number(pick("paid").n),

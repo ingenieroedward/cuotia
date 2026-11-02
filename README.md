@@ -102,6 +102,18 @@ Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra un **cód
 - **Pagos:** historial con filtros (mes, estado, búsqueda), páginas, **descarga para Excel (CSV)** y **Deshacer**: una
   asignación equivocada vuelve a “Por asignar” (y Cuotia olvida el nombre), un pago en efectivo se anula.
 
+## Cómo se ve
+
+El panel sigue el diseño aprobado: en computador, una **barra lateral oscura** (Resumen, Casas, Pagos, Por asignar,
+Ajustes) con el conjunto abajo; en celular, una **barra inferior**. El **Resumen** muestra el saludo, lo recaudado
+(y lo de la semana), lo que falta con un botón de **recordatorio por WhatsApp** ya escrito con las casas pendientes,
+los pagos por asignar, la tabla de casas (filtrable) y los últimos pagos.
+
+El residente ve su cuota, **Pagar ahora** (la llave Bre-B para copiar y el valor exacto; la pantalla se actualiza sola
+cuando el banco confirma) y su **recibo** (descargable en PDF desde el navegador).
+
+La tipografía (Plus Jakarta Sans, licencia OFL) se sirve desde el propio servidor.
+
 ## Estado
 
 Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por

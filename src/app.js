@@ -7,12 +7,17 @@ import {
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
-import { bankLabel, bogotaDateTime, csvCell, currentPeriod, periodLabel, slugify } from "./text.js";
-import { ajustesPage, casaPage, casasPage, flashOf, pagosPage, linkPage, loginPage, notFoundPage, panelPage, residentPage, setupPage, twoFaPage } from "./views.js";
+import { bankLabel, bogotaDateTime, csvCell, currentPeriod, periodLabel, peso, slugify } from "./text.js";
+import { ajustesPage, casaPage, casasPage, flashOf, linkPage, loginPage, notFoundPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
-const STATIC = { "/static/app.css": ["app.css", "text/css; charset=utf-8"] };
+const STATIC = {
+  "/static/app.css": ["app.css", "text/css; charset=utf-8"],
+  "/static/app.js": ["app.js", "text/javascript; charset=utf-8"],
+  "/static/fonts/plus-jakarta-sans-latin.woff2": ["fonts/plus-jakarta-sans-latin-wght-normal.woff2", "font/woff2"],
+  "/static/fonts/plus-jakarta-sans-latin-ext.woff2": ["fonts/plus-jakarta-sans-latin-ext-wght-normal.woff2", "font/woff2"],
+};
 const COOKIE = "cuotia_sid";
 const PAGE_SIZE = 50;
 const FULL_TTL_S = 12 * 3600;
@@ -43,7 +48,7 @@ export function createApp({ config, store }) {
 
     if (method === "GET" && STATIC[path]) {
       const [file, type] = STATIC[path];
-      return send(res, 200, readFileSync(join(PUBLIC_DIR, file)), { "Content-Type": type, "Cache-Control": "public, max-age=300" });
+      return send(res, 200, readFileSync(join(PUBLIC_DIR, file)), { "Content-Type": type, "Cache-Control": `public, max-age=${type === "font/woff2" ? 604800 : 300}` });
     }
 
     // pagoradar → Cuotia, one URL and one secret per conjunto. The signature covers the exact body: verify before parsing.
@@ -74,12 +79,23 @@ export function createApp({ config, store }) {
     }
 
     // A resident's personal link: the unguessable token is the credential.
-    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})$/);
+    const r = method === "GET" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})(?:\/(pagar)|\/recibo\/(du_[a-f0-9]+))?$/);
     if (r) {
-      const found = store.residentByToken(r[1]);
+      const [, token, pay, receiptId] = r;
+      const found = store.residentByToken(token);
       if (!found) return send(res, 404, notFoundPage());
       const ledger = store.forTenant(found.tenant.id);
-      return send(res, 200, residentPage({ ...found, dues: ledger.dues.listForHouse(found.house.id), period: currentPeriod() }));
+      const dues = ledger.dues.listForHouse(found.house.id);
+      if (receiptId) {
+        const receipt = ledger.dues.receiptForHouse(found.house.id, receiptId);
+        return receipt ? send(res, 200, receiptPage({ tenant: found.tenant, receipt, token })) : send(res, 404, notFoundPage());
+      }
+      if (pay) {
+        // Nothing left to pay (the bank confirmed while the page was open): go back to the home, which says "Al día".
+        if (!dues.some((d) => d.status === "pending")) return redirect(res, `/r/${token}`);
+        return send(res, 200, residentPayPage({ ...found, dues, token }));
+      }
+      return send(res, 200, residentPage({ ...found, dues, period: currentPeriod(), token }));
     }
 
     // ---- Everything below needs a fully signed-in treasurer ----
@@ -129,11 +145,12 @@ export function createApp({ config, store }) {
     if (!setupOpen(token)) { setupLimiter.fail(ip); return send(res, 404, notFoundPage()); }
 
     const field = (k, max) => String(form.get(k) ?? "").trim().slice(0, max);
-    const values = { nombre: field("nombre", 80), cuota: field("cuota", 9).replace(/[.\s]/g, ""), llave: field("llave", 80), titular: field("titular", 80), correo: field("correo", 120).toLowerCase() };
+    const values = { nombre: field("nombre", 80), cuota: field("cuota", 9).replace(/[.\s]/g, ""), llave: field("llave", 80), titular: field("titular", 80), tesorero: field("tesorero", 80), correo: field("correo", 120).toLowerCase() };
     const clave = String(form.get("clave") ?? "");
     const again = (error) => send(res, 400, setupPage({ token, error, values }));
     if (!values.nombre) return again("Escribe el nombre del conjunto.");
     if (!/^\d+$/.test(values.cuota) || Number(values.cuota) < 1000 || Number(values.cuota) > 10_000_000) return again("La cuota debe ser un valor en pesos entre 1.000 y 10.000.000.");
+    if (!values.tesorero) return again("Escribe tu nombre.");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.correo)) return again("Escribe un correo válido.");
     if (clave.length < 10) return again("La contraseña debe tener al menos 10 caracteres.");
     if (clave !== String(form.get("clave2") ?? "")) return again("Las contraseñas no coinciden.");
@@ -143,7 +160,7 @@ export function createApp({ config, store }) {
     if (store.tenants.list().length > 0) return send(res, 404, notFoundPage());
     const tenant = store.tenants.create({ slug: slugify(values.nombre), name: values.nombre, payKey: values.llave || null, payHolder: values.titular || null });
     store.forTenant(tenant.id).concepts.create({ name: "Vigilancia", amountCents: Number(values.cuota) * 100 });
-    store.users.create({ tenantId: tenant.id, email: values.correo, passwordHash });
+    store.users.create({ tenantId: tenant.id, email: values.correo, passwordHash, name: values.tesorero });
     return redirect(res, "/login?m=creado");
   }
 
@@ -226,7 +243,13 @@ export function createApp({ config, store }) {
     const ledger = store.forTenant(s.tenant.id);
     const csrf = csrfToken(s.token);
     const period = currentPeriod();
-    const base = { tenant: s.tenant, user: s.user, csrf };
+    const houses = ledger.houses.list();
+    // What the sidebar and tab bar show on every page.
+    const base = {
+      tenant: s.tenant, user: s.user, csrf,
+      badge: ledger.payments.countUnassigned(), houseCount: houses.length,
+      cuota: ledger.concepts.list()[0] ? peso(ledger.concepts.list()[0].amountCents) : "",
+    };
 
     if (method === "GET" && (path === "/" || path === "/panel")) {
       return send(res, 200, panelPage({
@@ -235,11 +258,13 @@ export function createApp({ config, store }) {
         summary: ledger.summary(period),
         dues: ledger.dues.listByPeriod(period),
         unassigned: ledger.payments.listUnassigned(),
-        houses: ledger.houses.list(),
+        houses,
+        recent: ledger.payments.list({ limit: 4 }).rows,
+        filter: ["pagadas", "pendientes"].includes(url.searchParams.get("f")) ? url.searchParams.get("f") : "",
       }));
     }
     if (method === "GET" && path === "/panel/casas") {
-      return send(res, 200, casasPage({ ...base, flash: flashOf(url.searchParams), houses: ledger.houses.list(), inactive: ledger.houses.listInactive() }));
+      return send(res, 200, casasPage({ ...base, flash: flashOf(url.searchParams), houses, inactive: ledger.houses.listInactive() }));
     }
 
     const casa = method === "GET" && path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)$/);
