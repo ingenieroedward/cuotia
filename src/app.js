@@ -9,6 +9,7 @@ import {
 import { ingestEvent } from "./pagoradar.js";
 import { debtTotals, groupDebts } from "./debts.js";
 import { MAX_PROOF_BYTES, parseMultipart, sniffProof } from "./upload.js";
+import { newVapidKeys, sendPush, validEndpoint, validKeys } from "./webpush.js";
 import { bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { ajustesPage, casaPage, casasPage, cobrosPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
@@ -42,7 +43,39 @@ const PENDING_TTL_MS = 10 * 60_000; // password accepted, waiting for the code
 const SETUP_TTL_MS = 30 * 60_000; // time to install an authenticator app
 
 /** Plain `(req, res)` router, no framework. Each branch answers and returns. */
-export function createApp({ config, store }) {
+export function createApp({ config, store, pushSend = sendPush }) {
+  // The VAPID key pair is created once per instance (private half encrypted with MASTER_KEY). If MASTER_KEY changed, the
+  // old private key can't be read: make new keys and forget the subscriptions, which belonged to the old ones.
+  let vapidKeys = null;
+  function vapid() {
+    if (vapidKeys) return vapidKeys;
+    const publicKey = store.settings.get("vapid_public");
+    const encrypted = store.settings.get("vapid_private");
+    if (publicKey && encrypted) {
+      try {
+        vapidKeys = { publicKey, privateKey: decryptSecret(encrypted, config.masterKey) };
+        return vapidKeys;
+      } catch { /* fall through and regenerate */ }
+    }
+    vapidKeys = newVapidKeys();
+    store.settings.resetPush();
+    store.settings.set("vapid_public", vapidKeys.publicKey);
+    store.settings.set("vapid_private", encryptSecret(vapidKeys.privateKey, config.masterKey));
+    return vapidKeys;
+  }
+  /** Phone notification to a conjunto's people (or one of them). Never throws and never delays the request that caused it. */
+  async function notify(tenantId, message, { userId = null } = {}) {
+    try {
+      const ledger = store.forTenant(tenantId);
+      const subs = ledger.push.list({ userId });
+      if (!subs.length) return;
+      const keys = vapid();
+      await Promise.all(subs.map(async (sub) => {
+        const r = await pushSend(sub, message, keys, { subject: config.publicUrl });
+        if (r?.gone) ledger.push.remove(sub.endpoint);
+      }));
+    } catch { /* a failed notification is never worth an error */ }
+  }
   const loginLimiter = new AttemptLimiter();
   const setupLimiter = new AttemptLimiter({ max: 10, windowMs: 15 * 60_000 });
   const codeLimiter = new AttemptLimiter({ max: 5, windowMs: 10 * 60_000 });
@@ -167,6 +200,7 @@ export function createApp({ config, store }) {
       if (/esperando revisión/.test(e.message)) return show(e.message);
       throw e;
     }
+    void notify(found.tenant.id, { title: "Comprobante nuevo", body: `La casa ${found.house.code} subió un comprobante`, url: "/panel#comprobantes", tag: "comprobante" });
     return redirect(res, `/r/${token}/comprobante?m=enviado`);
   }
 
@@ -188,7 +222,14 @@ export function createApp({ config, store }) {
       return sendJson(res, 400, { error: "JSON inválido" });
     }
     store.tenants.touchPagoradar(tenant.id);
-    return sendJson(res, 200, ingestEvent(store, event, tenant.id));
+    const result = ingestEvent(store, event, tenant.id);
+    if (result.status === "unassigned" || result.status === "assigned") {
+      const paid = store.forTenant(tenant.id).payments.get(result.paymentId);
+      if (paid) void notify(tenant.id, result.status === "assigned"
+        ? { title: "Pago recibido", body: `Entró un pago de ${peso(paid.amountCents)} y ya quedó asignado`, url: "/panel/pagos", tag: "pago" }
+        : { title: "Pago por asignar", body: `Entró un pago de ${peso(paid.amountCents)} sin casa asociada`, url: "/panel#por-asignar", tag: "pago" });
+    }
+    return sendJson(res, 200, result);
   }
 
   // ---------- first-run setup ----------
@@ -447,7 +488,7 @@ export function createApp({ config, store }) {
     if (method === "GET" && path === "/panel/casas/importar") return send(res, 200, importPage({ ...base }));
 
     if (method === "GET" && path === "/panel/ajustes") {
-      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
+      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
 
     if (method !== "POST") return send(res, 404, notFoundPage());
@@ -464,6 +505,24 @@ export function createApp({ config, store }) {
         if (secret.length < 8 || secret.length > 200 || /\s/.test(secret)) return redirect(res, "/panel/ajustes?m=secbad");
         store.tenants.setPagoradarSecret(s.tenant.id, encryptSecret(secret, config.masterKey));
         return redirect(res, "/panel/ajustes?m=sec");
+      }
+
+      if (path === "/panel/push/suscribir") {
+        const endpoint = String(form.get("endpoint") ?? "");
+        const p256dh = String(form.get("p256dh") ?? "");
+        const auth = String(form.get("auth") ?? "");
+        if (!validEndpoint(endpoint) || !validKeys(p256dh, auth)) return send(res, 400, "Suscripción inválida", { "Content-Type": "text/plain; charset=utf-8" });
+        ledger.push.add({ userId: s.user.id, endpoint, p256dh, auth });
+        return send(res, 200, "ok", { "Content-Type": "text/plain; charset=utf-8" });
+      }
+      if (path === "/panel/push/baja") {
+        ledger.push.remove(String(form.get("endpoint") ?? ""));
+        return send(res, 200, "ok", { "Content-Type": "text/plain; charset=utf-8" });
+      }
+      if (path === "/panel/push/probar") {
+        if (ledger.push.countForUser(s.user.id) === 0) return redirect(res, "/panel/ajustes?m=pushsin");
+        await notify(s.tenant.id, { title: "Cuotia", body: "Los avisos funcionan en este dispositivo.", url: "/panel/ajustes", tag: "prueba" }, { userId: s.user.id });
+        return redirect(res, "/panel/ajustes?m=pushprobe");
       }
 
       if (path === "/panel/equipo/invitar") {

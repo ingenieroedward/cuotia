@@ -49,3 +49,23 @@ self.addEventListener("fetch", (event) => {
     );
   }
 });
+
+// Phone notifications. The payload is encrypted end to end; it only carries a short title, text and the panel path to open.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { /* a plain-text push still shows something */ }
+  event.waitUntil(self.registration.showNotification(String(data.title || "Cuotia"), {
+    body: String(data.body || ""), tag: data.tag ? String(data.tag) : undefined,
+    icon: "/static/icons/icon-192.png", badge: "/static/icons/icon-192.png",
+    data: { url: String(data.url || "/panel").startsWith("/") ? String(data.url || "/panel") : "/panel" },
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || "/panel", self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+    const open = windows.find((w) => w.url.startsWith(self.location.origin) && "focus" in w);
+    return open ? open.focus().then((w) => w.navigate?.(target)) : self.clients.openWindow(target);
+  }));
+});
