@@ -67,6 +67,8 @@ const FLASH = {
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
   comprech: () => ({ kind: "ok", text: "Comprobante rechazado. El residente verá que no se pudo confirmar." }),
+  pushprobe: () => ({ kind: "ok", text: "Te enviamos un aviso de prueba. Si no lo ves en unos segundos, revisa que las notificaciones de Cuotia estén permitidas en tu teléfono." }),
+  pushsin: () => ({ kind: "err", text: "Primero activa los avisos en este dispositivo." }),
   eqbad: () => ({ kind: "err", text: "Escribe un correo válido para la invitación." }),
   eqexiste: () => ({ kind: "err", text: "Ese correo ya tiene una cuenta en Cuotia." }),
   eqcanc: () => ({ kind: "ok", text: "Invitación cancelada: su enlace ya no sirve." }),
@@ -694,7 +696,7 @@ export function pagoManualPage(args) {
 
 
 export function ajustesPage(args) {
-  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId } = args;
+  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0 } = args;
   return panelLayout("Ajustes", { ...args, active: "ajustes" }, html`
   <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
   ${flashBox(flash)}
@@ -750,6 +752,16 @@ export function ajustesPage(args) {
       <label>Titular de la cuenta<input type="text" name="titular" maxlength="80" value="${tenant.payHolder ?? ""}" placeholder="Quien recibe el dinero"></label>
       <button class="btn" type="submit">Guardar</button>
     </form>
+  </section>
+
+  <section class="card" id="avisos" data-push data-key="${pushKey}" data-csrf="${csrf}">
+    <div class="row wrap"><h2>Avisos en el celular</h2>${pushDevices ? html`<span class="pill ok"><i></i>Activos en ${pushDevices} dispositivo${pushDevices === 1 ? "" : "s"}</span>` : html`<span class="pill warn"><i></i>Sin activar</span>`}</div>
+    <p class="muted small">Te avisamos cuando un residente sube un comprobante o entra un pago por pagoradar. Cada persona del equipo los activa en su propio teléfono. En iPhone primero instala la app: Compartir, <b>Añadir a pantalla de inicio</b>, y ábrela desde ahí.</p>
+    <p class="small" data-push-status role="status"></p>
+    <div class="actions">
+      <button class="btn" type="button" data-push-toggle>Activar avisos en este dispositivo</button>
+      ${pushDevices ? html`<form method="post" action="/panel/push/probar">${csrfField(csrf)}<button class="btn ghost" type="submit">Enviarme un aviso de prueba</button></form>` : ""}
+    </div>
   </section>
 
   <section class="card" id="equipo">

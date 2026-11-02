@@ -153,6 +153,21 @@ const MIGRATIONS = [
   `
   ALTER TABLE tenants ADD COLUMN pay_mode TEXT CHECK (pay_mode IN ('auto', 'manual'));
   `,
+  /* V10: phone notifications (Web Push). `settings` holds instance-wide values (the VAPID key pair, private half encrypted);
+     each subscription is one browser/device of one person of one conjunto. */
+  `
+  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE push_subscriptions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX push_by_tenant ON push_subscriptions (tenant_id);
+  `,
 ];
 
 const nowIso = () => new Date().toISOString();
@@ -262,6 +277,14 @@ export function openStore(path = ":memory:") {
     claimTotpStep(userId, step) {
       return Number(db.prepare("UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?").run(step, userId, step).changes) === 1;
     },
+  };
+
+  /** Instance-wide values (the VAPID keys). Not tenant data. */
+  const settings = {
+    get: (key) => db.prepare("SELECT value FROM settings WHERE key = ?").get(key)?.value ?? null,
+    set: (key, value) => void db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value),
+    /** The old keys are gone: every subscription was made for them and is now useless. */
+    resetPush: () => void db.prepare("DELETE FROM push_subscriptions").run(),
   };
 
   const INVITE_TTL_MS = 7 * 24 * 3600_000;
@@ -666,6 +689,20 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** Devices of this conjunto's people that get phone notifications. */
+    const push = {
+      /** A browser re-subscribing (even under another account of the same device) replaces its earlier row. */
+      add({ userId, endpoint, p256dh, auth }) {
+        if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND tenant_id = ?").get(userId, tenantId)) throw new Error("Esa persona no es de este conjunto");
+        db.prepare("INSERT OR REPLACE INTO push_subscriptions (id, tenant_id, user_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(newId("ps"), tenantId, userId, endpoint, p256dh, auth, nowIso());
+      },
+      list: ({ userId = null } = {}) => db.prepare(`SELECT endpoint, p256dh, auth, user_id FROM push_subscriptions WHERE tenant_id = ?${userId ? " AND user_id = ?" : ""}`)
+        .all(...(userId ? [tenantId, userId] : [tenantId])).map((r) => ({ endpoint: r.endpoint, p256dh: r.p256dh, auth: r.auth, userId: r.user_id })),
+      countForUser: (userId) => Number(db.prepare("SELECT COUNT(*) AS n FROM push_subscriptions WHERE tenant_id = ? AND user_id = ?").get(tenantId, userId).n),
+      remove: (endpoint) => void db.prepare("DELETE FROM push_subscriptions WHERE tenant_id = ? AND endpoint = ?").run(tenantId, endpoint),
+    };
+
     /** Proofs of payment uploaded by residents. The file bytes are only returned by `get`; lists never carry them. */
     const MAX_PENDING_PER_HOUSE = 3;
     const proofMeta = (r) => ({
@@ -708,8 +745,8 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, matchHouse, summary };
   }
 
-  return { db, tenants, users, invitations, sessions, residentByToken, forTenant, close: () => db.close() };
+  return { db, tenants, users, invitations, settings, sessions, residentByToken, forTenant, close: () => db.close() };
 }

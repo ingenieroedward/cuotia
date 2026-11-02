@@ -15,7 +15,7 @@ const SETUP_TOKEN = "token-de-configuracion-inicial-123";
 const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
 
 /** Runs `fn` against a real server and always closes it, so a failed assertion can't leave the test run hanging. */
-async function withServer(fn, { empty = false, secure = false } = {}) {
+async function withServer(fn, { empty = false, secure = false, pushSend } = {}) {
   const ctx = empty ? { store: openStore(":memory:") } : twoConjuntos();
   const config = { publicUrl: "http://localhost:3000", secureCookies: secure, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN };
   if (!empty) {
@@ -25,7 +25,7 @@ async function withServer(fn, { empty = false, secure = false } = {}) {
     ctx.store.tenants.setPagoradarSecret(ctx.a.id, encryptSecret(SECRET_A, MASTER_KEY));
     ctx.store.tenants.setPagoradarSecret(ctx.b.id, encryptSecret(SECRET_B, MASTER_KEY));
   }
-  const server = createServer(createApp({ config, store: ctx.store }));
+  const server = createServer(createApp({ config, store: ctx.store, ...(pushSend ? { pushSend } : {}) }));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -1551,3 +1551,69 @@ test("cómo se confirman los pagos: el tesorero elige manual o automático y el 
   await form(`${s.base}/panel/ajustes/modo`, { _csrf: csrf, modo: "auto" }, cookie);
   assert.match(await pay(), /cuando el banco lo confirme/);
 }));
+
+test("avisos en el celular: se activan por persona, llegan solo al propio conjunto y se limpian solos", async () => {
+  const sent = [];
+  let status = { ok: true, gone: false };
+  const pushSend = async (sub, message) => { sent.push({ endpoint: sub.endpoint, message }); return status; };
+  const { createECDH, randomBytes } = await import("node:crypto");
+  const keysFor = () => { const e = createECDH("prime256v1"); e.generateKeys(); return { p256dh: e.getPublicKey().toString("base64url"), auth: randomBytes(16).toString("base64url") }; };
+  await withServer(async (s) => {
+    s.A.dues.generate(currentPeriod());
+    const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+    const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+    const csrfM = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
+    const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
+    const ajustes = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text();
+    assert.match(ajustes, /data-push data-key="[A-Za-z0-9_-]{80,90}"/);
+    const wait = () => new Promise((r) => setTimeout(r, 30));
+
+    // Only real push services and well-formed keys; the form needs the token.
+    const subscribe = (cookie, csrf, fields) => form(`${s.base}/panel/push/suscribir`, { _csrf: csrf, ...fields }, cookie);
+    const marta1 = { endpoint: "https://fcm.googleapis.com/fcm/send/marta-telefono", ...keysFor() };
+    assert.equal((await subscribe(marta.cookie, csrfM, { ...marta1, endpoint: "https://127.0.0.1/x" })).status, 400);
+    assert.equal((await subscribe(marta.cookie, csrfM, { ...marta1, auth: "corta" })).status, 400);
+    assert.equal((await form(`${s.base}/panel/push/suscribir`, marta1, marta.cookie)).status, 403, "sin token no se suscribe");
+    assert.equal((await subscribe(marta.cookie, csrfM, marta1)).status, 200);
+    assert.equal((await subscribe(luis.cookie, csrfL, { endpoint: "https://fcm.googleapis.com/fcm/send/luis-telefono", ...keysFor() })).status, 200);
+    assert.equal(s.A.push.list().length, 1);
+    assert.equal(s.B.push.list().length, 1);
+
+    // A resident of Ibiza uploads a proof: only Ibiza's device is notified, and the text names the house, nothing private.
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("imagen")]);
+    const fd = new FormData(); fd.append("archivo", new Blob([png], { type: "image/png" }), "f.png");
+    assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}/comprobante`, { method: "POST", body: fd, redirect: "manual" })).status, 303);
+    await wait();
+    assert.deepEqual(sent.map((x) => x.endpoint), ["https://fcm.googleapis.com/fcm/send/marta-telefono"]);
+    assert.deepEqual(sent[0].message, { title: "Comprobante nuevo", body: "La casa 14 subió un comprobante", url: "/panel#comprobantes", tag: "comprobante" });
+
+    // An unassigned bank payment notifies too (amount only, no payer name on a lock screen).
+    sent.length = 0;
+    const event = paymentEvent({ id: "pay_push", payerName: "Persona Desconocida", amountCents: 1_234_500 });
+    const body = JSON.stringify(event);
+    const sig = signPagoradarBody(body, SECRET_A);
+    assert.equal((await fetch(hookUrl(s, s.a), { method: "POST", body, headers: { "Pagoradar-Signature": sig, "Content-Type": "application/json" } })).status, 200);
+    await wait();
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].message.body, /\$12\.345 sin casa asociada/);
+    assert.doesNotMatch(JSON.stringify(sent[0].message), /Desconocida/);
+
+    // The test button reaches only the caller's devices; a dead subscription (410) is forgotten.
+    sent.length = 0;
+    assert.match((await form(`${s.base}/panel/push/probar`, { _csrf: csrfM }, marta.cookie)).headers.get("location"), /m=pushprobe/);
+    assert.equal(sent.length, 1);
+    status = { ok: false, gone: true };
+    await form(`${s.base}/panel/push/probar`, { _csrf: csrfM }, marta.cookie);
+    assert.equal(s.A.push.list().length, 0, "la suscripción vencida se borró sola");
+    assert.match((await form(`${s.base}/panel/push/probar`, { _csrf: csrfM }, marta.cookie)).headers.get("location"), /m=pushsin/);
+    assert.equal(s.B.push.list().length, 1, "el otro conjunto no se tocó");
+
+    // Turning it off removes only the caller's own device in their own conjunto.
+    status = { ok: true, gone: false };
+    await subscribe(marta.cookie, csrfM, marta1);
+    await form(`${s.base}/panel/push/baja`, { _csrf: csrfL, endpoint: marta1.endpoint }, luis.cookie);
+    assert.equal(s.A.push.list().length, 1, "Luis no pudo quitar el dispositivo de Marta");
+    await form(`${s.base}/panel/push/baja`, { _csrf: csrfM, endpoint: marta1.endpoint }, marta.cookie);
+    assert.equal(s.A.push.list().length, 0);
+  }, { pushSend });
+});

@@ -86,3 +86,56 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     if (input.value.trim() && real.length === 1) select.value = real[0].value; // one match: already chosen
   });
 }
+
+// Phone notifications (Ajustes → Avisos en el celular): ask permission, subscribe through the service worker and tell the
+// server which device to notify. Nothing here runs unless that card is on the page.
+(() => {
+  const box = document.querySelector("[data-push]");
+  if (!box) return;
+  const button = box.querySelector("[data-push-toggle]");
+  const status = box.querySelector("[data-push-status]");
+  if (!("serviceWorker" in navigator && "PushManager" in window && "Notification" in window)) {
+    status.textContent = "Este navegador no permite avisos. En iPhone, instala primero la app con Compartir → Añadir a pantalla de inicio y ábrela desde ahí.";
+    button.hidden = true;
+    return;
+  }
+  const key = Uint8Array.from(atob(box.dataset.key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const post = (url, fields) => fetch(url, {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ _csrf: box.dataset.csrf, ...fields }),
+  }).then((r) => { if (!r.ok) throw new Error(String(r.status)); });
+  const current = () => navigator.serviceWorker.ready.then((reg) => reg.pushManager.getSubscription());
+  const render = async () => {
+    const sub = await current().catch(() => null);
+    button.textContent = sub ? "Desactivar avisos en este dispositivo" : "Activar avisos en este dispositivo";
+  };
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    status.textContent = "";
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await post("/panel/push/baja", { endpoint: sub.endpoint });
+        await sub.unsubscribe();
+        status.textContent = "Avisos desactivados en este dispositivo.";
+      } else {
+        if ((await Notification.requestPermission()) !== "granted") {
+          status.textContent = "El permiso quedó bloqueado. Actívalo en los ajustes del teléfono o del navegador y vuelve a intentar.";
+          return;
+        }
+        const made = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+        const json = made.toJSON();
+        await post("/panel/push/suscribir", { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth });
+        status.textContent = "Listo: los avisos están activos. Recarga esta página para probarlos.";
+      }
+    } catch {
+      status.textContent = "No se pudo completar. Inténtalo de nuevo en unos segundos.";
+    } finally {
+      button.disabled = false;
+      render();
+    }
+  });
+  render();
+})();
