@@ -13,9 +13,9 @@ const SETUP_TOKEN = "token-de-configuracion-inicial-123";
 const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
 
 /** Runs `fn` against a real server and always closes it, so a failed assertion can't leave the test run hanging. */
-async function withServer(fn, { empty = false } = {}) {
+async function withServer(fn, { empty = false, secure = false } = {}) {
   const ctx = empty ? { store: openStore(":memory:") } : twoConjuntos();
-  const config = { publicUrl: "http://localhost:3000", secureCookies: false, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN };
+  const config = { publicUrl: "http://localhost:3000", secureCookies: secure, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN };
   if (!empty) {
     await ctx.store.users.create({ tenantId: ctx.a.id, email: "marta@ejemplo.com", passwordHash: await hashPassword("clave-de-marta") });
     await ctx.store.users.create({ tenantId: ctx.b.id, email: "luis@ejemplo.com", passwordHash: await hashPassword("clave-de-luis") });
@@ -652,4 +652,109 @@ test("siempre claro, como el diseño: sin modo oscuro automático", () => withSe
   for (const [name, hex] of [["ink", "#0b1b2b"], ["lime", "#c6f25c"], ["ground", "#f3f5f8"], ["surface", "#ffffff"], ["muted", "#566274"], ["line", "#e3e8ee"]]) {
     assert.match(css, new RegExp(`--${name}:\\s*${hex}`), name);
   }
+}));
+
+test("importar casas: pega una lista, crea casas con su enlace y sus cuotas, y avisa lo que no pudo", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/casas/importar");
+  assert.ok(csrf);
+  assert.match(await (await fetch(`${s.base}/panel/casas/importar`, { headers: { cookie } })).text(), /Importar casas/);
+  assert.match(await (await fetch(`${s.base}/panel/casas`, { headers: { cookie } })).text(), /Importar varias casas/);
+
+  const lista = "Casa\tNombre\tCelular\n20\tLucía Gómez\t300 111 2233\n21;Pedro Cardona\n14;Ya existe;3000000000\n22\n";
+  assert.equal((await form(`${s.base}/panel/casas/importar`, { casas: lista }, cookie)).status, 403, "sin token");
+  assert.equal(s.A.houses.list().length, 2);
+
+  const res = await form(`${s.base}/panel/casas/importar`, { _csrf: csrf, casas: lista }, cookie);
+  assert.equal(res.status, 200);
+  const page = await res.text();
+  assert.match(page, /2 casas importadas/);
+  assert.match(page, /Revisa estas líneas/);
+  assert.match(page, /Ya existe la casa 14/, "no pisa una casa existente");
+  assert.match(page, /Línea 5/, "señala la línea con el problema");
+  assert.match(page, /wa\.me\/573001112233/, "WhatsApp solo con celular");
+  assert.equal((page.match(/wa\.me\//g) ?? []).length, 1);
+  assert.equal(s.A.houses.get(s.a14.house.id).residentName, "Sandra Duque Arias", "la casa 14 sigue igual");
+
+  const links = [...page.matchAll(/http:\/\/localhost:3000(\/r\/[A-Za-z0-9_-]+)/g)].map((m) => m[1]);
+  assert.equal(new Set(links).size, 2);
+  for (const l of links) assert.equal((await fetch(`${s.base}${l}`)).status, 200, "cada enlace abre la casa");
+  const lucia = s.A.houses.list().find((h) => h.code === "20");
+  assert.equal(s.A.dues.listForHouse(lucia.id).length, 1, "ya tiene la cuota de este mes");
+  assert.equal(s.B.houses.list().length, 1, "el otro conjunto no recibe nada");
+}));
+
+test("una casa nueva o reactivada recibe la cuota del mes al instante", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/casas");
+  await form(`${s.base}/panel/casas`, { _csrf: csrf, code: "30", residente: "Nueva Vecina" }, cookie);
+  const nueva = s.A.houses.list().find((h) => h.code === "30");
+  assert.equal(s.A.dues.listForHouse(nueva.id).length, 1, "sin esperar a la siguiente pasada");
+
+  s.A.houses.setActive(s.a03.house.id, false);
+  s.A.houses.setActive(s.a03.house.id, true);
+  const before = s.A.dues.listForHouse(s.a03.house.id).length;
+  await form(`${s.base}/panel/casas/${s.a03.house.id}/desactivar`, { _csrf: csrf }, cookie);
+  await form(`${s.base}/panel/casas/${s.a03.house.id}/reactivar`, { _csrf: csrf }, cookie);
+  assert.equal(s.A.dues.listForHouse(s.a03.house.id).length, before, "no duplica la cuota que ya tenía");
+}));
+
+test("Ajustes: la llave Bre-B se cambia y los residentes la ven; el otro conjunto no se entera", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const page = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  assert.match(page, /value="@ibiza"/, "muestra la llave actual para editarla");
+
+  assert.equal((await form(`${s.base}/panel/ajustes/cobro`, { llave: "@x" }, cookie)).status, 403);
+  assert.equal(s.store.tenants.get(s.a.id).payKey, "@ibiza");
+  assert.match((await form(`${s.base}/panel/ajustes/cobro`, { _csrf: csrf, llave: "  @nueva.llave ", titular: "Ana Pérez" }, cookie)).headers.get("location"), /m=cobro/);
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text(), /@nueva\.llave[\s\S]*Ana Pérez/);
+  assert.equal(s.store.tenants.get(s.b.id).payKey, null);
+}));
+
+test("cambiar la contraseña: exige la actual, cierra las otras sesiones y la anterior deja de servir", () => withServer(async (s) => {
+  const a = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, a.cookie, "/panel/ajustes");
+  // A second device, signed in with the next code step.
+  const second = await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const b = { cookie: cookieOf(await form(`${s.base}/2fa`, { code: totpCode(a.secret, totpStep() + 1) }, second.cookie)) };
+  assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie: b.cookie }, redirect: "manual" })).status, 200);
+
+  const send = (fields, cookie = a.cookie) => form(`${s.base}/panel/ajustes/clave`, fields, cookie);
+  assert.equal((await send({ actual: "clave-de-marta", nueva: "una-clave-nueva-larga", nueva2: "una-clave-nueva-larga" })).status, 403, "sin token");
+  assert.match((await send({ _csrf: csrf, actual: "equivocada", nueva: "una-clave-nueva-larga", nueva2: "una-clave-nueva-larga" })).headers.get("location"), /m=clavemal/);
+  assert.match((await send({ _csrf: csrf, actual: "clave-de-marta", nueva: "corta", nueva2: "corta" })).headers.get("location"), /m=clavebad/);
+  assert.match((await send({ _csrf: csrf, actual: "clave-de-marta", nueva: "una-clave-nueva-larga", nueva2: "otra-distinta-larga" })).headers.get("location"), /m=clavebad/);
+  assert.equal((await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta")).res.status, 303, "nada cambió: la contraseña vieja sigue valiendo");
+
+  assert.match((await send({ _csrf: csrf, actual: "clave-de-marta", nueva: "una-clave-nueva-larga", nueva2: "una-clave-nueva-larga" })).headers.get("location"), /m=clave$/);
+  assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie: a.cookie }, redirect: "manual" })).status, 200, "la sesión que hizo el cambio sigue");
+  assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie: b.cookie }, redirect: "manual" })).status, 303, "la del otro dispositivo se cerró");
+  assert.equal((await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta")).res.status, 401, "la anterior ya no entra");
+  assert.equal((await passwordStep(s.base, "marta@ejemplo.com", "una-clave-nueva-larga")).res.status, 303);
+  assert.equal(s.store.users.byEmail("luis@ejemplo.com").passwordHash.startsWith("scrypt$"), true, "la de otra persona no se tocó");
+}));
+
+test("adivinar la contraseña actual desde Ajustes también tiene límite", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  let last;
+  for (let i = 0; i < 7; i++) last = await form(`${s.base}/panel/ajustes/clave`, { _csrf: csrf, actual: `intento-${i}`, nueva: "una-clave-nueva-larga", nueva2: "una-clave-nueva-larga" }, cookie);
+  assert.match(last.headers.get("location"), /m=clavelim/);
+  const right = await form(`${s.base}/panel/ajustes/clave`, { _csrf: csrf, actual: "clave-de-marta", nueva: "una-clave-nueva-larga", nueva2: "una-clave-nueva-larga" }, cookie);
+  assert.match(right.headers.get("location"), /m=clavelim/, "ni la correcta mientras dure el bloqueo");
+}));
+
+test("HSTS solo con https; y una cookie dañada redirige al login en vez de fallar", () => withServer(async (s) => {
+  const res = await fetch(`${s.base}/health`);
+  assert.match(res.headers.get("strict-transport-security"), /max-age=\d+/);
+  const broken = await fetch(`${s.base}/panel`, { headers: { cookie: "cuotia_sid=%E0%A4%A" }, redirect: "manual" });
+  assert.equal(broken.status, 303);
+  assert.equal(broken.headers.get("location"), "/login");
+}, { secure: true }));
+
+test("sin https no se manda HSTS (no se debe forzar https en una prueba local)", () => withServer(async (s) => {
+  assert.equal((await fetch(`${s.base}/health`)).headers.get("strict-transport-security"), null);
 }));

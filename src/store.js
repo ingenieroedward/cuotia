@@ -181,6 +181,8 @@ export function openStore(path = ":memory:") {
     /** The encrypted pagoradar webhook secret of this conjunto (or null). Decrypt with `decryptSecret` only to verify a signature. */
     pagoradarSecret: (id) => db.prepare("SELECT pagoradar_secret FROM tenants WHERE id = ?").get(id)?.pagoradar_secret ?? null,
     setPagoradarSecret: (id, encrypted) => void db.prepare("UPDATE tenants SET pagoradar_secret = ? WHERE id = ?").run(encrypted, id),
+    /** The Bre-B key and holder residents see. Empty means "not set". */
+    setPayment: (id, { payKey, payHolder }) => void db.prepare("UPDATE tenants SET pay_key = ?, pay_holder = ? WHERE id = ?").run(String(payKey ?? "").trim() || null, String(payHolder ?? "").trim() || null, id),
     /** A correctly signed event arrived (even a test one): the panel shows the connection as alive. */
     touchPagoradar: (id) => void db.prepare("UPDATE tenants SET pagoradar_last_at = ? WHERE id = ?").run(nowIso(), id),
   };
@@ -195,6 +197,9 @@ export function openStore(path = ":memory:") {
       return userRow(db.prepare("SELECT * FROM users WHERE email = ?").get(String(email).trim().toLowerCase()));
     },
     byId: (id) => userRow(db.prepare("SELECT * FROM users WHERE id = ?").get(id)),
+    setPasswordHash: (userId, hash) => void db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hash, userId),
+    /** Lost phone: forgets the authenticator, so the next sign-in enrolls a new one. */
+    resetTotp: (userId) => void db.prepare("UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = 0 WHERE id = ?").run(userId),
     /** Stores a not-yet-confirmed (encrypted) secret; it only counts after `enableTotp`. */
     setTotpSecret: (userId, encrypted) => void db.prepare("UPDATE users SET totp_secret = ?, totp_enabled = 0, totp_last_step = 0 WHERE id = ?").run(encrypted, userId),
     enableTotp: (userId) => void db.prepare("UPDATE users SET totp_enabled = 1 WHERE id = ?").run(userId),
@@ -232,6 +237,8 @@ export function openStore(path = ":memory:") {
       return sessions.create(s.user.id, { stage: "full", ttlMs });
     },
     delete: (token) => void db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token)),
+    /** Signs a person out everywhere (after a password change or reset), optionally keeping the session making the change. */
+    deleteForUser: (userId, exceptToken = null) => void db.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").run(userId, exceptToken ? sha256(exceptToken) : ""),
     purgeExpired: () => void db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(nowIso()),
   };
 

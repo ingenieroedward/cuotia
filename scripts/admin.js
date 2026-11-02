@@ -3,12 +3,17 @@
 //   npm run admin -- agregar-casa --conjunto jardines-de-ibiza --codigo 14 --residente "Sandra Duque" [--telefono 3001234567]
 //   npm run admin -- generar-cuotas --conjunto jardines-de-ibiza [--periodo 2026-11]
 //   MASTER_KEY=... npm run admin -- configurar-pagoradar --conjunto jardines-de-ibiza --secreto <secreto del webhook de su app en pagoradar>
+//   npm run admin -- respaldar [--carpeta data/backups] [--conservar 14]      consistent copy of the live database
+//   npm run admin -- restablecer-2fa --correo marta@ejemplo.com               lost phone: the next sign-in enrolls a new authenticator
+//   npm run admin -- restablecer-clave --correo marta@ejemplo.com             lost password: prints a new temporary one
 // Each conjunto has its own pagoradar app, webhook URL and secret (the secret is stored encrypted with MASTER_KEY).
 import { randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
 import { openStore } from "../src/store.js";
 import { encryptSecret, hashPassword } from "../src/security.js";
 import { currentPeriod } from "../src/text.js";
+import { backupName, backupTo, pruneBackups } from "../src/backup.js";
+import { dirname, join } from "node:path";
 
 const [command, ...rest] = process.argv.slice(2);
 const { values: v } = parseArgs({
@@ -16,12 +21,13 @@ const { values: v } = parseArgs({
   options: {
     slug: { type: "string" }, nombre: { type: "string" }, correo: { type: "string" }, llave: { type: "string" },
     titular: { type: "string" }, cuota: { type: "string" }, conjunto: { type: "string" }, codigo: { type: "string" },
-    residente: { type: "string" }, telefono: { type: "string" }, periodo: { type: "string" }, secreto: { type: "string" }, tesorero: { type: "string" },
+    residente: { type: "string" }, telefono: { type: "string" }, periodo: { type: "string" }, secreto: { type: "string" }, tesorero: { type: "string" }, carpeta: { type: "string" }, conservar: { type: "string" },
   },
 });
 
 const fail = (msg) => { console.error(msg); process.exit(1); };
-const store = openStore(process.env.DATABASE_PATH ?? "./data/cuotia.db");
+const dbPath = process.env.DATABASE_PATH ?? "./data/cuotia.db";
+const store = openStore(dbPath);
 const publicUrl = (process.env.PUBLIC_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 const webhookUrl = (tenant) => `${publicUrl}/webhooks/pagoradar/${tenant.id}`;
 const saveSecret = (tenant, secret) => {
@@ -55,7 +61,32 @@ if (command === "crear-conjunto") {
 } else if (command === "generar-cuotas") {
   const period = v.periodo ?? currentPeriod();
   console.log(`Cuotas nuevas para ${period}: ${store.forTenant(tenantOf().id).dues.generate(period)}`);
+} else if (command === "respaldar") {
+  const dir = v.carpeta ?? join(dirname(dbPath), "backups");
+  let result;
+  try {
+    result = backupTo(store.db, join(dir, backupName()));
+  } catch (e) {
+    fail(`No se pudo respaldar: ${e.message}`);
+  }
+  const { file, bytes } = result;
+  const removed = pruneBackups(dir, Number(v.conservar ?? 14));
+  console.log(`Respaldo listo: ${file} (${Math.round(bytes / 1024)} KB)`);
+  console.log(removed.length ? `Se borraron ${removed.length} respaldo(s) viejo(s); se conservan los últimos ${v.conservar ?? 14}.` : `Se conservan los últimos ${v.conservar ?? 14}.`);
+  console.log("Ojo: está en el mismo disco que la base. Copia esa carpeta a otro lugar (otro servidor, tu computador o la nube).");
+} else if (command === "restablecer-2fa" || command === "restablecer-clave") {
+  const user = store.users.byEmail(v.correo ?? "") ?? fail("No hay un usuario con ese correo: usa --correo");
+  if (command === "restablecer-2fa") {
+    store.users.resetTotp(user.id);
+    store.sessions.deleteForUser(user.id);
+    console.log(`Listo: ${user.email} deberá activar un código de verificación nuevo la próxima vez que entre. Sus sesiones se cerraron.`);
+  } else {
+    const password = randomBytes(9).toString("base64url");
+    store.users.setPasswordHash(user.id, await hashPassword(password));
+    store.sessions.deleteForUser(user.id);
+    console.log(`Contraseña nueva para ${user.email}: ${password}\n(es temporal: que la cambie en Ajustes; no se vuelve a mostrar).`);
+  }
 } else {
-  fail("Comandos: crear-conjunto | configurar-pagoradar | agregar-casa | generar-cuotas");
+  fail("Comandos: crear-conjunto | configurar-pagoradar | agregar-casa | generar-cuotas | respaldar | restablecer-2fa | restablecer-clave");
 }
 store.close();

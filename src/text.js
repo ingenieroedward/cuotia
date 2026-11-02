@@ -97,3 +97,34 @@ export function shortDateTime(iso) {
   const time = new Intl.DateTimeFormat("es-CO", { timeZone: "America/Bogota", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
   return `${shortDate(iso)}, ${time}`;
 }
+
+/**
+ * Houses pasted from a spreadsheet or typed by hand: one per line, "code ; name ; phone" (tab or semicolon; a comma if
+ * the line has neither). The phone is optional and a first line that looks like a header is skipped.
+ * @returns {{ rows: {code, residentName, phone, line}[], errors: {line, text, reason}[] }}
+ */
+export function parseHouseLines(text, { max = 300 } = {}) {
+  const rows = [];
+  const errors = [];
+  const seen = new Set();
+  let first = true;
+  String(text ?? "").split(/\r?\n/).forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line) return;
+    const cells = line.split(/[\t;]/.test(line) ? /[\t;]/ : ",").map((c) => c.trim());
+    if (first) {
+      first = false;
+      if (/^(c[oó]digo|casa|apto|apartamento|n[uú]mero|no\.?)$/i.test(cells[0])) return;
+    }
+    const fail = (reason) => errors.push({ line: i + 1, text: line.slice(0, 80), reason });
+    if (rows.length >= max) return fail(`Máximo ${max} casas por vez`);
+    const [code, residentName, phoneRaw = ""] = cells;
+    if (!code || !residentName) return fail("Faltan el código o el nombre");
+    if (code.length > 12) return fail("El código es demasiado largo (máximo 12)");
+    if (residentName.length > 80) return fail("El nombre es demasiado largo (máximo 80)");
+    if (seen.has(code.toLowerCase())) return fail(`El código ${code} está repetido en la lista`);
+    seen.add(code.toLowerCase());
+    rows.push({ code, residentName, phone: phoneRaw.replace(/\D/g, "").slice(0, 20) || null, line: i + 1 });
+  });
+  return { rows, errors };
+}
