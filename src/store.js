@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { namesMatch, normalizeName } from "./text.js";
+import { namesMatch, normalizeName, periodRange } from "./text.js";
 import { newToken, sha256 } from "./security.js";
 
 /**
@@ -249,6 +249,21 @@ export function openStore(path = ":memory:") {
       },
       get: (id) => houseRow(houseOf(id)),
       list: () => db.prepare("SELECT * FROM houses WHERE tenant_id = ? AND active = 1 ORDER BY code").all(tenantId).map(houseRow),
+      listInactive: () => db.prepare("SELECT * FROM houses WHERE tenant_id = ? AND active = 0 ORDER BY code").all(tenantId).map(houseRow),
+      /** Edits the data of a house. A code already used by another house throws a UNIQUE error. */
+      update(houseId, { code, residentName, phone = null }) {
+        ownHouse(houseId);
+        db.prepare("UPDATE houses SET code = ?, resident_name = ?, phone = ? WHERE id = ? AND tenant_id = ?").run(code, residentName, phone, houseId, tenantId);
+        return houseRow(houseOf(houseId));
+      },
+      /**
+       * Deactivating keeps all history (dues, payments) but stops the personal link, new dues and automatic matching.
+       * Its unpaid dues stop counting as pending; its paid ones keep counting.
+       */
+      setActive(houseId, active) {
+        ownHouse(houseId);
+        db.prepare("UPDATE houses SET active = ? WHERE id = ? AND tenant_id = ?").run(active ? 1 : 0, houseId, tenantId);
+      },
       /** The old personal link stops working; the new token is returned once (only its hash is stored). */
       rotateToken(houseId) {
         ownHouse(houseId);
@@ -266,10 +281,17 @@ export function openStore(path = ":memory:") {
         const r = db.prepare("INSERT OR IGNORE INTO aliases (id, tenant_id, house_id, name_norm) VALUES (?, ?, ?, ?)").run(newId("al"), tenantId, houseId, norm);
         return Number(r.changes) === 1;
       },
-      list: (houseId) => db.prepare("SELECT name_norm FROM aliases WHERE tenant_id = ? AND house_id = ?").all(tenantId, houseId).map((r) => r.name_norm),
-      /** The one house that uses this name, or null when none or several do (never guess). */
+      list: (houseId) => db.prepare("SELECT id, name_norm FROM aliases WHERE tenant_id = ? AND house_id = ? ORDER BY name_norm").all(tenantId, houseId).map((r) => ({ id: r.id, name: r.name_norm })),
+      remove(houseId, aliasId) {
+        ownHouse(houseId);
+        return Number(db.prepare("DELETE FROM aliases WHERE id = ? AND house_id = ? AND tenant_id = ?").run(aliasId, houseId, tenantId).changes) === 1;
+      },
+      /** The one active house that uses this name, or null when none or several do (never guess). */
       houseFor(norm) {
-        const rows = db.prepare("SELECT DISTINCT house_id FROM aliases WHERE tenant_id = ? AND name_norm = ?").all(tenantId, norm);
+        const rows = db.prepare(
+          `SELECT DISTINCT a.house_id FROM aliases a JOIN houses h ON h.id = a.house_id
+           WHERE a.tenant_id = ? AND a.name_norm = ? AND h.active = 1`,
+        ).all(tenantId, norm);
         return rows.length === 1 ? rows[0].house_id : null;
       },
     };
@@ -298,7 +320,8 @@ export function openStore(path = ":memory:") {
           return created;
         });
       },
-      listByPeriod: (period) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.period = ? ORDER BY h.code, c.name`).all(tenantId, period).map(dueRow),
+      // A deactivated house's unpaid dues don't show; its paid ones keep counting.
+      listByPeriod: (period) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.period = ? AND (h.active = 1 OR d.status = 'paid') ORDER BY h.code, c.name`).all(tenantId, period).map(dueRow),
       listForHouse: (houseId) => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.house_id = ? ORDER BY d.period DESC, c.name`).all(tenantId, houseId).map(dueRow),
       /** The oldest unpaid due of this house for exactly this amount. */
       oldestOpen(houseId, amountCents) {
@@ -341,6 +364,69 @@ export function openStore(path = ":memory:") {
           return { paymentId: id, dueId: due.id, amountCents: due.amount_cents };
         });
       },
+      /**
+       * Payment history, newest first. Filters: `period` ("YYYY-MM", Colombia time), `status`, `houseId`, `q`
+       * (payer, house code or resident). Returns the page plus the total count and amount of the whole filter.
+       */
+      list({ period = null, status = null, houseId = null, q = "", limit = 50, offset = 0 } = {}) {
+        const where = ["p.tenant_id = ?"];
+        const args = [tenantId];
+        if (period && /^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+          const [from, to] = periodRange(period);
+          where.push("p.paid_at >= ? AND p.paid_at < ?");
+          args.push(from, to);
+        }
+        if (status === "assigned" || status === "unassigned") {
+          where.push("p.status = ?");
+          args.push(status);
+        }
+        if (houseId) {
+          where.push("p.house_id = ?");
+          args.push(houseId);
+        }
+        const needle = String(q ?? "").trim().slice(0, 60);
+        if (needle) {
+          const like = (v) => `%${v.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+          // The payer's name is stored normalized (upper case, no accents or symbols); skip it when the needle has nothing left.
+          const norm = normalizeName(needle);
+          const parts = ["h.code LIKE ? ESCAPE '\\'", "h.resident_name LIKE ? ESCAPE '\\'"];
+          const vals = [like(needle), like(needle)];
+          if (norm) { parts.unshift("p.payer_norm LIKE ? ESCAPE '\\'"); vals.unshift(like(norm)); }
+          where.push(`(${parts.join(" OR ")})`);
+          args.push(...vals);
+        }
+        const clause = `WHERE ${where.join(" AND ")}`;
+        const rows = db.prepare(
+          `SELECT p.*, h.code AS house_code, h.resident_name, d.period AS due_period, c.name AS concept_name
+           FROM payments p LEFT JOIN houses h ON h.id = p.house_id LEFT JOIN dues d ON d.payment_id = p.id LEFT JOIN concepts c ON c.id = d.concept_id
+           ${clause} ORDER BY p.paid_at DESC, p.id LIMIT ? OFFSET ?`,
+        ).all(...args, limit, offset);
+        const t = db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(p.amount_cents), 0) AS cents FROM payments p LEFT JOIN houses h ON h.id = p.house_id ${clause}`).get(...args);
+        return {
+          total: Number(t.n),
+          totalCents: Number(t.cents),
+          rows: rows.map((r) => ({ ...paymentRow(r), houseCode: r.house_code, residentName: r.resident_name, duePeriod: r.due_period, conceptName: r.concept_name })),
+        };
+      },
+      /**
+       * Undoes an assignment: the due goes back to pending. A bank payment returns to "por asignar" (and the name
+       * learned for that house is forgotten); a cash payment, which only exists in Cuotia, is deleted.
+       */
+      revert(paymentId) {
+        return tx(() => {
+          const p = payments.get(paymentId);
+          if (!p) throw new Error("Ese pago no existe en este conjunto");
+          if (p.status !== "assigned") throw new Error("Ese pago no está asignado");
+          db.prepare("UPDATE dues SET status = 'pending', payment_id = NULL, paid_at = NULL WHERE tenant_id = ? AND payment_id = ?").run(tenantId, paymentId);
+          if (p.method === "cash") {
+            db.prepare("DELETE FROM payments WHERE id = ? AND tenant_id = ?").run(paymentId, tenantId);
+            return { deleted: true };
+          }
+          db.prepare("DELETE FROM aliases WHERE tenant_id = ? AND house_id = ? AND name_norm = ?").run(tenantId, p.houseId, p.payerNorm);
+          db.prepare("UPDATE payments SET house_id = NULL, status = 'unassigned' WHERE id = ? AND tenant_id = ?").run(paymentId, tenantId);
+          return { deleted: false };
+        });
+      },
       listUnassigned: () => db.prepare("SELECT * FROM payments WHERE tenant_id = ? AND status = 'unassigned' ORDER BY paid_at DESC").all(tenantId).map(paymentRow),
       /** Gives an unassigned payment to a house, settles its oldest open due of that amount, and (optionally) remembers the payer's name. */
       assign(paymentId, houseId, { rememberAlias = true } = {}) {
@@ -367,7 +453,10 @@ export function openStore(path = ":memory:") {
     }
 
     function summary(period) {
-      const rows = db.prepare("SELECT status, COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents FROM dues WHERE tenant_id = ? AND period = ? GROUP BY status").all(tenantId, period);
+      const rows = db.prepare(
+        `SELECT d.status, COUNT(*) AS n, COALESCE(SUM(d.amount_cents), 0) AS cents FROM dues d JOIN houses h ON h.id = d.house_id
+         WHERE d.tenant_id = ? AND d.period = ? AND (h.active = 1 OR d.status = 'paid') GROUP BY d.status`,
+      ).all(tenantId, period);
       const pick = (s) => rows.find((r) => r.status === s) ?? { n: 0, cents: 0 };
       const un = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS cents FROM payments WHERE tenant_id = ? AND status = 'unassigned'").get(tenantId);
       return {

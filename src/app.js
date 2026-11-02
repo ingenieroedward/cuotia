@@ -7,13 +7,14 @@ import {
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
-import { currentPeriod } from "./text.js";
-import { ajustesPage, casasPage, flashOf, linkPage, loginPage, notFoundPage, panelPage, residentPage, twoFaPage } from "./views.js";
+import { bankLabel, bogotaDateTime, csvCell, currentPeriod, periodLabel } from "./text.js";
+import { ajustesPage, casaPage, casasPage, flashOf, pagosPage, linkPage, loginPage, notFoundPage, panelPage, residentPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
 const STATIC = { "/static/app.css": ["app.css", "text/css; charset=utf-8"] };
 const COOKIE = "cuotia_sid";
+const PAGE_SIZE = 50;
 const FULL_TTL_S = 12 * 3600;
 const PENDING_TTL_MS = 10 * 60_000; // password accepted, waiting for the code
 const SETUP_TTL_MS = 30 * 60_000; // time to install an authenticator app
@@ -196,7 +197,30 @@ export function createApp({ config, store }) {
       }));
     }
     if (method === "GET" && path === "/panel/casas") {
-      return send(res, 200, casasPage({ ...base, flash: flashOf(url.searchParams), houses: ledger.houses.list() }));
+      return send(res, 200, casasPage({ ...base, flash: flashOf(url.searchParams), houses: ledger.houses.list(), inactive: ledger.houses.listInactive() }));
+    }
+
+    const casa = method === "GET" && path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)$/);
+    if (casa) {
+      const house = ledger.houses.get(casa[1]);
+      if (!house) return send(res, 404, notFoundPage());
+      return send(res, 200, casaPage({
+        ...base, flash: flashOf(url.searchParams), house,
+        aliases: ledger.aliases.list(house.id),
+        dues: ledger.dues.listForHouse(house.id),
+        payments: ledger.payments.list({ houseId: house.id, limit: 20 }).rows,
+      }));
+    }
+
+    if (method === "GET" && (path === "/panel/pagos" || path === "/panel/pagos.csv")) {
+      const f = historyFilters(url.searchParams);
+      if (path === "/panel/pagos.csv") return sendCsv(res, ledger, f);
+      const result = ledger.payments.list({ ...f, limit: PAGE_SIZE, offset: (f.p - 1) * PAGE_SIZE });
+      return send(res, 200, pagosPage({
+        ...base, flash: flashOf(url.searchParams), result, period,
+        filters: { mes: f.period ?? "", estado: f.status ?? "", q: f.q, p: f.p },
+        page: f.p, pages: Math.max(1, Math.ceil(result.total / PAGE_SIZE)),
+      }));
     }
 
     if (method === "GET" && path === "/panel/ajustes") {
@@ -233,13 +257,11 @@ export function createApp({ config, store }) {
       }
 
       if (path === "/panel/casas") {
-        const code = String(form.get("code") ?? "").trim();
-        const name = String(form.get("residente") ?? "").trim();
-        if (!code || !name) return redirect(res, "/panel/casas?m=err");
-        const phone = String(form.get("telefono") ?? "").replace(/\D/g, "") || null;
+        const data = houseForm(form);
+        if (!data) return redirect(res, "/panel/casas?m=err");
         let created;
         try {
-          created = ledger.houses.create({ code, residentName: name, phone });
+          created = ledger.houses.create(data);
         } catch (e) {
           if (/UNIQUE/.test(e.message)) return redirect(res, "/panel/casas?m=dup");
           throw e;
@@ -250,8 +272,43 @@ export function createApp({ config, store }) {
       const link = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/enlace$/);
       if (link) {
         const house = ledger.houses.get(link[1]);
-        if (!house) return redirect(res, "/panel/casas?m=err");
+        if (!house?.active) return redirect(res, "/panel/casas?m=err");
         return showLink(res, base, house, ledger.houses.rotateToken(house.id));
+      }
+
+      const act = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/(editar|alias|desactivar|reactivar)$/);
+      if (act) {
+        const [, houseId, action] = act;
+        const own = `/panel/casas/${houseId}`;
+        if (action === "editar") {
+          const data = houseForm(form);
+          if (!data) return redirect(res, `${own}?m=err`);
+          try {
+            ledger.houses.update(houseId, data);
+          } catch (e) {
+            if (/UNIQUE/.test(e.message)) return redirect(res, `${own}?m=dup`);
+            throw e;
+          }
+          return redirect(res, `${own}?m=ed`);
+        }
+        if (action === "alias") {
+          const name = String(form.get("name") ?? "").trim().slice(0, 80);
+          return redirect(res, `${own}?m=${name && ledger.aliases.add(houseId, name) ? "aliasok" : "err"}`);
+        }
+        ledger.houses.setActive(houseId, action === "reactivar");
+        return redirect(res, action === "reactivar" ? `${own}?m=react` : "/panel/casas?m=desact");
+      }
+
+      const unalias = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/alias\/(al_[a-f0-9]+)\/quitar$/);
+      if (unalias) {
+        const removed = ledger.aliases.remove(unalias[1], unalias[2]);
+        return redirect(res, `/panel/casas/${unalias[1]}?m=${removed ? "aliasdel" : "err"}`);
+      }
+
+      const undo = path.match(/^\/panel\/pagos\/(pg_[a-f0-9]+)\/deshacer$/);
+      if (undo) {
+        const { deleted } = ledger.payments.revert(undo[1]);
+        return redirect(res, `/panel/pagos?m=${deleted ? "undoc" : "undo"}`);
       }
     } catch (e) {
       // Known, user-correctable failures (wrong id, already assigned…) come as Error; anything else is a bug.
@@ -259,6 +316,42 @@ export function createApp({ config, store }) {
       return redirect(res, "/panel?m=err");
     }
     return send(res, 404, notFoundPage());
+  }
+
+  /** Validated house fields from a form, or null. */
+  function houseForm(form) {
+    const code = String(form.get("code") ?? "").trim().slice(0, 12);
+    const residentName = String(form.get("residente") ?? "").trim().slice(0, 80);
+    if (!code || !residentName) return null;
+    return { code, residentName, phone: String(form.get("telefono") ?? "").replace(/\D/g, "").slice(0, 20) || null };
+  }
+
+  /** Query → filters for the history list. Anything unexpected is simply ignored. */
+  function historyFilters(params) {
+    const mes = params.get("mes");
+    const estado = params.get("estado");
+    const p = Number.parseInt(params.get("p") ?? "1", 10);
+    return {
+      period: /^\d{4}-(0[1-9]|1[0-2])$/.test(mes ?? "") ? mes : null,
+      status: estado === "assigned" || estado === "unassigned" ? estado : null,
+      q: String(params.get("q") ?? "").trim().slice(0, 60),
+      p: Number.isSafeInteger(p) && p > 0 ? p : 1,
+    };
+  }
+
+  /** A spreadsheet of the filtered payments: `;` separated with a BOM, which is what Excel in Spanish opens correctly. */
+  function sendCsv(res, ledger, f) {
+    const { rows } = ledger.payments.list({ period: f.period, status: f.status, q: f.q, limit: 20000, offset: 0 });
+    const head = ["Fecha", "Pagador", "Banco o medio", "Casa", "Residente", "Cuota", "Monto (COP)", "Estado"];
+    const lines = rows.map((p) => [
+      bogotaDateTime(p.paidAt), p.payerName, p.method === "cash" ? "Efectivo" : bankLabel(p.bank), p.houseCode ?? "", p.residentName ?? "",
+      p.duePeriod ? `${p.conceptName} ${periodLabel(p.duePeriod)}` : "", Math.round(p.amountCents / 100), p.status === "assigned" ? "Asignado" : "Por asignar",
+    ].map(csvCell).join(";"));
+    const body = `\uFEFF${[head.map(csvCell).join(";"), ...lines].join("\r\n")}\r\n`;
+    return send(res, 200, body, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="pagos-${f.period ?? "todos"}.csv"`,
+    });
   }
 
   function showLink(res, base, house, token) {

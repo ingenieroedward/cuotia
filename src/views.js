@@ -1,5 +1,5 @@
 import { html, raw } from "./http.js";
-import { bankLabel, peso, periodLabel, shortDate } from "./text.js";
+import { bankLabel, lastPeriods, peso, periodLabel, shortDate, shortDateTime } from "./text.js";
 
 const BRAND_MARK = html`<span class="brand"><span class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>cuotia</span>`;
 
@@ -24,6 +24,13 @@ const FLASH = {
   asigsin: () => ({ kind: "info", text: "Pago asignado, pero esa casa no tenía una cuota abierta por ese monto." }),
   efec: () => ({ kind: "ok", text: "Pago en efectivo registrado." }),
   dup: () => ({ kind: "err", text: "Ya existe una casa con ese código." }),
+  ed: () => ({ kind: "ok", text: "Datos de la casa guardados." }),
+  aliasok: () => ({ kind: "ok", text: "Nombre agregado: los pagos con ese nombre se asignarán a esta casa." }),
+  aliasdel: () => ({ kind: "ok", text: "Nombre quitado." }),
+  desact: () => ({ kind: "ok", text: "Casa desactivada. Su historial se conserva." }),
+  react: () => ({ kind: "ok", text: "Casa reactivada." }),
+  undo: () => ({ kind: "ok", text: "Asignación deshecha: el pago volvió a “Por asignar” y la cuota a pendiente." }),
+  undoc: () => ({ kind: "ok", text: "Pago en efectivo anulado: la cuota volvió a pendiente." }),
   sec: () => ({ kind: "ok", text: "Secreto de pagoradar guardado. Envía un evento de prueba desde pagoradar para confirmar la conexión." }),
   secbad: () => ({ kind: "err", text: "El secreto debe tener entre 8 y 200 caracteres y no puede llevar espacios." }),
   err: () => ({ kind: "err", text: "No se pudo completar la acción. Revisa los datos e inténtalo de nuevo." }),
@@ -82,6 +89,7 @@ function topbar({ user, csrf, active }) {
   <nav class="tabs" aria-label="Principal">
     <a href="/panel"${active === "resumen" ? raw(' aria-current="page"') : ""}>Resumen</a>
     <a href="/panel/casas"${active === "casas" ? raw(' aria-current="page"') : ""}>Casas</a>
+    <a href="/panel/pagos"${active === "pagos" ? raw(' aria-current="page"') : ""}>Pagos</a>
     <a href="/panel/ajustes"${active === "ajustes" ? raw(' aria-current="page"') : ""}>Ajustes</a>
   </nav>
   <div class="topbar-end">
@@ -164,7 +172,7 @@ ${topbar({ user, csrf, active: "resumen" })}
 </main>`);
 }
 
-export function casasPage({ tenant, user, csrf, flash, houses }) {
+export function casasPage({ tenant, user, csrf, flash, houses, inactive = [] }) {
   return layout("Casas", html`
 ${topbar({ user, csrf, active: "casas" })}
 <main class="page">
@@ -188,9 +196,26 @@ ${topbar({ user, csrf, active: "casas" })}
       ? html`<p class="muted">Aún no hay casas.</p>`
       : html`<ul class="list">${houses.map((h) => html`<li>
         <span><b>Casa ${h.code}</b><small class="muted">${h.residentName}${h.phone ? ` · ${h.phone}` : ""}</small></span>
-        <form method="post" action="/panel/casas/${h.id}/enlace">${csrfField(csrf)}<button class="btn ghost small" type="submit">Enlace personal</button></form>
+        <span class="actions">
+          <a class="btn ghost small" href="/panel/casas/${h.id}">Editar</a>
+          <form method="post" action="/panel/casas/${h.id}/enlace">${csrfField(csrf)}<button class="btn ghost small" type="submit">Enlace</button></form>
+        </span>
       </li>`)}</ul>`}
   </section>
+
+  ${inactive.length
+    ? html`<section class="card">
+        <h2>Casas desactivadas</h2>
+        <p class="muted small">Ya no reciben cuotas ni tienen enlace, pero su historial se conserva.</p>
+        <ul class="list">${inactive.map((h) => html`<li>
+          <span><b>Casa ${h.code}</b><small class="muted">${h.residentName}</small></span>
+          <span class="actions">
+            <a class="btn ghost small" href="/panel/casas/${h.id}">Ver</a>
+            <form method="post" action="/panel/casas/${h.id}/reactivar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Reactivar</button></form>
+          </span>
+        </li>`)}</ul>
+      </section>`
+    : ""}
 </main>`);
 }
 
@@ -224,6 +249,152 @@ ${topbar({ user, csrf, active: "ajustes" })}
     <h2>Cuenta para cobrar</h2>
     <p class="small">Llave Bre-B: <b>${tenant.payKey ?? "sin configurar"}</b>${tenant.payHolder ? html` · Titular: <b>${tenant.payHolder}</b>` : ""}</p>
     <p class="muted small">Es la que ven los residentes en su enlace personal.</p>
+  </section>
+</main>`);
+}
+
+
+const payMethod = (p) => (p.method === "cash" ? "Efectivo" : bankLabel(p.bank));
+const PAY_STATUS = {
+  assigned: html`<span class="pill ok"><i></i>Asignado</span>`,
+  unassigned: html`<span class="pill info"><i></i>Por asignar</span>`,
+};
+
+/** The undo control: a <details> so a stray tap never undoes anything and no script is needed. */
+const undoControl = (p, csrf) => html`<details class="undo">
+  <summary>Deshacer</summary>
+  <p class="muted small">${p.method === "cash"
+    ? "Se anula este pago en efectivo y la cuota vuelve a pendiente."
+    : "El pago vuelve a “Por asignar”, la cuota queda pendiente y Cuotia olvida el nombre que aprendió para esta casa."}</p>
+  <form method="post" action="/panel/pagos/${p.id}/deshacer">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, deshacer</button></form>
+</details>`;
+
+export function pagoItem(p, csrf) {
+  return html`<li class="pay">
+    <div class="row">
+      <span>
+        <b>${p.payerName || "Sin nombre"}</b>
+        <small class="muted">${shortDateTime(p.paidAt)}${p.method === "cash" ? "" : ` · ${payMethod(p)}`}${p.houseCode ? ` · Casa ${p.houseCode}` : ""}${p.duePeriod ? ` · ${p.conceptName} ${periodLabel(p.duePeriod)}` : ""}</small>
+      </span>
+      <span class="amount"><b>${peso(p.amountCents)}</b>${PAY_STATUS[p.status]}</span>
+    </div>
+    ${p.status === "assigned" ? undoControl(p, csrf) : html`<a class="small" href="/panel#por-asignar">Asignar a una casa →</a>`}
+  </li>`;
+}
+
+export function pagosPage({ tenant, user, csrf, flash, result, filters, page, pages, period }) {
+  const link = (extra = {}) => {
+    const qs = new URLSearchParams();
+    const all = { ...filters, ...extra };
+    for (const [k, v] of Object.entries(all)) if (v !== undefined && v !== null && v !== "" && !(k === "p" && Number(v) <= 1)) qs.set(k, String(v));
+    const text = qs.toString();
+    return text ? `?${text}` : "";
+  };
+  return layout("Pagos", html`
+${topbar({ user, csrf, active: "pagos" })}
+<main class="page">
+  <div class="heading"><h1>Pagos</h1><span class="muted">${tenant.name}</span></div>
+  ${flashBox(flash)}
+
+  <section class="card">
+    <form class="filters" method="get" action="/panel/pagos">
+      <label>Mes
+        <select name="mes">
+          <option value="">Todos los meses</option>
+          ${lastPeriods(period, 12).map((m) => html`<option value="${m}"${filters.mes === m ? raw(" selected") : ""}>${periodLabel(m)}</option>`)}
+        </select>
+      </label>
+      <label>Estado
+        <select name="estado">
+          <option value="">Todos</option>
+          <option value="assigned"${filters.estado === "assigned" ? raw(" selected") : ""}>Asignados</option>
+          <option value="unassigned"${filters.estado === "unassigned" ? raw(" selected") : ""}>Por asignar</option>
+        </select>
+      </label>
+      <label>Buscar<input type="text" name="q" value="${filters.q ?? ""}" maxlength="60" placeholder="Nombre, casa o residente"></label>
+      <button class="btn" type="submit">Filtrar</button>
+    </form>
+    <div class="row wrap">
+      <span class="muted small"><b>${result.total}</b> pago${result.total === 1 ? "" : "s"} · <b>${peso(result.totalCents)}</b></span>
+      <a class="btn ghost small" href="/panel/pagos.csv${link({ p: undefined })}">Descargar para Excel (CSV)</a>
+    </div>
+  </section>
+
+  <section class="card">
+    ${result.rows.length === 0
+      ? html`<p class="muted">No hay pagos con estos filtros.</p>`
+      : html`<ul class="list stack">${result.rows.map((p) => pagoItem(p, csrf))}</ul>`}
+    ${pages > 1
+      ? html`<nav class="pager" aria-label="Páginas">
+          ${page > 1 ? html`<a class="btn ghost small" href="/panel/pagos${link({ p: page - 1 })}">← Anterior</a>` : html`<span></span>`}
+          <span class="muted small">Página ${page} de ${pages}</span>
+          ${page < pages ? html`<a class="btn ghost small" href="/panel/pagos${link({ p: page + 1 })}">Siguiente →</a>` : html`<span></span>`}
+        </nav>`
+      : ""}
+  </section>
+</main>`);
+}
+
+export function casaPage({ tenant, user, csrf, flash, house, aliases, dues, payments }) {
+  return layout(`Casa ${house.code}`, html`
+${topbar({ user, csrf, active: "casas" })}
+<main class="page">
+  <div class="heading">
+    <h1>Casa ${house.code}</h1>
+    <span class="muted">${tenant.name}${house.active ? "" : " · desactivada"}</span>
+  </div>
+  <p><a href="/panel/casas">← Volver a casas</a></p>
+  ${flashBox(flash)}
+
+  <section class="card">
+    <h2>Datos</h2>
+    <form class="grid-form" method="post" action="/panel/casas/${house.id}/editar">
+      ${csrfField(csrf)}
+      <label>Código<input type="text" name="code" maxlength="12" required value="${house.code}"></label>
+      <label>Residente<input type="text" name="residente" maxlength="80" required value="${house.residentName}"></label>
+      <label>Celular (opcional)<input type="tel" name="telefono" maxlength="20" inputmode="tel" value="${house.phone ?? ""}"></label>
+      <button class="btn" type="submit">Guardar cambios</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Nombres con los que paga</h2>
+    <p class="muted small">Cuando llega un pago con alguno de estos nombres, Cuotia lo asigna a esta casa. Se agregan solos al asignar un pago a mano; aquí puedes agregar o quitar.</p>
+    ${aliases.length
+      ? html`<ul class="list">${aliases.map((a) => html`<li><b>${a.name}</b>
+          <form method="post" action="/panel/casas/${house.id}/alias/${a.id}/quitar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Quitar</button></form></li>`)}</ul>`
+      : html`<p class="muted small">Aún ninguno: se usa el nombre del residente.</p>`}
+    <form class="assign" method="post" action="/panel/casas/${house.id}/alias">
+      ${csrfField(csrf)}
+      <input type="text" name="name" maxlength="80" required placeholder="Nombre de quien paga" aria-label="Nombre con el que paga">
+      <button class="btn small" type="submit">Agregar nombre</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Cuotas</h2>
+    ${dues.length
+      ? html`<ul class="list">${dues.map((d) => html`<li><span><b>${d.conceptName}</b><small class="muted">${periodLabel(d.period)}${d.paidAt ? ` · pagada ${shortDate(d.paidAt)}` : ""}</small></span><span class="amount"><b>${peso(d.amountCents)}</b>${STATUS[d.status]}</span></li>`)}</ul>`
+      : html`<p class="muted small">Todavía no tiene cuotas.</p>`}
+  </section>
+
+  <section class="card">
+    <div class="row wrap"><h2>Pagos</h2><a class="small" href="/panel/pagos?q=${encodeURIComponent(house.code)}">Ver en el historial</a></div>
+    ${payments.length
+      ? html`<ul class="list stack">${payments.map((p) => pagoItem(p, csrf))}</ul>`
+      : html`<p class="muted small">Aún no hay pagos asignados a esta casa.</p>`}
+  </section>
+
+  <section class="card">
+    <h2>Acciones</h2>
+    ${house.active
+      ? html`<form method="post" action="/panel/casas/${house.id}/enlace">${csrfField(csrf)}<button class="btn ghost" type="submit">Generar enlace personal nuevo</button></form>
+        <details class="undo">
+          <summary>Desactivar casa</summary>
+          <p class="muted small">Deja de recibir cuotas nuevas y su enlace personal deja de servir. Las cuotas que debía sin pagar ya no cuentan como pendientes. Todo su historial se conserva y la puedes reactivar.</p>
+          <form method="post" action="/panel/casas/${house.id}/desactivar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, desactivar</button></form>
+        </details>`
+      : html`<form method="post" action="/panel/casas/${house.id}/reactivar">${csrfField(csrf)}<button class="btn" type="submit">Reactivar casa</button></form>`}
   </section>
 </main>`);
 }

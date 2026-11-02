@@ -77,3 +77,17 @@ test("token anti-CSRF atado a la sesión", () => {
   assert.equal(csrfValid("sesion-1", ""), false);
   assert.equal(csrfValid(undefined, "x"), false);
 });
+
+import { bogotaDateTime, csvCell, lastPeriods, periodRange } from "../src/text.js";
+
+test("ayudas de fechas y CSV", () => {
+  assert.deepEqual(periodRange("2026-11"), ["2026-11-01T05:00:00.000Z", "2026-12-01T05:00:00.000Z"]);
+  assert.equal(bogotaDateTime("2026-11-03T15:22:53Z"), "2026-11-03 10:22");
+  assert.equal(bogotaDateTime("2026-12-01T03:00:00Z"), "2026-11-30 22:00");
+  assert.deepEqual(lastPeriods("2026-02", 4), ["2026-02", "2026-01", "2025-12", "2025-11"]);
+  assert.equal(csvCell('Ana "la" Pérez'), '"Ana ""la"" Pérez"');
+  assert.equal(csvCell("=HYPERLINK(\"http://malo\")"), "\"'=HYPERLINK(\"\"http://malo\"\")\"", "una fórmula no se ejecuta en Excel");
+  for (const bad of ["+1", "-1", "@x", "\tx"]) assert.ok(csvCell(bad).startsWith(`"'`), bad);
+  assert.equal(csvCell(null), '""');
+  assert.equal(csvCell(30000), '"30000"');
+});

@@ -322,3 +322,126 @@ test("el CSS se sirve y no hay rutas fuera de la lista", () => withServer(async 
   assert.match(css.headers.get("content-type"), /text\/css/);
   assert.equal((await fetch(`${s.base}/static/../src/store.js`)).status, 404);
 }));
+
+test("ficha de la casa: editar datos, nombres de pago, desactivar y reactivar", () => withServer(async (s) => {
+  const period = currentPeriod();
+  s.A.dues.generate(period);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const own = `/panel/casas/${s.a14.house.id}`;
+  const csrf = await csrfOf(s.base, cookie, own);
+  assert.ok(csrf);
+  const page = await (await fetch(`${s.base}${own}`, { headers: { cookie } })).text();
+  assert.match(page, /Sandra Duque Arias/);
+
+  // Edit: needs the token, validates, and refuses a code already used by another house.
+  assert.equal((await form(`${s.base}${own}/editar`, { code: "14", residente: "X" }, cookie)).status, 403);
+  assert.match((await form(`${s.base}${own}/editar`, { _csrf: csrf, code: "", residente: "X" }, cookie)).headers.get("location"), /m=err/);
+  assert.match((await form(`${s.base}${own}/editar`, { _csrf: csrf, code: "03", residente: "Sandra" }, cookie)).headers.get("location"), /m=dup/);
+  assert.match((await form(`${s.base}${own}/editar`, { _csrf: csrf, code: "14A", residente: "Sandra Duque Restrepo", telefono: "(300) 111-2233" }, cookie)).headers.get("location"), /m=ed/);
+  const edited = s.A.houses.get(s.a14.house.id);
+  assert.deepEqual([edited.code, edited.residentName, edited.phone], ["14A", "Sandra Duque Restrepo", "3001112233"]);
+
+  // Aliases.
+  assert.match((await form(`${s.base}${own}/alias`, { _csrf: csrf, name: "Pedro Duque" }, cookie)).headers.get("location"), /m=aliasok/);
+  assert.equal(s.A.aliases.houseFor("PEDRO DUQUE"), s.a14.house.id);
+  const aliasId = s.A.aliases.list(s.a14.house.id)[0].id;
+  assert.match((await form(`${s.base}${own}/alias/${aliasId}/quitar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=aliasdel/);
+  assert.equal(s.A.aliases.houseFor("PEDRO DUQUE"), null);
+
+  // Deactivate: gone from the month, its link closes; reactivate brings it back.
+  assert.match((await form(`${s.base}${own}/desactivar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=desact/);
+  assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}`)).status, 404);
+  const panel = await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text();
+  assert.doesNotMatch(panel, /Sandra Duque Restrepo/);
+  const casas = await (await fetch(`${s.base}/panel/casas`, { headers: { cookie } })).text();
+  assert.match(casas, /Casas desactivadas/);
+  assert.equal((await form(`${s.base}${own}/enlace`, { _csrf: csrf }, cookie)).headers.get("location"), "/panel/casas?m=err", "no hay enlace para una casa desactivada");
+  assert.match((await form(`${s.base}${own}/reactivar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=react/);
+  assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}`)).status, 200);
+}));
+
+test("un tesorero no puede ver ni tocar las casas, nombres o pagos de otro conjunto", () => withServer(async (s) => {
+  s.B.dues.generate(currentPeriod());
+  s.B.aliases.add(s.b01.house.id, "Nombre Ajeno");
+  const bAlias = s.B.aliases.list(s.b01.house.id)[0].id;
+  const { payment } = s.B.payments.record({ externalId: "pay_b", payerName: "Carlos Mejía", payerNorm: "CARLOS MEJIA", amountCents: 3_000_000, paidAt: new Date().toISOString() });
+  s.B.payments.assign(payment.id, s.b01.house.id);
+
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie);
+  const other = `/panel/casas/${s.b01.house.id}`;
+
+  assert.equal((await fetch(`${s.base}${other}`, { headers: { cookie } })).status, 404, "ni ver la ficha");
+  for (const [path, body] of [
+    [`${other}/editar`, { code: "99", residente: "Hackeado" }],
+    [`${other}/alias`, { name: "Intruso" }],
+    [`${other}/alias/${bAlias}/quitar`, {}],
+    [`${other}/desactivar`, {}],
+    [`/panel/pagos/${payment.id}/deshacer`, {}],
+  ]) {
+    const res = await form(`${s.base}${path}`, { _csrf: csrf, ...body }, cookie);
+    assert.match(res.headers.get("location"), /m=err/, path);
+  }
+  assert.equal(s.B.houses.get(s.b01.house.id).residentName, "Carlos Mejía");
+  assert.equal(s.B.houses.get(s.b01.house.id).active, true);
+  assert.deepEqual(s.B.aliases.list(s.b01.house.id).map((a) => a.name).sort(), ["CARLOS MEJIA", "NOMBRE AJENO"]);
+  assert.equal(s.B.payments.get(payment.id).status, "assigned");
+
+  const history = await (await fetch(`${s.base}/panel/pagos`, { headers: { cookie } })).text();
+  assert.doesNotMatch(history, /Carlos Mejía/, "el historial no muestra pagos del otro conjunto");
+  const csv = await (await fetch(`${s.base}/panel/pagos.csv`, { headers: { cookie } })).text();
+  assert.doesNotMatch(csv, /Carlos/);
+}));
+
+test("historial: filtros, página y deshacer desde el panel", () => withServer(async (s) => {
+  const period = currentPeriod();
+  s.A.dues.generate(period);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  for (let i = 0; i < 55; i++) {
+    s.A.payments.record({ externalId: `pay_${i}`, payerName: `Vecino ${String(i).padStart(2, "0")}`, payerNorm: `VECINO ${String(i).padStart(2, "0")}`, amountCents: 3_000_000, bank: "nequi", paidAt: new Date(Date.now() - i * 60_000).toISOString() });
+  }
+  const pageOne = await (await fetch(`${s.base}/panel/pagos`, { headers: { cookie } })).text();
+  assert.match(pageOne, /<b>55<\/b> pagos/);
+  assert.match(pageOne, /Vecino 00/);
+  assert.doesNotMatch(pageOne, /Vecino 54/, "la página 1 trae 50");
+  assert.match(pageOne, /Página 1 de 2/);
+  const pageTwo = await (await fetch(`${s.base}/panel/pagos?p=2`, { headers: { cookie } })).text();
+  assert.match(pageTwo, /Vecino 54/);
+  assert.match(await (await fetch(`${s.base}/panel/pagos?estado=assigned`, { headers: { cookie } })).text(), /No hay pagos con estos filtros/);
+  assert.match(await (await fetch(`${s.base}/panel/pagos?q=vecino%2012&mes=basura&p=-3`, { headers: { cookie } })).text(), /Vecino 12/, "parámetros raros se ignoran");
+
+  // Undo from the panel: assign one, then undo it.
+  const csrf = await csrfOf(s.base, cookie, "/panel/pagos");
+  const pid = s.A.payments.list({ q: "Vecino 00" }).rows[0].id;
+  s.A.payments.assign(pid, s.a14.house.id);
+  assert.match(await (await fetch(`${s.base}/panel/pagos?estado=assigned`, { headers: { cookie } })).text(), /Sí, deshacer/);
+  assert.equal(s.A.summary(period).paidCount, 1);
+  assert.equal((await form(`${s.base}/panel/pagos/${pid}/deshacer`, {}, cookie)).status, 403, "sin token no deshace");
+  assert.match((await form(`${s.base}/panel/pagos/${pid}/deshacer`, { _csrf: csrf }, cookie)).headers.get("location"), /m=undo$/);
+  assert.equal(s.A.summary(period).paidCount, 0);
+  assert.equal(s.A.payments.get(pid).status, "unassigned");
+  const cash = s.A.payments.recordCash(s.a03.house.id);
+  assert.match((await form(`${s.base}/panel/pagos/${cash.paymentId}/deshacer`, { _csrf: csrf }, cookie)).headers.get("location"), /m=undoc/);
+}));
+
+test("CSV: descarga para Excel, con cabeceras correctas y sin fórmulas peligrosas", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  s.A.payments.record({ externalId: "e1", payerName: '=HYPERLINK("http://malo","clic")', payerNorm: "X", amountCents: 3_000_000, bank: "nequi", paidAt: "2026-11-03T15:22:53.000Z" });
+  const { payment } = s.A.payments.record({ externalId: "e2", payerName: "Sandra; Duque", payerNorm: "SANDRA DUQUE", amountCents: 3_000_000, bank: "bancolombia", paidAt: "2026-11-04T15:00:00.000Z" });
+  s.A.payments.assign(payment.id, s.a14.house.id);
+
+  const res = await fetch(`${s.base}/panel/pagos.csv?mes=2026-11`, { headers: { cookie } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type"), /text\/csv; charset=utf-8/);
+  assert.match(res.headers.get("content-disposition"), /attachment; filename="pagos-2026-11\.csv"/);
+  const bytes = Buffer.from(await res.arrayBuffer());
+  assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], "empieza con BOM UTF-8 (fetch().text() lo descartaría)");
+  const text = bytes.toString("utf8").slice(1);
+  assert.ok(text.startsWith('"Fecha";"Pagador"'), "separador ;");
+  assert.match(text, /"2026-11-03 10:22"/, "hora de Colombia");
+  assert.match(text, /"'=HYPERLINK/, "una fórmula queda como texto");
+  assert.doesNotMatch(text, /;"=HYPERLINK/);
+  assert.match(text, /"Sandra; Duque";"Bancolombia";"14";"Sandra Duque Arias";"Vigilancia noviembre 2026";"30000";"Asignado"/);
+  assert.equal((await fetch(`${s.base}/panel/pagos.csv`, { redirect: "manual" })).status, 303, "exige sesión");
+}));

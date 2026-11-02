@@ -42,10 +42,16 @@ pagoradar ──signed webhook──▶ POST /webhooks/pagoradar/<tenantId> ─�
 - Tests: `node:test` + in-memory store, **made-up data only**. `test/fixtures.js` has `twoConjuntos()` and `paymentEvent()`.
 - Deployment: Docker Compose on Dokploy. Data volume pinned to `cuotia-data`; don't rename it.
 
+## Houses, history and undo
+
+- A house is never deleted: `houses.setActive(false)` keeps all history but closes its personal link, skips it in `dues.generate` and in matching (`aliases.houseFor` and `matchHouse` only see active houses), and its **unpaid** dues stop counting in `summary`/`listByPeriod` (its **paid** ones keep counting).
+- `payments.list({period,status,houseId,q,limit,offset})` is the history (newest first). `period` is a Colombia-time month (`periodRange`, UTC-5). The search escapes `LIKE` wildcards and skips the payer-name clause when the needle normalizes to nothing. The CSV (`/panel/pagos.csv`) is `;`-separated with a UTF-8 BOM (what Spanish Excel opens correctly) and every cell goes through `csvCell`, which neutralizes a leading `= + - @` so a payer's name can't run as a spreadsheet formula. Tests read the BOM from raw bytes because `fetch().text()` strips it.
+- `payments.revert` undoes an assignment: the due returns to pending; a bank payment goes back to "por asignar" and the alias learned for that house is deleted; a cash payment (which exists only here) is deleted. The UI hides it inside `<details>` so a stray tap does nothing and no script is needed.
+- Any new route that takes a house, alias or payment id must go through `forTenant` methods that re-check ownership, and needs a case in the "un tesorero no puede ver ni tocar…" server test.
+
 ## Not built yet (next steps)
 
 - Passkeys; password change and reset (an admin has to reset a lost authenticator today: clear `totp_secret`/`totp_enabled` in the DB).
-- Edit/deactivate houses, rename residents, edit aliases, a payments history page, CSV export.
 - Self-hosted font files (the CSP blocks Google Fonts; falls back to the system font).
-- Operator panel to create conjuntos (CLI only today), invitations for more treasurers, WhatsApp reminders, public transparency page, expenses, administración as a second concept.
-- Cuotia doesn't create pagoradar charges: residents pay the exact amount to the conjunto's Bre-B key and the payer's name does the matching.
+- Operator panel to create conjuntos (CLI only today), invitations for more treasurers, WhatsApp reminders, public transparency page, expenses, administración as a second concept, editing the Bre-B key and holder from Ajustes (CLI only today).
+- Cuotia doesn't create pagoradar charges: residents pay the exact amount to the conjunto's Bre-B key and the payer's name does the matching. A payer reverted from a house can still auto-match it again through a unique match with the resident's name.
