@@ -475,3 +475,5 @@ li.member > span { display: grid; min-width: 0; }
   .debt-main b { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.25; }
   .debt-actions .btn { min-height: 44px; }
 }
+
+.btn.danger { background: var(--bad-fg); color: #fff; border: 0; }

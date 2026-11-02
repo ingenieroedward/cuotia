@@ -153,7 +153,7 @@ Microsoft Authenticator, 1Password…). La primera vez, Cuotia muestra un **cód
 - **Resumen** del mes: recaudado, al día, pendientes.
 - **Por asignar:** elige la casa de cada pago desconocido; Cuotia recuerda el nombre.
 - **Generar cuotas** del mes, **pago en efectivo** y **Casas**: agregar, **editar** (código, residente, celular),
-  agregar o quitar los **nombres con los que paga** cada casa, **desactivar** y reactivar, y el enlace personal por WhatsApp.
+  agregar o quitar los **nombres con los que paga** cada casa, **dar de baja** (y dar de alta otra vez), y el enlace personal por WhatsApp.
 - **Registrar pago** a mano (efectivo, transferencia…), uno o varios meses.
 - **Pagos:** historial con filtros (mes, estado, búsqueda), páginas, **descarga para Excel (CSV)** y **Deshacer**: una
   asignación equivocada vuelve a “Por asignar” (y Cuotia olvida el nombre), un pago en efectivo se anula.
