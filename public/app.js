@@ -165,3 +165,32 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
   medio.addEventListener("change", sync);
   sync();
 })();
+
+// WhatsApp message editor (Ajustes → Mensajes): live preview and "insert variable" buttons. `renderMessage` must stay identical to
+// renderTemplate in src/messages.js (a test runs both on the same cases).
+(() => {
+  const renderMessage = (body, vars) => String(body)
+    .replace(/\{([a-z_]+)\}/g, (match, key) => (key in vars ? String(vars[key]) : match))
+    .split("\n").map((line) => line.replace(/^[ \t]+|[ \t]+$/g, "").replace(/ {2,}/g, " ")).join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  globalThis.cuotia = { ...(globalThis.cuotia ?? {}), renderMessage };
+  for (const area of document.querySelectorAll("textarea[data-msg]")) {
+    let vars = {};
+    try { vars = JSON.parse(area.dataset.vars); } catch { /* the server-rendered preview stays */ }
+    const preview = document.querySelector(area.dataset.preview);
+    const update = () => { if (preview) preview.textContent = renderMessage(area.value, vars); };
+    area.addEventListener("input", update);
+    const form = area.closest("form");
+    for (const chip of form.querySelectorAll("[data-insert]")) {
+      chip.hidden = false; // without JavaScript the variables can still be typed by hand
+      chip.addEventListener("click", () => {
+        const start = area.selectionStart ?? area.value.length;
+        const end = area.selectionEnd ?? start;
+        area.setRangeText(chip.dataset.insert, start, end, "end");
+        area.focus();
+        update();
+      });
+    }
+  }
+})();

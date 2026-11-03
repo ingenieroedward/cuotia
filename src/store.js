@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { MESSAGE_KEYS, validateTemplate } from "./messages.js";
 import { MANUAL_LABELS, PAY_KINDS, namesMatch, normalizeName, periodRange } from "./text.js";
 import { newToken, sha256 } from "./security.js";
 
@@ -281,6 +282,16 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   );
   CREATE INDEX pay_methods_by_tenant ON pay_methods (tenant_id, position);
+  `,
+  /* V18: the WhatsApp messages a conjunto has edited (the original text lives in the code; a row exists only when it was changed). */
+  `
+  CREATE TABLE message_templates (
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    key TEXT NOT NULL,
+    body TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, key)
+  );
   `,
 ];
 
@@ -1077,6 +1088,18 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** The WhatsApp messages this conjunto edited: `all()` is { key: text } for those only; the rest use the original. */
+    const templates = {
+      all: () => Object.fromEntries(db.prepare("SELECT key, body FROM message_templates WHERE tenant_id = ?").all(tenantId).map((r) => [r.key, r.body])),
+      set(key, body) {
+        if (!MESSAGE_KEYS.includes(key)) throw new Error("Ese mensaje no existe");
+        const v = validateTemplate(key, body);
+        if (!v.ok) throw new Error(v.error);
+        db.prepare("INSERT INTO message_templates (tenant_id, key, body, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(tenant_id, key) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at").run(tenantId, key, v.body, nowIso());
+      },
+      reset: (key) => void db.prepare("DELETE FROM message_templates WHERE tenant_id = ? AND key = ?").run(tenantId, key),
+    };
+
     /** What the conjunto spends. A mistake is voided (it stays visible as "anulado"), never erased. */
     const expenses = {
       create({ spentOn, amountCents, category, description, proof = null, userId = null }) {
@@ -1183,7 +1206,7 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, payMethods, expenses, books, reset, resetPreview, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, payMethods, templates, expenses, books, reset, resetPreview, matchHouse, summary };
   }
 
   return { db, tenants, users, invitations, certificates, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };

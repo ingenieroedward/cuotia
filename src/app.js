@@ -16,7 +16,9 @@ import { backupName, backupTo } from "./backup.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
 import { MANUAL_LABELS, payMethodTitle, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
-import { ajustesPage, bitacoraPage, conceptosPage, masPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { MESSAGES, MESSAGE_KEYS, validateTemplate } from "./messages.js";
+import { message } from "./messages.js";
+import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -498,7 +500,11 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const debts = { groups, totals: debtTotals(groups) };
     // What the sidebar and tab bar show on every page.
     const base = {
-      tenant: { ...s.tenant, payMethods: ledger.payMethods.list() }, user: s.user, csrf,
+      // `payMethods`, `templates`, `sender` and `monthlyCents` are what the WhatsApp messages are built from.
+      tenant: {
+        ...s.tenant, payMethods: ledger.payMethods.list(), templates: ledger.templates.all(), sender: s.user.name,
+        monthlyCents: ledger.concepts.list().reduce((n, c) => n + c.amountCents, 0),
+      }, user: s.user, csrf,
       badge: ledger.payments.countUnassigned() + ledger.proofs.countPending(), owing: groups.length, houseCount: houses.length,
       cuota: (() => { const m = ledger.concepts.list(); return m.length === 0 ? "" : m.length === 1 ? `${m[0].name} ${peso(m[0].amountCents)}` : `Cuota mensual ${peso(m.reduce((n, c) => n + c.amountCents, 0))}`; })(),
     };
@@ -632,6 +638,10 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
 
     if (method === "GET" && path === "/panel/reiniciar") {
       return send(res, 200, reiniciarPage({ ...base, flash: flashOf(url.searchParams), preview: ledger.resetPreview(), withBackup: !!config.backupDir }));
+    }
+
+    if (method === "GET" && path === "/panel/mensajes") {
+      return send(res, 200, mensajesPage({ ...base, flash: flashOf(url.searchParams), focus: String(url.searchParams.get("k") ?? ""), origin: config.publicUrl }));
     }
 
     if (method === "GET" && path === "/panel/mas") return send(res, 200, masPage({ ...base }));
@@ -798,6 +808,24 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         return redirect(res, `/panel?m=${config.backupDir ? "reinicio" : "reiniciosc"}`);
       }
 
+      const saveMessage = path.match(/^\/panel\/mensajes\/([a-z_]+)$/);
+      if (saveMessage) {
+        const key = saveMessage[1];
+        if (!MESSAGE_KEYS.includes(key)) return redirect(res, "/panel/mensajes?m=msbad");
+        const checked = validateTemplate(key, String(form.get("texto") ?? ""));
+        // Shown on the page itself (escaped), with what was typed, instead of putting text in the address.
+        if (!checked.ok) return send(res, 400, mensajesPage({ ...base, focus: key, origin: config.publicUrl, error: checked.error, draft: String(form.get("texto") ?? "") }));
+        ledger.templates.set(key, checked.body);
+        audit("ajustes", `Cambió el mensaje de WhatsApp: ${MESSAGES[key].title}`);
+        return redirect(res, `/panel/mensajes?m=msok&k=${key}`);
+      }
+      const resetMessage = path.match(/^\/panel\/mensajes\/([a-z_]+)\/restablecer$/);
+      if (resetMessage && MESSAGE_KEYS.includes(resetMessage[1])) {
+        ledger.templates.reset(resetMessage[1]);
+        audit("ajustes", `Volvió al mensaje original de WhatsApp: ${MESSAGES[resetMessage[1]].title}`);
+        return redirect(res, `/panel/mensajes?m=msreset&k=${resetMessage[1]}`);
+      }
+
       const voidExpense = path.match(/^\/panel\/gastos\/(gt_[a-f0-9]+)\/anular$/);
       if (voidExpense) {
         const e = ledger.expenses.get(voidExpense[1]);
@@ -927,7 +955,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           try {
             const { house, accessToken } = ledger.houses.create({ code: row.code, residentName: row.residentName, phone: row.phone });
             const url = `${config.publicUrl}/r/${accessToken}`;
-            created.push({ house, url, whatsapp: whatsappLink(house, url) });
+            created.push({ house, url, whatsapp: whatsappLink(base.tenant, house, url) });
           } catch (e) {
             if (!/UNIQUE/.test(e.message)) throw e;
             skipped.push({ line: row.line, text: `${row.code} · ${row.residentName}`, reason: `Ya existe la casa ${row.code}` });
@@ -1096,16 +1124,16 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   }
 
   /** A WhatsApp link to this resident with their personal link already written, or null without a usable phone. */
-  function whatsappLink(house, linkUrl) {
+  function whatsappLink(tenant, house, linkUrl) {
     const to = whatsappNumber(house.phone);
     if (!to) return null;
-    const text = `Hola ${house.residentName.split(" ")[0]}, este es tu enlace personal de Cuotia para ver y pagar tu cuota: ${linkUrl}`;
+    const text = message(tenant, "enlace_casa", { nombre: house.residentName.trim().split(/\s+/)[0], casa: house.code, enlace: linkUrl });
     return `https://wa.me/${to}?text=${encodeURIComponent(text)}`;
   }
 
   function showLink(res, base, house, token) {
     const linkUrl = `${config.publicUrl}/r/${token}`;
-    return send(res, 200, linkPage({ ...base, house, url: linkUrl, whatsapp: whatsappLink(house, linkUrl) }));
+    return send(res, 200, linkPage({ ...base, house, url: linkUrl, whatsapp: whatsappLink(base.tenant, house, linkUrl) }));
   }
 
   const app = async function app(req, res) {

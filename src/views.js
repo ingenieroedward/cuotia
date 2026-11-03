@@ -1,6 +1,7 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { MANUAL_LABELS, PAY_KINDS, bankLabel, bogotaDay, longDate, payMethodAccount, paySummary, payMethodTitle, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
+import { MESSAGES, message, renderTemplate } from "./messages.js";
+import { MANUAL_LABELS, PAY_KINDS, bankLabel, bogotaDay, currentPeriod, longDate, payMethodAccount, paySummary, payMethodTitle, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -72,6 +73,9 @@ const FLASH = {
   pmbad: () => ({ kind: "err", text: "Revisa los datos del medio de pago: el celular de Nequi o Daviplata tiene 10 dígitos y empieza por 3; Bancolombia pide el número de cuenta y si es de ahorros o corriente." }),
   pmdup: () => ({ kind: "err", text: "Ya agregaste ese medio de pago." }),
   pmquit: () => ({ kind: "ok", text: "Medio de pago quitado. Los residentes ya no lo ven." }),
+  msok: () => ({ kind: "ok", text: "Mensaje guardado. Desde ahora los botones de WhatsApp lo usan." }),
+  msreset: () => ({ kind: "ok", text: "Volviste al mensaje original." }),
+  msbad: () => ({ kind: "err", text: "Ese mensaje no existe." }),
   anon: () => ({ kind: "ok", text: "Datos personales borrados. El historial de cuotas y pagos quedó sin nombre." }),
   desact: () => ({ kind: "ok", text: "Casa dada de baja. Su historial se conserva y la puedes reactivar cuando quieras." }),
   react: () => ({ kind: "ok", text: "Casa dada de alta otra vez: vuelve a recibir cuotas. Genera su enlace personal nuevo si lo necesita." }),
@@ -351,7 +355,7 @@ const NAV = [
 
 /** Phones get five tabs: the daily ones, and "Más" for what is used less (cuentas, ajustes, bitácora). */
 const TABS = [...NAV.slice(0, 4), { key: "mas", href: "/panel/mas", label: "Más", icon: "mas" }];
-const MORE_KEYS = ["mas", "cuentas", "conceptos", "ajustes", "bitacora"];
+const MORE_KEYS = ["mas", "cuentas", "conceptos", "mensajes", "ajustes", "bitacora"];
 
 const BRAND_ON_DARK = html`<span class="brand on-dark"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span>`;
 
@@ -419,14 +423,16 @@ const payMethod = paymentMedium;
 function reminderLink({ tenant, dues, period }) {
   const owing = dues.filter((d) => d.status === "pending");
   if (owing.length === 0) return null;
-  const text = [
-    `Hola vecinos, les recordamos la cuota de ${periodLabel(period)} (${peso(owing[0].amountCents)}).`,
-    `Casas pendientes: ${owing.map((d) => d.houseCode).join(", ")}.`,
-    paySummary(tenant),
-    "¡Gracias!",
-  ].filter(Boolean).join(" ");
-  return `https://wa.me/?text=${encodeURIComponent(text)}`;
+  return `https://wa.me/?text=${encodeURIComponent(generalReminder(tenant, owing.map((d) => d.houseCode).join(", "), period, tenant.monthlyCents || owing[0].amountCents))}`;
 }
+
+/** "Hasta el 10 de noviembre puedes pagar." when the conjunto set a last day; "" otherwise. */
+const deadlineText = (tenant) => (tenant.dueDay ? `El último día para pagar es el ${tenant.dueDay} de ${monthName(currentPeriod()).toLowerCase()}.` : "");
+
+/** The message to the whole group of neighbours, from the conjunto's own text or the original. */
+const generalReminder = (tenant, casas, period, valorCuota) => message(tenant, "recordatorio_general", {
+  mes: monthName(period).toLowerCase(), valor_cuota: peso(valorCuota), casas, plazo: deadlineText(tenant), como_pagar: paySummary(tenant),
+});
 
 const FILTERS = [
   { key: "", label: "Todas", test: () => true },
@@ -444,14 +450,13 @@ const waLink = (phone, text) => {
 
 /** The personal reminder for one house: its months, its total and how to pay. */
 function personalReminder(tenant, group) {
-  const first = group.house.residentName.trim().split(/\s+/)[0];
   const names = group.months.map((m) => monthName(m).toLowerCase());
   const when = names.length === 1 ? `de ${names[0]}` : `de ${names.slice(0, -1).join(", ")} y ${names.at(-1)}`;
-  return [
-    `Hola ${first}, te recordamos la cuota ${when}: ${peso(group.totalCents)}.`,
-    paySummary(tenant, { asking: true }),
-    "Cuando pagues, avísame para registrarlo. ¡Gracias!",
-  ].filter(Boolean).join(" ");
+  return message(tenant, "recordatorio_casa", {
+    nombre: group.house.residentName.trim().split(/\s+/)[0], casa: group.house.code, meses: when, valor: peso(group.totalCents),
+    detalle: group.dues.map((d) => `• ${monthName(d.period)} · ${d.conceptName}: ${peso(d.amountCents)}`).join("\n"),
+    plazo: deadlineText(tenant), como_pagar: paySummary(tenant, { asking: true }),
+  });
 }
 
 const PILLS = {
@@ -697,7 +702,7 @@ export function cobrosPage(args) {
   ];
   const href = (f) => `/panel/cobros${f || q ? `?${new URLSearchParams({ ...(f ? { f } : {}), ...(q ? { q } : {}) })}` : ""}`;
   const everyone = groups.length
-    ? `https://wa.me/?text=${encodeURIComponent(`Hola vecinos, les recordamos la cuota pendiente. Casas: ${groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; ")}.${paySummary(tenant) ? ` ${paySummary(tenant)}` : ""} ¡Gracias!`)}`
+    ? `https://wa.me/?text=${encodeURIComponent(generalReminder(tenant, groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; "), current, tenant.monthlyCents || groups[0].dues[0].amountCents))}`
     : null;
   return panelLayout("Por cobrar", { ...args, active: "cobros" }, html`
   <header class="head">
@@ -1474,6 +1479,42 @@ export function reiniciarPage(args) {
   </section>`);
 }
 
+/** The editor of the WhatsApp messages: each one with its variables, a live preview and "back to the original". */
+export function mensajesPage(args) {
+  const { tenant, csrf, flash, focus = "", origin = "", error = "", draft = null } = args;
+  const sample = (spec, key) => {
+    const v = Object.fromEntries(Object.entries(spec.vars).map(([name, [example]]) => [name, example ?? ""]));
+    return { ...v, conjunto: tenant.name, tesorero: tenant.sender ?? "Marta", como_pagar: paySummary(tenant, { asking: key === "recordatorio_casa" }) || "Pueden pagar por Nequi 300 123 4567.", plazo: tenant.dueDay ? deadlineText(tenant) : "El último día para pagar es el 10 de noviembre.", enlace: `${origin}/r/…` };
+  };
+  return panelLayout("Mensajes de WhatsApp", { ...args, active: "mensajes" }, html`
+  <div class="heading"><h1>Mensajes de WhatsApp</h1><span class="muted">${tenant.name}</span></div>
+  <p class="muted small">Estos son los textos que Cuotia deja escritos cuando tocas un botón de WhatsApp. Cámbialos a tu estilo: las palabras entre llaves, como <code>{nombre}</code>, se reemplazan por los datos de cada casa. Siempre puedes revisar el mensaje en WhatsApp antes de enviarlo.</p>
+  ${flashBox(flash)}
+  ${Object.entries(MESSAGES).map(([key, spec]) => {
+    const custom = tenant.templates?.[key];
+    const text = key === focus && draft !== null ? draft : custom ?? spec.default;
+    const vars = sample(spec, key);
+    return html`<section class="card message" id="${key}">
+      <div class="row wrap"><h2>${spec.title}</h2>${custom ? html`<span class="pill info"><i></i>Personalizado</span>` : html`<span class="pill ok"><i></i>Original</span>`}</div>
+      <p class="muted small">${spec.when}</p>
+      ${key === focus && error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+      <form class="stack-form" method="post" action="/panel/mensajes/${key}">
+        ${csrfField(csrf)}
+        <label>Mensaje<textarea name="texto" rows="9" maxlength="1200" required data-msg data-vars="${JSON.stringify(vars)}" data-preview="#vista-${key}">${text}</textarea></label>
+        <div class="msg-vars" aria-label="Variables que puedes usar">
+          ${Object.entries(spec.vars).map(([name, [, help]]) => html`<button type="button" class="chip-var" data-insert="{${name}}" data-target-msg hidden title="${help}">{${name}}</button>`)}
+        </div>
+        <details class="undo"><summary>Qué significa cada variable</summary>
+          <ul class="list">${Object.entries(spec.vars).map(([name, [, help]]) => html`<li><span><code>{${name}}</code><small class="muted">${help}${spec.required.includes(name) ? " · obligatoria" : ""}</small></span></li>`)}</ul>
+        </details>
+        <div><span class="eyebrow dim">Así se ve (con datos de ejemplo)</span><pre class="wa-preview" id="vista-${key}">${renderTemplate(text, vars)}</pre></div>
+        <button class="btn" type="submit">Guardar mensaje</button>
+      </form>
+      ${custom ? html`<form method="post" action="/panel/mensajes/${key}/restablecer">${csrfField(csrf)}<button class="btn ghost small" type="submit">Volver al mensaje original</button></form>` : ""}
+    </section>`;
+  })}`);
+}
+
 /** The "Más" tab on a phone: what is not used every day. */
 export function masPage(args) {
   const { tenant } = args;
@@ -1482,6 +1523,7 @@ export function masPage(args) {
   <div class="heading"><h1>Más</h1><span class="muted">${tenant.name}</span></div>
   ${item("/panel/cuentas", "cuentas", "Cuentas claras", "Gastos, saldo en caja y resumen para los vecinos")}
   ${item("/panel/conceptos", "cobrar", "Qué cobras", "Vigilancia, administración, cuotas extraordinarias y multas")}
+  ${item("/panel/mensajes", "cuentas", "Mensajes de WhatsApp", "Cambia lo que dicen los recordatorios y el envío del enlace")}
   ${item("/panel/ajustes", "ajustes", "Ajustes", "Cuenta para cobrar, fechas, equipo y avisos")}
   ${item("/panel/bitacora", "bitacora", "Bitácora", "Quién hizo qué en el panel")}`);
 }
