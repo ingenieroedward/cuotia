@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
+import { destinationsFromEnv } from "./offsite.js";
 
 /** Reads the process configuration. Only what cannot live in the database comes from the environment (each conjunto's pagoradar secret does live there). */
 export function loadConfig(env = process.env) {
@@ -9,7 +10,12 @@ export function loadConfig(env = process.env) {
   const fixed = (env.SETUP_TOKEN ?? "").trim();
   if (fixed && fixed.length < 16) throw new Error("SETUP_TOKEN debe tener al menos 16 caracteres (o déjalo vacío para que se genere uno en cada arranque)");
   const publicUrl = (env.PUBLIC_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+  const { destinations, warnings } = destinationsFromEnv(env);
   return {
+    // Off-server backups (S3-compatible: Cloudflare R2, Backblaze B2…): encrypted copies uploaded every night. See .env.example.
+    backups: destinations,
+    backupWarnings: warnings,
+    backupKeep: Math.max(1, Number.parseInt(env.BACKUP_KEEP ?? "30", 10) || 30),
     port: Number(env.PORT ?? 3000),
     databasePath: env.DATABASE_PATH ?? "./data/cuotia.db",
     // Where the copies made before a destructive action are kept (same folder as `npm run admin -- respaldar`).

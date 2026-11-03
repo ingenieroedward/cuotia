@@ -158,6 +158,8 @@ const OPERADOR_FLASH = {
   clave: { kind: "ok", text: "Contraseña cambiada. En los demás dispositivos tendrás que entrar de nuevo." },
   claveerr: { kind: "err", text: "La contraseña actual no es correcta, o la nueva tiene menos de 10 caracteres o no coincide." },
   invitado: { kind: "ok", text: "Invitación creada." },
+  respaldo: { kind: "ok", text: "Respaldo hecho: la copia cifrada ya está en todos los destinos." },
+  respaldoerr: { kind: "err", text: "El respaldo no se completó en todos los destinos. Mira el detalle abajo, en Respaldos." },
   err: { kind: "err", text: "No se pudo completar. Revisa los datos." },
 };
 
@@ -174,7 +176,7 @@ const operadorShell = (title, { csrf, operator, active }, body) => layout(title,
   <main class="op-page">${body}</main>
 </div>`, { legal: false });
 
-export function operadorPage({ csrf, operator, flash, tenants, totals, error = "", values = {} }) {
+export function operadorPage({ csrf, operator, flash, tenants, totals, error = "", values = {}, backups = { destinations: [], warnings: [], last: null, lastOk: null, tested: null } }) {
   const flashBox = flash ? html`<p class="flash ${flash.kind}" role="status">${flash.text}</p>` : "";
   return operadorShell("Conjuntos", { csrf, operator, active: "conjuntos" }, html`
   <div class="heading"><h1>Conjuntos</h1><span class="muted">${totals.tenants} conjunto${totals.tenants === 1 ? "" : "s"} · ${totals.houses} casa${totals.houses === 1 ? "" : "s"}</span></div>
@@ -200,6 +202,21 @@ export function operadorPage({ csrf, operator, flash, tenants, totals, error = "
           </details>
         </li>`)}</ul>`
       : html`<p class="muted">Todavía no hay conjuntos.</p>`}
+  </section>
+
+  <section class="card" id="respaldos">
+    <h2>Respaldos fuera del servidor</h2>
+    ${backups.destinations.length
+      ? html`<p class="muted small">Cada noche Cuotia copia toda la base, la <b>cifra con tu MASTER_KEY</b> y la sube a: <b>${backups.destinations.join(" y ")}</b>. Quien guarde el archivo no puede leerlo sin esa llave: <b>guárdala</b>, porque sin ella ni tú puedes restaurar.</p>
+        <p class="small">${backups.lastOk ? html`Último respaldo bueno: <b>${shortDateTime(backups.lastOk)}</b>${backups.last?.bytes ? ` · ${(backups.last.bytes / 1048576).toFixed(1)} MB` : ""}` : html`<span class="pill warn"><i></i>Todavía no hay un respaldo bueno</span>`}</p>
+        ${backups.last ? html`<ul class="list">${backups.last.results.map((r) => html`<li><span><b>${r.name}</b><small class="muted">${shortDateTime(backups.last.at)}${r.ok ? "" : ` · ${r.error}`}</small></span>${r.ok ? html`<span class="pill ok"><i></i>Listo</span>` : html`<span class="pill bad"><i></i>Falló</span>`}</li>`)}</ul>` : ""}
+        ${backups.tested ? html`<p class="small"><b>Prueba de conexión:</b></p><ul class="list">${backups.tested.map((r) => html`<li><span><b>${r.name}</b><small class="muted">${r.ok ? "Se pudo escribir, leer y borrar un archivo de prueba" : r.error}</small></span>${r.ok ? html`<span class="pill ok"><i></i>Funciona</span>` : html`<span class="pill bad"><i></i>No funciona</span>`}</li>`)}</ul>` : ""}
+        <div class="actions">
+          <form method="post" action="/operador/respaldo/probar">${csrfField(csrf)}<button class="btn ghost" type="submit">Probar conexión</button></form>
+          <form method="post" action="/operador/respaldo">${csrfField(csrf)}<button class="btn" type="submit">Respaldar ahora</button></form>
+        </div>`
+      : html`<p class="muted small">Todavía no hay destinos. Agrega las variables <code>BACKUP1_ENDPOINT</code>, <code>BACKUP1_BUCKET</code>, <code>BACKUP1_KEY_ID</code> y <code>BACKUP1_SECRET</code> (y <code>BACKUP2_…</code> para un segundo destino) en Dokploy y redespliega. Están explicadas en el README.</p>`}
+    ${backups.warnings.map((w) => html`<p class="alert" role="alert">${w}</p>`)}
   </section>
 
   <section class="card" id="nuevo">
@@ -1802,6 +1819,7 @@ export function privacidadPage({ contact = "" } = {}) {
       <li>El servicio donde está alojada la aplicación y el que protege su tráfico (hospedaje y red).</li>
       <li><b>pagoradar</b>, que lee el aviso del banco de la cuenta del conjunto y le informa a Cuotia el valor y el nombre del pagador.</li>
       <li>Los servicios de notificaciones del navegador o del teléfono (Google, Apple, Mozilla o Microsoft), solo si activas los avisos; el mensaje viaja cifrado.</li>
+      <li>Un servicio de almacenamiento en la nube donde se guardan copias de seguridad de la base de datos, <b>cifradas</b>: quien las aloja no puede leerlas.</li>
     </ul>
 
     <h2>5. Cómo se protegen</h2>

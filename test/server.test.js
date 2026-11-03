@@ -9,15 +9,16 @@ import { bogotaDateTime, currentPeriod, periodLabel, shiftPeriod } from "../src/
 import { openStore } from "../src/store.js";
 import { qrSvg } from "../src/qr.js";
 import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
+import { fakeS3 } from "./fake-s3.js";
 
 const MASTER_KEY = "a".repeat(64);
 const SETUP_TOKEN = "token-de-configuracion-inicial-123";
 const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
 
 /** Runs `fn` against a real server and always closes it, so a failed assertion can't leave the test run hanging. */
-async function withServer(fn, { empty = false, secure = false, pushSend, backupDir } = {}) {
+async function withServer(fn, { empty = false, secure = false, pushSend, backupDir, extraConfig } = {}) {
   const ctx = empty ? { store: openStore(":memory:") } : twoConjuntos();
-  const config = { publicUrl: "http://localhost:3000", secureCookies: secure, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN, ...(backupDir ? { backupDir } : {}) };
+  const config = { publicUrl: "http://localhost:3000", secureCookies: secure, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN, ...(backupDir ? { backupDir } : {}), ...(extraConfig ?? {}) };
   if (!empty) {
     await ctx.store.users.create({ tenantId: ctx.a.id, email: "marta@ejemplo.com", passwordHash: await hashPassword("clave-de-marta") });
     await ctx.store.users.create({ tenantId: ctx.b.id, email: "luis@ejemplo.com", passwordHash: await hashPassword("clave-de-luis") });
@@ -2214,6 +2215,58 @@ test("empezar de cero: pide contraseña y la palabra, guarda una copia antes, bo
       assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Empezar de cero/);
     }, { backupDir: dir });
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("operador: ve el estado de los respaldos, respalda ahora y prueba la conexión, sin mostrar llaves ni direcciones", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "cuotia-opbk-"));
+  const good = await fakeS3({ secretAccessKey: "LLAVE-SECRETA-DEL-BUCKET" });
+  const bad = await fakeS3({ bucket: "otro", fail: true, secretAccessKey: "LLAVE-SECRETA-2" });
+  try {
+    const backups = [good.cfg("Cloudflare R2"), bad.cfg("Backblaze B2")];
+    await withServer(async (s) => {
+      s.store.operators.create({ email: "dev@cuotia.co", passwordHash: await hashPassword("clave-del-operador"), name: "Dev" });
+      const { cookie } = await opSignIn(s.base, "dev@cuotia.co", "clave-del-operador");
+      const csrf = await csrfOf(s.base, cookie, "/operador");
+      const page = async () => (await fetch(`${s.base}/operador`, { headers: { cookie } })).text();
+
+      let html = await page();
+      assert.match(html, /Respaldos fuera del servidor/);
+      assert.match(html, /Cloudflare R2 y Backblaze B2/);
+      assert.match(html, /Todavía no hay un respaldo bueno/);
+      for (const secret of ["LLAVE-SECRETA", "127.0.0.1", "AKIATEST", "cuotia-bucket"]) assert.ok(!html.includes(secret), `no se muestra: ${secret}`);
+
+      assert.equal((await form(`${s.base}/operador/respaldo`, {}, cookie)).status, 403, "sin token no respalda");
+      const run = await form(`${s.base}/operador/respaldo`, { _csrf: csrf }, cookie);
+      assert.match(run.headers.get("location"), /m=respaldoerr/, "una nube falló: se avisa");
+      assert.equal(good.objects.size, 1);
+      html = await page();
+      assert.match(html, /Último respaldo bueno/);
+      assert.match(html, /Falló/);
+      assert.match(html, /Listo/);
+      assert.match(html, /Backblaze B2: el servicio respondió 500/);
+
+      const tested = await (await form(`${s.base}/operador/respaldo/probar`, { _csrf: csrf }, cookie)).text();
+      assert.match(tested, /Prueba de conexión/);
+      assert.match(tested, /Funciona/);
+      assert.match(tested, /No funciona/);
+      assert.ok(!tested.includes("LLAVE-SECRETA"));
+    }, { backupDir: dir, extraConfig: { backups, backupWarnings: ["Respaldo 3 incompleto: falta BACKUP3_BUCKET"], backupKeep: 5 } });
+
+    // With no destinations the panel says how to add them and the buttons do nothing harmful.
+    await withServer(async (s) => {
+      s.store.operators.create({ email: "dev@cuotia.co", passwordHash: await hashPassword("clave-del-operador"), name: "Dev" });
+      const { cookie } = await opSignIn(s.base, "dev@cuotia.co", "clave-del-operador");
+      const csrf = await csrfOf(s.base, cookie, "/operador");
+      assert.match(await (await fetch(`${s.base}/operador`, { headers: { cookie } })).text(), /BACKUP1_ENDPOINT/);
+      assert.match((await form(`${s.base}/operador/respaldo`, { _csrf: csrf }, cookie)).headers.get("location"), /m=respaldoerr/);
+    }, { backupDir: dir });
+  } finally {
+    await good.close(); await bad.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

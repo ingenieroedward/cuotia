@@ -6,6 +6,8 @@
 //   npm run admin -- generar-cuotas --conjunto jardines-de-ibiza [--periodo 2026-11]
 //   MASTER_KEY=... npm run admin -- configurar-pagoradar --conjunto jardines-de-ibiza --secreto <secreto del webhook de su app en pagoradar>
 //   npm run admin -- respaldar [--carpeta data/backups] [--conservar 14]      consistent copy of the live database
+//   npm run admin -- respaldar-externo | probar-respaldo                       encrypted copy to the BACKUP1_* … clouds (R2, B2), now
+//   npm run admin -- descifrar-respaldo --archivo X.db.enc --salida X.db       restore: decrypt a downloaded copy (same MASTER_KEY)
 //   npm run admin -- restablecer-2fa --correo marta@ejemplo.com               lost phone: the next sign-in enrolls a new authenticator
 //   npm run admin -- restablecer-clave --correo marta@ejemplo.com             lost password: prints a new temporary one
 // Each conjunto has its own pagoradar app, webhook URL and secret (the secret is stored encrypted with MASTER_KEY).
@@ -23,7 +25,7 @@ const { values: v } = parseArgs({
   options: {
     slug: { type: "string" }, nombre: { type: "string" }, correo: { type: "string" }, llave: { type: "string" },
     titular: { type: "string" }, cuota: { type: "string" }, conjunto: { type: "string" }, codigo: { type: "string" },
-    residente: { type: "string" }, telefono: { type: "string" }, periodo: { type: "string" }, secreto: { type: "string" }, tesorero: { type: "string" }, carpeta: { type: "string" }, conservar: { type: "string" },
+    residente: { type: "string" }, archivo: { type: "string" }, salida: { type: "string" }, telefono: { type: "string" }, periodo: { type: "string" }, secreto: { type: "string" }, tesorero: { type: "string" }, carpeta: { type: "string" }, conservar: { type: "string" },
   },
 });
 
@@ -76,6 +78,32 @@ if (command === "crear-conjunto") {
   console.log(`Respaldo listo: ${file} (${Math.round(bytes / 1024)} KB)`);
   console.log(removed.length ? `Se borraron ${removed.length} respaldo(s) viejo(s); se conservan los últimos ${v.conservar ?? 14}.` : `Se conservan los últimos ${v.conservar ?? 14}.`);
   console.log("Ojo: está en el mismo disco que la base. Copia esa carpeta a otro lugar (otro servidor, tu computador o la nube).");
+} else if (command === "respaldar-externo" || command === "probar-respaldo") {
+  // Same copy as the nightly one (consistent, encrypted with MASTER_KEY, uploaded to every BACKUP1_* … destination).
+  const { loadConfig } = await import("../src/config.js");
+  const { runOffsiteBackup, testDestinations } = await import("../src/offsite.js");
+  const config = { ...loadConfig(), databasePath: dbPath };
+  for (const w of config.backupWarnings) console.error(`Aviso: ${w}`);
+  if (config.backups.length === 0) fail("No hay destinos: define BACKUP1_ENDPOINT, BACKUP1_BUCKET, BACKUP1_KEY_ID y BACKUP1_SECRET");
+  if (command === "probar-respaldo") {
+    for (const r of await testDestinations({ config })) console.log(`${r.name}: ${r.ok ? "funciona" : `NO funciona (${r.error})`}`);
+  } else {
+    const r = await runOffsiteBackup({ store, config });
+    for (const x of r.results) console.log(`${x.name}: ${x.ok ? "listo" : `FALLÓ (${x.error})`}`);
+    console.log(`${r.file ?? "(sin archivo)"} · ${(r.bytes / 1048576).toFixed(1)} MB`);
+    if (r.results.some((x) => !x.ok)) process.exitCode = 1;
+  }
+} else if (command === "descifrar-respaldo") {
+  // Turns a downloaded cuotia-….db.enc back into a SQLite file (needs the same MASTER_KEY it was made with).
+  const { loadConfig } = await import("../src/config.js");
+  const { decryptFile } = await import("../src/offsite.js");
+  if (!v.archivo || !v.salida) fail("Usa --archivo cuotia-AAAAMMDD-HHMMSS.db.enc --salida cuotia-restaurada.db");
+  try {
+    await decryptFile(v.archivo, v.salida, loadConfig().masterKey);
+  } catch (e) {
+    fail(e.message);
+  }
+  console.log(`Listo: ${v.salida}. Para restaurar: detén la app, reemplaza el archivo de la base (DATABASE_PATH) por este y vuelve a iniciar.`);
 } else if (command === "crear-operador" || command === "restablecer-operador") {
   // The operator is the platform's owner (panel at /operador): belongs to no conjunto and sees only counts.
   const correo = (v.correo ?? "").trim().toLowerCase();
@@ -106,6 +134,6 @@ if (command === "crear-conjunto") {
     console.log(`Contraseña nueva para ${user.email}: ${password}\n(es temporal: que la cambie en Ajustes; no se vuelve a mostrar).`);
   }
 } else {
-  fail("Comandos: crear-conjunto | configurar-pagoradar | agregar-casa | generar-cuotas | respaldar | restablecer-2fa | restablecer-clave | crear-operador | restablecer-operador");
+  fail("Comandos: crear-conjunto | configurar-pagoradar | agregar-casa | generar-cuotas | respaldar | restablecer-2fa | restablecer-clave | crear-operador | restablecer-operador | respaldar-externo | probar-respaldo | descifrar-respaldo");
 }
 store.close();

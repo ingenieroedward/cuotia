@@ -145,6 +145,23 @@ docker run --rm -v cuotia-data:/d alpine chown -R 1000:1000 /d
 
 Cloudflare: con el proxy activo, pon SSL/TLS en **Full (strict)**.
 
+## Respaldos fuera del servidor (Cloudflare R2 y Backblaze B2)
+
+Las copias que Cuotia hace en el propio servidor sirven poco si el servidor se pierde. Con estas variables en Dokploy, **cada noche** (entre las 2 y las 6 a. m. de Colombia) Cuotia hace una copia consistente de toda la base, la **cifra con tu `MASTER_KEY`** y la sube a cada destino, y deja solo las últimas `BACKUP_KEEP` (30 por defecto). En la nube solo hay texto ilegible: sin tu `MASTER_KEY` nadie puede abrirlo, **ni tú**, así que guárdala aparte.
+
+1. **Cloudflare R2:** crea un bucket (por ejemplo `cuotia-respaldos`), y en *R2 → Manage API tokens* un token con permiso *Object Read & Write* solo para ese bucket. Te da un *Access Key ID* y un *Secret Access Key*. El endpoint es `https://<ID_DE_CUENTA>.r2.cloudflarestorage.com` y la región `auto`.
+2. **Backblaze B2:** crea un bucket privado y en *App Keys* una *Application Key* limitada a ese bucket con lectura y escritura. Te da un *keyID* y una *applicationKey*. El endpoint es `https://s3.<región>.backblazeb2.com` (por ejemplo `s3.us-west-004.backblazeb2.com`) y la región es esa misma (`us-west-004`).
+3. Pon en Dokploy las variables `BACKUP1_*` (R2) y `BACKUP2_*` (B2) como en `.env.example` y redespliega.
+4. Entra a `/operador`, sección **Respaldos**, y pulsa **Probar conexión** (escribe, lee y borra un archivo de prueba en cada destino) y luego **Respaldar ahora**. Verás el estado de cada nube; si una falla, la otra sigue funcionando.
+
+**Restaurar:** descarga el archivo `cuotia-AAAAMMDD-HHMMSS.db.enc` del bucket y, desde la terminal del contenedor:
+
+```bash
+npm run admin -- descifrar-respaldo --archivo cuotia-20261103-080000.db.enc --salida cuotia-restaurada.db
+```
+
+Luego detén la app, reemplaza el archivo de la base (`/app/data/cuotia.db`) por el restaurado y vuelve a iniciar. Funciona solo con la misma `MASTER_KEY` con la que se hizo la copia. También puedes lanzar una copia o la prueba desde la terminal: `npm run admin -- respaldar-externo` y `npm run admin -- probar-respaldo`.
+
 ## El panel del tesorero
 
 Entra con correo y contraseña y luego con un **código de 6 dígitos** de una app (Google Authenticator,
