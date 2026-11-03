@@ -1979,3 +1979,45 @@ test("qué cobras: se agrega Administración, se cambia un valor, se hace un cob
   assert.ok(log.some((t) => /^Hizo un cobro especial "Multa por ruido" de \$50\.000 a la casa 14/.test(t)));
   assert.match(await get("/panel/mas"), /href="\/panel\/conceptos"/);
 }));
+
+test("privacidad: la política es pública, sale en el pie de las pantallas del residente y no estorba en el panel ni en los documentos", () => withServer(async (s) => {
+  const policy = await (await fetch(`${s.base}/privacidad`)).text();
+  assert.match(policy, /Política de tratamiento de datos personales/);
+  assert.match(policy, /Ley 1581 de 2012/);
+  assert.match(policy, /responsable/);
+  assert.match(policy, /10 días hábiles/);
+  assert.match(policy, /pídeselo al tesorero de tu conjunto/);
+  assert.doesNotMatch(policy, /javascript:/, "la CSP no deja javascript: y no hace falta");
+  const { privacidadPage } = await import("../src/views.js");
+  assert.match(String(privacidadPage({ contact: "datos@ejemplo.com" })), /<b translate="no">datos@ejemplo\.com<\/b>/);
+
+  for (const path of ["/login", `/r/${s.a14.accessToken}`, `/r/${s.a14.accessToken}/pagar`]) {
+    assert.match(await (await fetch(`${s.base}${path}`, { redirect: "follow" })).text(), /<footer class="legal noprint"><a href="\/privacidad">/, path);
+  }
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text(), /class="legal/, "el panel no lleva el pie");
+  assert.doesNotMatch(await (await fetch(`${s.base}/r/${s.a14.accessToken}/estado`)).text(), /class="legal/, "ni los documentos que se imprimen");
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /href="\/privacidad"/);
+}));
+
+test("borrar los datos personales de una casa dada de baja desde el panel, anotado en la bitácora", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/casas");
+  const go = (path) => form(`${s.base}${path}`, { _csrf: csrf }, cookie);
+  const id = s.a03.house.id;
+
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel/casas/${id}`, { headers: { cookie } })).text(), /Borrar los datos personales/, "con la casa activa no se ofrece");
+  assert.match((await go(`/panel/casas/${id}/anonimizar`)).headers.get("location"), /m=err/, "y si se intenta, se rechaza");
+  assert.equal(s.A.houses.get(id).residentName, "Diana Pérez");
+
+  await go(`/panel/casas/${id}/desactivar`);
+  assert.match(await (await fetch(`${s.base}/panel/casas/${id}`, { headers: { cookie } })).text(), /Borrar los datos personales/);
+  assert.match((await go(`/panel/casas/${id}/anonimizar`)).headers.get("location"), /m=anon/);
+  assert.equal(s.A.houses.get(id).residentName, "Residente anterior");
+  assert.ok(s.A.audit.list({ q: "datos personales" }).rows.some((r) => r.summary === "Borró los datos personales de la casa 03"));
+
+  // Another conjunto's house can't be reached from here.
+  assert.match((await go(`/panel/casas/${s.b01.house.id}/anonimizar`)).headers.get("location"), /m=err/);
+  assert.equal(s.B.houses.get(s.b01.house.id).residentName, "Carlos Mejía");
+}));

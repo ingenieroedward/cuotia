@@ -15,5 +15,7 @@ export function loadConfig(env = process.env) {
     secureCookies: publicUrl.startsWith("https://"),
     masterKey,
     setupToken: fixed || randomBytes(24).toString("base64url"),
+    // Where people can send a data-protection request (Ley 1581). Optional: without it the policy points to the conjunto's treasurer.
+    privacyContact: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((env.PRIVACY_CONTACT ?? "").trim()) ? env.PRIVACY_CONTACT.trim() : "",
   };
 }
