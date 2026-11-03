@@ -3,6 +3,7 @@ import {
   AttemptLimiter, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, hashPassword, matchTotp, newTotpSecret, verifyPassword,
 } from "./security.js";
 import { slugify } from "./text.js";
+import { lastOffsite, runOffsiteBackup, testDestinations } from "./offsite.js";
 import { OPERADOR_FLASHES, operadorCuentaPage, operadorLinkPage, operadorLoginPage, operadorPage, twoFaPage } from "./views.js";
 
 const COOKIE = "cuotia_op";
@@ -112,6 +113,11 @@ export function createOperator({ store, config }) {
     return { tenants, totals: { tenants: tenants.length, houses: tenants.reduce((n, t) => n + t.houses, 0) } };
   }
 
+  /** What the panel shows about the off-server copies: destinations by name (never keys), and the last run. */
+  function backupsView(tested = null) {
+    return { destinations: (config.backups ?? []).map((b) => b.name), warnings: config.backupWarnings ?? [], last: lastOffsite(store), lastOk: store.settings.get("offsite_last_ok"), tested };
+  }
+
   const invitationUrl = (token) => `${config.publicUrl}/invitacion/${token}`;
 
   /** @returns {Promise<boolean>} true when the request was for /operador and has been answered. */
@@ -136,7 +142,7 @@ export function createOperator({ store, config }) {
     const flashOf = () => OPERADOR_FLASHES[url.searchParams.get("m")] ?? null;
 
     if (method === "GET" && path === "/operador") {
-      send(res, 200, operadorPage({ csrf, operator, flash: flashOf(), ...overview() }));
+      send(res, 200, operadorPage({ csrf, operator, flash: flashOf(), ...overview(), backups: backupsView() }));
       return true;
     }
     if (method === "GET" && path === "/operador/cuenta") {
@@ -172,11 +178,24 @@ export function createOperator({ store, config }) {
       return true;
     }
 
+    if (path === "/operador/respaldo") {
+      if ((config.backups ?? []).length === 0) { redirect(res, "/operador?m=respaldoerr"); return true; }
+      const r = await runOffsiteBackup({ store, config });
+      redirect(res, `/operador?m=${r.results.every((x) => x.ok) ? "respaldo" : "respaldoerr"}`);
+      return true;
+    }
+
+    if (path === "/operador/respaldo/probar") {
+      const tested = await testDestinations({ config });
+      send(res, 200, operadorPage({ csrf, operator, flash: null, ...overview(), backups: backupsView(tested) }));
+      return true;
+    }
+
     if (path === "/operador/conjuntos") {
       const field = (k, max) => String(form.get(k) ?? "").trim().slice(0, max);
       const values = { nombre: field("nombre", 80), cuota: field("cuota", 12), llave: field("llave", 80), titular: field("titular", 80), tesorero: field("tesorero", 80), correo: field("correo", 120).toLowerCase() };
       const amount = parsePesos(values.cuota);
-      const again = (error) => send(res, 400, operadorPage({ csrf, operator, error, values, ...overview() }));
+      const again = (error) => send(res, 400, operadorPage({ csrf, operator, error, values, ...overview(), backups: backupsView() }));
       if (values.nombre.length < 3) { again("Escribe el nombre del conjunto (mínimo 3 letras)."); return true; }
       if (amount === null || amount < 100_000 || amount > 1_000_000_000) { again("La cuota debe ser un valor en pesos entre 1.000 y 10.000.000."); return true; }
       if (values.tesorero.length < 2) { again("Escribe el nombre del tesorero."); return true; }

@@ -45,3 +45,15 @@ export async function sendReminders(store, notifier, now = new Date()) {
   }
   return sent;
 }
+
+/**
+ * Is it time for the nightly off-server copy? Between 2 and 6 a.m. in Colombia once the last good copy is over 20 hours old,
+ * or at any hour when it is over 36 hours old (so a server that was off at night catches up). No good copy yet: now.
+ */
+export function offsiteDue(lastOkIso, now = new Date()) {
+  if (!lastOkIso) return true;
+  const hours = (now.getTime() - new Date(lastOkIso).getTime()) / 3_600_000;
+  if (!(hours >= 0)) return false;
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "America/Bogota", hour: "2-digit", hourCycle: "h23" }).format(now));
+  return hours > 36 || (hours > 20 && hour >= 2 && hour < 6);
+}

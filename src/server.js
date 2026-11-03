@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import { loadConfig } from "./config.js";
 import { openStore } from "./store.js";
 import { createApp } from "./app.js";
-import { generateAllDues, sendReminders } from "./schedule.js";
+import { generateAllDues, offsiteDue, sendReminders } from "./schedule.js";
+import { runOffsiteBackup } from "./offsite.js";
 
 const config = loadConfig();
 const store = openStore(config.databasePath);
@@ -44,6 +45,25 @@ setTimeout(reminders, 60_000).unref();
 
 // Expired sessions are only dead rows; sweep them hourly.
 setInterval(() => store.sessions.purgeExpired(), 3600_000).unref();
+
+// Encrypted copy of the database to the configured clouds (R2, B2…), every night. Without destinations nothing happens.
+for (const w of config.backupWarnings) console.error(`Respaldo externo: ${w}`);
+if (config.backups.length > 0) {
+  console.log(`Respaldo externo: ${config.backups.map((b) => b.name).join(", ")} (cada noche, se conservan ${config.backupKeep})`);
+  let running = false;
+  const offsite = async () => {
+    if (running || !offsiteDue(store.settings.get("offsite_last_ok"))) return;
+    running = true;
+    try {
+      const r = await runOffsiteBackup({ store, config });
+      for (const x of r.results) console.log(`Respaldo externo ${x.name}: ${x.ok ? "listo" : `FALLÓ (${x.error})`}`);
+    } finally {
+      running = false;
+    }
+  };
+  setInterval(offsite, 3600_000).unref();
+  setTimeout(offsite, 2 * 60_000).unref();
+}
 
 for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => server.close(() => { store.close(); process.exit(0); }));
