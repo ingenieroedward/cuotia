@@ -11,6 +11,7 @@ import { debtTotals, groupDebts } from "./debts.js";
 import { MAX_PROOF_BYTES, parseMultipart, sniffProof } from "./upload.js";
 import { sendPush, validEndpoint, validKeys } from "./webpush.js";
 import { createNotifier } from "./notifier.js";
+import { createOperator } from "./operator.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
 import { MANUAL_LABELS, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
@@ -47,6 +48,7 @@ const SETUP_TTL_MS = 30 * 60_000; // time to install an authenticator app
 
 /** Plain `(req, res)` router, no framework. Each branch answers and returns. */
 export function createApp({ config, store, pushSend = sendPush, notifier = createNotifier({ store, config, pushSend }) }) {
+  const operator = createOperator({ store, config });
   const vapid = () => ({ publicKey: notifier.publicKey() });
   const notify = (tenantId, message, opts) => notifier.team(tenantId, message, opts);
   const loginLimiter = new AttemptLimiter();
@@ -71,6 +73,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const method = req.method;
 
     if (path === "/health") return sendJson(res, 200, { ok: true });
+
+    // The operator panel has its own login and cookie; it answers everything under /operador.
+    if ((path === "/operador" || path.startsWith("/operador/")) && await operator(req, res, url, path, method)) return;
 
     if (method === "GET" && STATIC[path]) {
       const [file, type, maxAge] = STATIC[path];
