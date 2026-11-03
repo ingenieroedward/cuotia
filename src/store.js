@@ -470,6 +470,21 @@ export function openStore(path = ":memory:") {
        * Deactivating keeps all history (dues, payments) but stops the personal link, new dues and automatic matching.
        * Its unpaid dues stop counting as pending; its paid ones keep counting.
        */
+      /**
+       * Right to erasure (Ley 1581) for a house that was dada de baja: the history of dues and payments stays for the
+       * accounting but loses every personal detail. Cannot be undone, so it is refused for an active house.
+       */
+      anonymize(houseId) {
+        return tx(() => {
+          const h = ownHouse(houseId);
+          if (h.active) throw new Error("Primero da de baja la casa");
+          db.prepare("UPDATE houses SET resident_name = 'Residente anterior', phone = NULL WHERE id = ? AND tenant_id = ?").run(houseId, tenantId);
+          db.prepare("DELETE FROM aliases WHERE house_id = ? AND tenant_id = ?").run(houseId, tenantId);
+          db.prepare("DELETE FROM proofs WHERE house_id = ? AND tenant_id = ?").run(houseId, tenantId);
+          db.prepare("DELETE FROM house_push_subscriptions WHERE house_id = ? AND tenant_id = ?").run(houseId, tenantId);
+          db.prepare("UPDATE payments SET payer_name = 'Pagador anónimo', payer_norm = 'ANONIMO' WHERE house_id = ? AND tenant_id = ?").run(houseId, tenantId);
+        });
+      },
       setActive(houseId, active) {
         ownHouse(houseId);
         db.prepare("UPDATE houses SET active = ? WHERE id = ? AND tenant_id = ?").run(active ? 1 : 0, houseId, tenantId);

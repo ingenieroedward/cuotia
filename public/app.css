@@ -592,3 +592,11 @@ li.concept .actions { align-items: flex-start; }
 fieldset .combo { flex: none; display: grid; gap: .5rem; }
 fieldset .combo .combo-search, fieldset .combo select { flex: none; width: 100%; }
 ul.docs li { display: grid; gap: .1rem; }
+
+/* ---- privacy policy and footer link ---- */
+footer.legal { text-align: center; padding: 1.25rem 1rem 2rem; font-size: .8125rem; }
+footer.legal a { color: var(--muted); }
+.legal-text { gap: .75rem; }
+.legal-text h2 { font-size: 1.05rem; margin-top: .75rem; }
+.legal-text ul { margin: 0; padding-left: 1.2rem; display: grid; gap: .35rem; }
+.legal-text p { margin: 0; }

@@ -133,7 +133,7 @@ Y guarda `MASTER_KEY` aparte: sin ella, un respaldo no sirve para entrar.
 
 *Create Service → Docker Compose* con este repositorio. Variables:
 `MASTER_KEY` (`openssl rand -hex 32`; **guárdala**: cifra el doble factor y sin ella nadie puede entrar), `PUBLIC_URL`, y
-opcionalmente `SETUP_TOKEN`. Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
+opcionalmente `SETUP_TOKEN` y `PRIVACY_CONTACT` (el correo que sale en la política de privacidad para que los residentes ejerzan sus derechos sobre sus datos). Dominio hacia el servicio `cuotia`, puerto **3000**, HTTPS. Los datos viven en el volumen
 `cuotia-data` (`/app/data/cuotia.db`): respáldalo. Monitor a `/health`.
 
 Si el log dice `SQLITE_CANTOPEN` o `readonly database`, el volumen quedó con otro dueño (Cuotia corre como el usuario

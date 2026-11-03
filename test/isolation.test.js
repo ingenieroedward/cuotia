@@ -392,3 +392,31 @@ test("bitácora: cada conjunto ve solo la suya, el filtro escapa comodines y no 
   assert.equal(typeof A.audit.update, "undefined");
   assert.equal(typeof A.audit.delete, "undefined");
 });
+
+test("borrar datos personales: solo en una casa dada de baja, conserva el historial sin nombre y no toca a otro conjunto", () => {
+  const { store, A, B, a14, b01 } = twoConjuntos();
+  A.dues.generate("2026-11"); B.dues.generate("2026-11");
+  A.houses.update(a14.house.id, { code: "14", residentName: "Sandra Duque Arias", phone: "3001234567" });
+  A.aliases.add(a14.house.id, "SANDRA D");
+  A.proofs.create({ houseId: a14.house.id, mime: "image/png", data: Buffer.from("x") });
+  A.housePush.add({ houseId: a14.house.id, endpoint: "https://fcm.googleapis.com/fcm/send/x", p256dh: "p", auth: "a" });
+  const { payment } = A.payments.record({ externalId: "t:1", payerName: "SANDRA DUQUE", payerNorm: "SANDRA DUQUE", amountCents: 3_000_000, paidAt: "2026-11-03T15:00:00.000Z" });
+  A.payments.assign(payment.id, a14.house.id, { rememberAlias: false });
+
+  assert.throws(() => A.houses.anonymize(a14.house.id), /da de baja/, "una casa activa no se borra");
+  assert.throws(() => B.houses.anonymize(a14.house.id), /no existe en este conjunto/);
+  A.houses.setActive(a14.house.id, false);
+  A.houses.anonymize(a14.house.id);
+
+  const h = A.houses.get(a14.house.id);
+  assert.deepEqual([h.residentName, h.phone, h.code, h.active], ["Residente anterior", null, "14", false]);
+  assert.deepEqual(A.aliases.list(a14.house.id), []);
+  assert.equal(A.proofs.listForHouse(a14.house.id).length, 0);
+  assert.equal(A.housePush.count(a14.house.id), 0);
+  const kept = A.payments.get(payment.id);
+  assert.equal(kept.payerName, "Pagador anónimo");
+  assert.equal(kept.amountCents, 3_000_000, "el valor del pago se conserva");
+  assert.equal(A.dues.listForHouse(a14.house.id).filter((d) => d.status === "paid").length, 1, "y la cuota sigue pagada");
+  assert.equal(B.houses.get(b01.house.id).residentName, "Carlos Mejía", "el otro conjunto no cambió");
+  assert.ok(store);
+});

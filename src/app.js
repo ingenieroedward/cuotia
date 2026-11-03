@@ -14,7 +14,7 @@ import { createNotifier } from "./notifier.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
 import { MANUAL_LABELS, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
-import { ajustesPage, bitacoraPage, conceptosPage, masPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, bitacoraPage, conceptosPage, masPage, privacidadPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -85,6 +85,8 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (method === "GET" && path === "/offline") return send(res, 200, offlinePage());
 
     if (path === "/setup" && (method === "GET" || method === "POST")) return setup(req, res, url, method);
+    if (method === "GET" && path === "/privacidad") return send(res, 200, privacidadPage({ contact: config.privacyContact }));
+
     if (method === "GET" && path === "/verificar") {
       const ip = req.socket.remoteAddress;
       const code = String(url.searchParams.get("codigo") ?? "").trim().toUpperCase().slice(0, 12);
@@ -942,6 +944,14 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         audit("casas", `${action === "reactivar" ? "Dio de alta otra vez" : "Dio de baja"} ${houseTag(houseId)}`, { type: "casa", id: houseId });
         if (action === "reactivar") ledger.dues.generate(period);
         return redirect(res, action === "reactivar" ? `${own}?m=react` : "/panel/casas?m=desact");
+      }
+
+      const anonymize = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/anonimizar$/);
+      if (anonymize) {
+        const before = ledger.houses.get(anonymize[1]);
+        try { ledger.houses.anonymize(anonymize[1]); } catch { return redirect(res, `/panel/casas/${anonymize[1]}?m=err`); }
+        audit("casas", `Borró los datos personales de la casa ${before?.code ?? "?"}`, { type: "casa", id: anonymize[1] });
+        return redirect(res, `/panel/casas/${anonymize[1]}?m=anon`);
       }
 
       const unalias = path.match(/^\/panel\/casas\/(hs_[a-f0-9]+)\/alias\/(al_[a-f0-9]+)\/quitar$/);

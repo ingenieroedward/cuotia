@@ -22,7 +22,7 @@ const icon = (name, size = 20, width = 2) => html`<svg width="${size}" height="$
 
 const BRAND_MARK = html`<span class="brand"><span class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>cuotia</span>`;
 
-export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/manifest.webmanifest" } = {}) {
+export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/manifest.webmanifest", legal = true } = {}) {
   return html`<!doctype html>
 <html lang="es">
 <head>
@@ -46,7 +46,7 @@ ${refresh ? raw(`<meta http-equiv="refresh" content="${Number(refresh)}">`) : ""
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/app.js" defer></script>
 </head>
-<body${bodyClass ? raw(` class="${bodyClass}"`) : ""}>${body}</body>
+<body${bodyClass ? raw(` class="${bodyClass}"`) : ""}>${body}${legal ? html`<footer class="legal noprint"><a href="/privacidad">Política de privacidad</a></footer>` : ""}</body>
 </html>`;
 }
 
@@ -63,6 +63,7 @@ const FLASH = {
   ed: () => ({ kind: "ok", text: "Datos de la casa guardados." }),
   aliasok: () => ({ kind: "ok", text: "Nombre agregado: los pagos con ese nombre se asignarán a esta casa." }),
   aliasdel: () => ({ kind: "ok", text: "Nombre quitado." }),
+  anon: () => ({ kind: "ok", text: "Datos personales borrados. El historial de cuotas y pagos quedó sin nombre." }),
   desact: () => ({ kind: "ok", text: "Casa dada de baja. Su historial se conserva y la puedes reactivar cuando quieras." }),
   react: () => ({ kind: "ok", text: "Casa dada de alta otra vez: vuelve a recibir cuotas. Genera su enlace personal nuevo si lo necesita." }),
   undo: () => ({ kind: "ok", text: "Asignación deshecha: el pago volvió a “Por asignar” y la cuota a pendiente." }),
@@ -248,7 +249,7 @@ export function panelLayout(title, ctx, content) {
   <nav class="tabbar" aria-label="Principal">
     ${TABS.map((n) => html`<a class="tab" href="${n.href}"${n.key === "mas" ? (MORE_KEYS.includes(active) ? raw(' aria-current="page"') : "") : current(n.key)}>${icon(n.icon, 22)}<span>${n.label}</span>${n.key === "resumen" ? unassigned : owes(n)}</a>`)}
   </nav>
-</div>`);
+</div>`, { legal: false });
 }
 
 const STATUS = {
@@ -789,6 +790,7 @@ export function ajustesPage(args) {
   </section>
 
   <section class="card">
+    <p class="small"><a href="/privacidad" target="_blank" rel="noopener">Política de tratamiento de datos personales</a><br><span class="muted">La ven los residentes en el pie de sus pantallas. Revisa con un abogado que sirva para tu conjunto.</span></p>
     <div class="row wrap"><h2>Bitácora</h2><a class="btn ghost small" href="/panel/bitacora">Ver quién hizo qué</a></div>
     <p class="muted small">Cada pago, cambio de casa, gasto y ajuste queda anotado con la persona y la hora.</p>
   </section>
@@ -1012,6 +1014,15 @@ export function casaPage(args) {
       ${house.active ? html`<a class="btn ghost" href="/panel/casas/${house.id}/paz-y-salvo" target="_blank" rel="noopener">Paz y salvo</a>` : ""}
     </div>
   </section>
+
+  ${house.active ? "" : html`<section class="card" id="datos">
+    <h2>Datos personales</h2>
+    <p class="muted small">Si el residente pidió que borren sus datos (o ya no tiene relación con el conjunto), puedes quitarlos de esta casa. El historial de cuotas y pagos se conserva para la contabilidad, pero sin nombre: la casa queda como "Residente anterior", se borran su celular, los nombres de pago, los comprobantes que subió y los avisos de su celular, y el nombre del pagador de sus pagos. <b>No se puede deshacer.</b></p>
+    <details class="undo"><summary>Borrar los datos personales</summary>
+      <p class="muted small">Esta acción queda anotada en la bitácora.</p>
+      <form method="post" action="/panel/casas/${house.id}/anonimizar">${csrfField(csrf)}<button class="btn small danger" type="submit">Sí, borrar los datos personales</button></form>
+    </details>
+  </section>`}
 
   <section class="card" id="baja">
     <h2>Acciones</h2>
@@ -1494,7 +1505,7 @@ export function receiptPage({ tenant, receipt, token }) {
     <button class="btn lime big" type="button" data-print>Descargar recibo en PDF</button>
     <a class="btn outline big" href="/r/${token}">Volver al inicio</a>
   </div>
-</main>`, { bodyClass: "receipt-page", manifest: `/r/${token}/manifest.webmanifest` });
+</main>`, { bodyClass: "receipt-page", legal: false, manifest: `/r/${token}/manifest.webmanifest` });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1511,7 +1522,7 @@ const docShell = (title, tenant, body, { backHref, manifest } = {}) => layout(ti
     <header class="doc-head"><span class="brand"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span><span class="muted small">${tenant.name}</span></header>
     ${body}
   </article>
-</main>`, { bodyClass: "doc-page", ...(manifest ? { manifest } : {}) });
+</main>`, { bodyClass: "doc-page", legal: false, ...(manifest ? { manifest } : {}) });
 
 const dueState = (d) => d.status === "paid"
   ? html`<span class="pill ok"><i></i>Pagada${d.paidAt ? ` el ${shortDate(d.paidAt)}` : ""}</span>`
@@ -1575,6 +1586,61 @@ export function verificarPage({ code = "", found = null, searched = false, error
     <button class="btn" type="submit">Verificar</button>
   </form>
 </main>`);
+}
+
+/**
+ * Política de tratamiento de datos personales (Ley 1581 de 2012). Public and the same for every conjunto: the conjunto is the
+ * "responsable" and Cuotia the "encargado". It is a base text: the owner must have it reviewed before relying on it.
+ */
+export function privacidadPage({ contact = "" } = {}) {
+  const ask = contact ? html`escribe a <b translate="no">${contact}</b> o pídeselo al tesorero de tu conjunto` : html`pídeselo al tesorero de tu conjunto`;
+  return layout("Política de privacidad", html`
+<main class="doc">
+  <article class="doc-sheet legal-text">
+    <header class="doc-head"><span class="brand"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span></header>
+    <h1>Política de tratamiento de datos personales</h1>
+    <p class="muted small">Ley 1581 de 2012 y Decreto 1377 de 2013. Última actualización: noviembre de 2026.</p>
+
+    <h2>1. Quién es quién</h2>
+    <p>El <b>responsable</b> de tus datos es el conjunto o urbanización donde vives, a través de su administración o tesorería: es quien decide qué datos se cargan y para qué. <b>Cuotia</b> es la herramienta con la que el conjunto lleva sus cuotas y actúa como <b>encargado</b>: trata los datos solo por cuenta del conjunto y siguiendo sus instrucciones.</p>
+
+    <h2>2. Qué datos se tratan</h2>
+    <ul>
+      <li><b>De los residentes:</b> nombre, número de casa, celular (opcional), el historial de sus cuotas y pagos, el nombre con el que aparece el pago en el banco, los comprobantes que el propio residente sube y, si los activa, la suscripción a los avisos de su celular.</li>
+      <li><b>Del equipo del conjunto (tesorería):</b> nombre, correo y un registro de lo que hace en el panel (bitácora).</li>
+    </ul>
+    <p>No se tratan datos sensibles, ni datos de menores de edad, ni se piden documentos de identidad, números de cuenta o claves bancarias. Los comprobantes pueden mostrar datos del banco de quien los sube: súbelos solo si estás de acuerdo.</p>
+
+    <h2>3. Para qué se usan</h2>
+    <ul>
+      <li>Cobrar y conciliar las cuotas del conjunto y confirmar los pagos.</li>
+      <li>Mostrarte lo que debes, tus recibos, tu estado de cuenta y tu paz y salvo.</li>
+      <li>Enviarte avisos de tus pagos y recordatorios de vencimiento, si los activaste.</li>
+      <li>Rendir cuentas del conjunto y mantener la seguridad del servicio.</li>
+    </ul>
+
+    <h2>4. Con quién se comparten</h2>
+    <p>Tus datos no se venden ni se usan para publicidad. Solo los ve la administración de tu conjunto; los demás residentes no ven tus datos ni tus pagos (las "cuentas del conjunto", si la tesorería las muestra, solo traen totales y gastos). Para funcionar intervienen proveedores técnicos:</p>
+    <ul>
+      <li>El servicio donde está alojada la aplicación y el que protege su tráfico (hospedaje y red).</li>
+      <li><b>pagoradar</b>, que lee el aviso del banco de la cuenta del conjunto y le informa a Cuotia el valor y el nombre del pagador.</li>
+      <li>Los servicios de notificaciones del navegador o del teléfono (Google, Apple, Mozilla o Microsoft), solo si activas los avisos; el mensaje viaja cifrado.</li>
+    </ul>
+
+    <h2>5. Cómo se protegen</h2>
+    <p>Cada residente entra con un enlace personal secreto; cada conjunto solo accede a sus propios datos; el equipo entra con contraseña y verificación en dos pasos; las conexiones van cifradas; los cambios del panel quedan en una bitácora y se hacen copias de seguridad de la base de datos.</p>
+
+    <h2>6. Cuánto tiempo se guardan</h2>
+    <p>Mientras tu conjunto use Cuotia y mientras el conjunto necesite conservar el historial de cuotas y pagos para su contabilidad. Cuando una casa se da de baja, la tesorería puede borrar sus datos personales y dejar solo los valores del historial, sin nombre.</p>
+
+    <h2>7. Tus derechos</h2>
+    <p>Como titular puedes <b>conocer</b> tus datos, <b>actualizarlos y rectificarlos</b>, pedir <b>prueba de la autorización</b> que diste, ser <b>informado del uso</b> que se les da, <b>revocar la autorización o pedir la supresión</b> de tus datos cuando no haya un deber legal o contractual de conservarlos, y presentar quejas ante la Superintendencia de Industria y Comercio.</p>
+    <p>Para ejercerlos ${ask}. Las consultas se responden en máximo 10 días hábiles y los reclamos en máximo 15 días hábiles, contados desde que se reciben (con las prórrogas que la ley permite).</p>
+
+    <h2>8. Cambios</h2>
+    <p>Si esta política cambia, se publica en esta misma dirección con la nueva fecha.</p>
+  </article>
+</main>`, { legal: false });
 }
 
 /** Shown by the service worker when the phone has no connection. Static and public: it is cached when the app is first opened. */
