@@ -393,7 +393,7 @@ test("el panel nuevo: saludo con el nombre, menú lateral, barra inferior y tarj
   assert.match(page, /class="badge"[^>]*>1</, "un pago por asignar en el menú");
   assert.match(page, /Faltan por pagar/);
   assert.match(page, /Recordar a todos por WhatsApp/);
-  assert.match(page, /https:\/\/wa\.me\/\?text=[^"]*Casas%20pendientes%3A%2003/, "el recordatorio ya lleva las casas pendientes");
+  assert.match(decodeURIComponent(/https:\/\/wa\.me\/\?text=([^"]*)/.exec(page)[1]), /Casas con cuota pendiente: 03/, "el recordatorio ya lleva las casas pendientes");
   assert.match(page, /Últimos pagos/);
   assert.match(page, /Pagó el/);
   assert.doesNotMatch(page, /style="/, "sin estilos en línea");
@@ -2323,4 +2323,81 @@ test("medios de pago: el tesorero agrega Nequi, Daviplata y Bancolombia y el res
   assert.ok(log.includes("Agregó un medio de pago: Bancolombia · ahorros"));
   assert.ok(log.includes("Quitó un medio de pago: Nequi"));
   assert.ok(!log.some((t) => t.includes("3001234567") || t.includes("123456789012")), "la bitácora no lleva números de cuenta");
+}));
+
+test("mensajes de WhatsApp: los botones usan el texto del conjunto, se edita con variables, se valida y la vista previa del navegador coincide con la del servidor", () => withServer(async (s) => {
+  const now = currentPeriod();
+  s.A.dues.generate(shiftPeriod(now, -1)); s.A.dues.generate(now);
+  s.A.payMethods.add({ kind: "nequi", account: "3001234567", holder: "Marta" });
+  s.store.tenants.setDates(s.a.id, { openDay: 1, dueDay: 10 });
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/mensajes");
+  const get = async (p) => (await fetch(`${s.base}${p}`, { headers: { cookie }, redirect: "manual" })).text();
+  const waText = (html) => decodeURIComponent(/https:\/\/wa\.me\/(?:\d*)\?text=([^"&]*)/.exec(html)[1]);
+
+  // The original message: friendly, with the detail, the way to pay and the deadline.
+  const cobros = await get("/panel/cobros");
+  const casaMsg = waText(cobros.slice(cobros.indexOf("debt-actions")));
+  assert.match(casaMsg, /^Hola (Diana|Sandra), te escribe Marta de Jardines de Ibiza\./);
+  assert.match(casaMsg, /Te recordamos que la casa (03|14) tiene pendiente la cuota de .+: \*\$60\.000\*\./);
+  assert.match(casaMsg, /• .+ · Vigilancia: \$30\.000/);
+  assert.match(casaMsg, /El último día para pagar es el 10 de /);
+  assert.match(casaMsg, /Nequi 300 123 4567/);
+  assert.doesNotMatch(casaMsg, /\{|\}/, "ninguna variable queda sin reemplazar");
+  assert.doesNotMatch(casaMsg, /\n{3,}/);
+  const general = waText(cobros);
+  assert.match(general, /Hola vecinos de Jardines de Ibiza/);
+  assert.match(general, /Casas con cuota pendiente: 03 \(.+\); 14 \(.+\)\./);
+
+  // The editor.
+  const page = await get("/panel/mensajes");
+  assert.match(page, /Mensajes de WhatsApp/);
+  for (const t of ["Recordatorio a una casa", "Recordatorio para todos", "Enlace personal de una casa"]) assert.ok(page.includes(t), t);
+  assert.match(page, /Así se ve \(con datos de ejemplo\)/);
+  assert.match(await get("/panel/mas"), /href="\/panel\/mensajes"/);
+  assert.equal((await fetch(`${s.base}/panel/mensajes`, { redirect: "manual" })).headers.get("location"), "/login");
+
+  const save = (key, texto) => form(`${s.base}/panel/mensajes/${key}`, { _csrf: csrf, texto }, cookie);
+  assert.equal((await form(`${s.base}/panel/mensajes/recordatorio_casa`, { texto: "Hola {nombre}, sin token no se guarda" }, cookie)).status, 403);
+  const bad = await save("recordatorio_casa", "Hola {nombre}, esto usa {inventada} que no existe");
+  assert.equal(bad.status, 400);
+  const badHtml = await bad.text();
+  assert.match(badHtml, /Variable desconocida: \{inventada\}/);
+  assert.match(badHtml, /esto usa \{inventada\} que no existe/, "lo escrito no se pierde");
+  assert.equal(s.A.templates.all().recordatorio_casa, undefined);
+  assert.equal((await save("enlace_casa", "Hola {nombre}, aquí no va el enlace de la casa")).status, 400);
+  assert.match((await save("secreto", "Hola {nombre}, esto no existe de verdad")).headers.get("location"), /m=msbad/, "una clave inventada no hace nada");
+
+  assert.match((await save("recordatorio_casa", "Buenas {nombre} 👋 La casa {casa} debe {valor} {meses}.\n\n{como_pagar}")).headers.get("location"), /m=msok/);
+  const after = waText((await get("/panel/cobros")).split("debt-actions")[1]);
+  assert.match(after, /^Buenas (Diana|Sandra) 👋 La casa (03|14) debe \$60\.000 de /);
+  assert.doesNotMatch(after, /te escribe/, "ya no es el original");
+  assert.equal(s.B.templates.all().recordatorio_casa, undefined, "el otro conjunto no cambió");
+  assert.match(await get("/panel/mensajes"), /Personalizado/);
+
+  // The link message: the editable text still carries the link.
+  const csrfCasas = await csrfOf(s.base, cookie, "/panel/casas");
+  const created = await form(`${s.base}/panel/casas`, { _csrf: csrfCasas, code: "20", residente: "Lucía Gómez", telefono: "300 123 4567" }, cookie);
+  const linkMsg = waText(await created.text());
+  assert.match(linkMsg, /Hola Lucía, soy Marta de Jardines de Ibiza\./);
+  assert.match(linkMsg, /para la casa 20/);
+  assert.match(linkMsg, /http:\/\/localhost:3000\/r\/[A-Za-z0-9_-]{20,}/);
+
+  // Back to the original.
+  assert.match((await form(`${s.base}/panel/mensajes/recordatorio_casa/restablecer`, { _csrf: csrf }, cookie)).headers.get("location"), /m=msreset/);
+  assert.match(waText((await get("/panel/cobros")).split("debt-actions")[1]), /te escribe Marta/);
+  const log = s.A.audit.list({ limit: 50 }).rows.map((r) => r.summary);
+  assert.ok(log.includes("Cambió el mensaje de WhatsApp: Recordatorio a una casa"));
+  assert.ok(log.includes("Volvió al mensaje original de WhatsApp: Recordatorio a una casa"));
+
+  // The browser's live preview and the server's renderer are the same function.
+  const { renderTemplate } = await import("../src/messages.js");
+  const sandbox = { document: { addEventListener() {}, querySelectorAll: () => [], querySelector: () => null }, navigator: {}, location: {}, addEventListener() {} };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(readFileSync(new URL("../public/app.js", import.meta.url), "utf8"), sandbox);
+  const vars = { nombre: "Sandra", valor: "$60.000", plazo: "", como_pagar: "Nequi 300 123 4567", detalle: "• Oct: $30.000\n• Nov: $30.000", vacio: "" };
+  for (const body of [
+    "Hola {nombre}, debes {valor}.", "Hola {nombre}\n\n\n\n{plazo}\n\nAdiós", "  {plazo}   {como_pagar}  \n{detalle}", "{desconocida} y {nombre}", "{vacio}", "línea   con    espacios\t\n  sangría {nombre}  ",
+  ]) assert.equal(sandbox.cuotia.renderMessage(body, vars), renderTemplate(body, vars), JSON.stringify(body));
 }));

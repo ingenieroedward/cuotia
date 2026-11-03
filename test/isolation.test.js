@@ -487,3 +487,19 @@ test("medios de pago: se validan por tipo, no se repiten, tienen tope y cada con
   assert.equal(A.payMethods.list().length, 5);
   assert.throws(() => A.payMethods.remove(nequi), /no existe/);
 });
+
+test("mensajes de WhatsApp: cada conjunto edita los suyos, se validan y volver al original borra la edición", () => {
+  const { A, B } = twoConjuntos();
+  assert.deepEqual(A.templates.all(), {});
+  A.templates.set("recordatorio_casa", "Hola {nombre}, la casa {casa} debe {valor}. Gracias, {tesorero}.");
+  assert.equal(A.templates.all().recordatorio_casa, "Hola {nombre}, la casa {casa} debe {valor}. Gracias, {tesorero}.");
+  assert.deepEqual(B.templates.all(), {}, "el otro conjunto conserva el original");
+  A.templates.set("recordatorio_casa", "Hola {nombre}, ahora dice otra cosa con {valor}.");
+  assert.equal(Object.keys(A.templates.all()).length, 1, "editar dos veces no duplica");
+  for (const [key, text] of [["recordatorio_casa", "corto"], ["recordatorio_casa", "Hola {nombre} y {inventada} más texto"], ["enlace_casa", "Hola {nombre}, aquí va tu enlace sin la variable"], ["no_existe", "Hola {nombre} texto largo suficiente"], ["recordatorio_casa", "x".repeat(1300)]]) {
+    assert.throws(() => A.templates.set(key, text), undefined, `${key}: ${text.slice(0, 20)}`);
+  }
+  A.templates.reset("recordatorio_casa");
+  assert.deepEqual(A.templates.all(), {});
+  B.templates.reset("recordatorio_casa");
+});
