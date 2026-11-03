@@ -1910,3 +1910,72 @@ test("navegación: el celular tiene cinco pestañas (la quinta es Más) y el com
   assert.match(/<nav class="tabbar"[\s\S]*?<\/nav>/.exec(await get("/panel/ajustes"))[0], /href="\/panel\/mas" aria-current="page"/);
   assert.equal((await fetch(`${s.base}/panel/mas`, { redirect: "manual" })).headers.get("location"), "/login");
 }));
+
+test("qué cobras: se agrega Administración, se cambia un valor, se hace un cobro especial y una multa, y cada conjunto ve lo suyo", () => withServer(async (s) => {
+  const now = currentPeriod();
+  s.A.dues.generate(now);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/conceptos");
+  const go = (path, fields) => form(`${s.base}${path}`, { _csrf: csrf, ...fields }, cookie);
+  const get = async (p) => (await fetch(`${s.base}${p}`, { headers: { cookie }, redirect: "manual" })).text();
+
+  const page = await get("/panel/conceptos");
+  assert.match(page, /Qué cobras/);
+  assert.match(page, /Cada casa paga \$30\.000 al mes/);
+  assert.equal((await fetch(`${s.base}/panel/conceptos`, { redirect: "manual" })).headers.get("location"), "/login");
+  assert.equal((await form(`${s.base}/panel/conceptos`, { nombre: "Administración", valor: "120.000" }, cookie)).status, 403, "sin token no se crea nada");
+
+  // A second monthly concept: this month's due appears at once for every house, and the sidebar shows the sum.
+  assert.match((await go("/panel/conceptos", { nombre: "Administración", valor: "120.000" })).headers.get("location"), /m=cnok/);
+  assert.equal(s.A.dues.listForHouse(s.a14.house.id).length, 2);
+  assert.equal(s.B.concepts.list().length, 1, "el otro conjunto sigue con su vigilancia");
+  assert.match(await get("/panel"), /Cuota mensual \$150\.000/);
+  const resident = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
+  assert.match(resident, /\$150\.000/);
+  assert.match(resident, /Administración/);
+  assert.match((await go("/panel/conceptos", { nombre: "administración", valor: "1" })).headers.get("location"), /m=cndup|m=cnbad/);
+  for (const bad of [{ nombre: "A", valor: "120.000" }, { nombre: "Bien", valor: "mucho" }, { nombre: "Bien", valor: "500" }]) {
+    assert.match((await go("/panel/conceptos", bad)).headers.get("location"), /m=cnbad/, JSON.stringify(bad));
+  }
+
+  // Changing the value only affects the dues made from now on.
+  const adm = s.A.concepts.all().find((c) => c.name === "Administración");
+  assert.match((await go(`/panel/conceptos/${adm.id}/valor`, { valor: "130.000" })).headers.get("location"), /m=cnval/);
+  assert.equal(s.A.dues.listForHouse(s.a14.house.id).find((d) => d.conceptName === "Administración").amountCents, 12_000_000);
+  assert.equal(s.A.concepts.list().find((c) => c.name === "Administración").amountCents, 13_000_000);
+  // Another conjunto can't touch it.
+  const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/conceptos");
+  assert.match((await form(`${s.base}/panel/conceptos/${adm.id}/valor`, { _csrf: otherCsrf, valor: "1.000" }, other.cookie)).headers.get("location"), /m=cnbad/);
+  assert.equal(s.A.concepts.list().find((c) => c.name === "Administración").amountCents, 13_000_000);
+
+  // Special charge to everyone, and a fine to one house.
+  assert.match((await go("/panel/conceptos/especial", { nombre: "Arreglo del portón", valor: "45.000", mes: now, alcance: "todas" })).headers.get("location"), /m=espok/);
+  assert.equal(s.A.dues.listForHouse(s.a03.house.id).filter((d) => d.conceptName === "Arreglo del portón").length, 1);
+  assert.equal(s.B.dues.listForHouse(s.b01.house.id).length, 0, "ni rastro en el otro conjunto");
+  assert.match((await go("/panel/conceptos/especial", { nombre: "Multa por ruido", valor: "50.000", mes: now, alcance: "una", casa: s.a14.house.id })).headers.get("location"), /m=espok/);
+  assert.equal(s.A.dues.listForHouse(s.a14.house.id).filter((d) => d.conceptName === "Multa por ruido").length, 1);
+  assert.equal(s.A.dues.listForHouse(s.a03.house.id).filter((d) => d.conceptName === "Multa por ruido").length, 0, "la multa es solo de la 14");
+  assert.match(await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text(), /Multa por ruido/);
+  for (const bad of [
+    { nombre: "Futuro", valor: "1.000", mes: shiftPeriod(now, 1), alcance: "todas" },
+    { nombre: "Sin casa", valor: "10.000", mes: now, alcance: "una", casa: "" },
+    { nombre: "Casa ajena", valor: "10.000", mes: now, alcance: "una", casa: s.b01.house.id },
+    { nombre: "Multa por ruido", valor: "10.000", mes: now, alcance: "todas" },
+  ]) assert.match((await go("/panel/conceptos/especial", bad)).headers.get("location"), /m=(espbad|cndup)/, JSON.stringify(bad));
+  assert.equal(s.B.concepts.all().filter((c) => c.kind === "once").length, 0);
+  assert.match(await get("/panel/conceptos"), /Cobros especiales hechos/);
+
+  // Pausing the last monthly concept is refused; pausing Administración works and stops new dues.
+  const vig = s.A.concepts.all().find((c) => c.name === "Vigilancia");
+  assert.match((await go(`/panel/conceptos/${adm.id}/estado`, { activo: "0" })).headers.get("location"), /m=cnest/);
+  assert.match((await go(`/panel/conceptos/${vig.id}/estado`, { activo: "0" })).headers.get("location"), /m=cnultimo/);
+  assert.equal(s.A.dues.generate(shiftPeriod(now, 1)), 2 * 1, "en pausa: solo vigilancia");
+
+  // Everything is in the audit log, without leaking anything else.
+  const log = s.A.audit.list({ limit: 100 }).rows.map((r) => r.summary);
+  assert.ok(log.includes('Agregó el cobro mensual "Administración" por $120.000'), log.join(" | "));
+  assert.ok(log.some((t) => /^Cambió el valor de "Administración" de \$120\.000 a \$130\.000/.test(t)));
+  assert.ok(log.some((t) => /^Hizo un cobro especial "Multa por ruido" de \$50\.000 a la casa 14/.test(t)));
+  assert.match(await get("/panel/mas"), /href="\/panel\/conceptos"/);
+}));

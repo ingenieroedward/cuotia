@@ -584,3 +584,11 @@ a.card.more-item > span { display: grid; flex: 1; min-width: 0; }
 a.card.more-item > svg { flex: none; }
 .tab { min-width: 0; }
 .tab span { white-space: nowrap; }
+
+li.concept { display: grid; gap: .5rem; }
+li.concept.paused { opacity: .7; }
+li.concept .actions { align-items: flex-start; }
+/* A house picker inside a form column (not in the "Por asignar" row it was made for): natural height, full width. */
+fieldset .combo { flex: none; display: grid; gap: .5rem; }
+fieldset .combo .combo-search, fieldset .combo select { flex: none; width: 100%; }
+ul.docs li { display: grid; gap: .1rem; }

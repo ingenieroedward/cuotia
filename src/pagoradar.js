@@ -42,7 +42,7 @@ export function ingestEvent(store, event, tenantId) {
   // Automatic only when we know the house AND it has an open due for exactly this amount;
   // anything else (an extra payment, a partial one, an unknown payer) waits for the treasurer.
   const houseId = ledger.matchHouse(payerName);
-  if (houseId && ledger.dues.oldestOpen(houseId, amountCents)) {
+  if (houseId && ledger.dues.matchFor(houseId, amountCents).length > 0) {
     const { dueId } = ledger.payments.assign(payment.id, houseId, { rememberAlias: false });
     return { status: "assigned", paymentId: payment.id, dueId };
   }

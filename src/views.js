@@ -72,6 +72,14 @@ const FLASH = {
   comprech: () => ({ kind: "ok", text: "Comprobante rechazado. El residente verá que no se pudo confirmar." }),
   pushprobe: () => ({ kind: "ok", text: "Te enviamos un aviso de prueba. Si no lo ves en unos segundos, revisa que las notificaciones de Cuotia estén permitidas en tu teléfono." }),
   pushsin: () => ({ kind: "err", text: "Primero activa los avisos en este dispositivo." }),
+  cnok: () => ({ kind: "ok", text: "Cobro mensual agregado. La cuota de este mes ya está creada para todas las casas." }),
+  cnbad: () => ({ kind: "err", text: "Revisa el nombre (2 a 60 letras) y el valor (entre $1.000 y $100.000.000)." }),
+  cndup: () => ({ kind: "err", text: "Ya existe un cobro con ese nombre. Usa otro." }),
+  cnval: () => ({ kind: "ok", text: "Valor cambiado. Aplica a las cuotas que se creen desde ahora." }),
+  cnest: () => ({ kind: "ok", text: "Listo." }),
+  cnultimo: () => ({ kind: "err", text: "Debe quedar al menos un cobro mensual activo." }),
+  espok: () => ({ kind: "ok", text: "Cobro especial creado. Ya aparece en Por cobrar y en la pantalla de cada casa." }),
+  espbad: () => ({ kind: "err", text: "Revisa el nombre, el valor, el mes (no puede ser futuro) y la casa elegida." }),
   gastook: () => ({ kind: "ok", text: "Gasto registrado." }),
   gastobad: () => ({ kind: "err", text: "Revisa el gasto: escribe el valor en pesos, en qué se gastó, la categoría y una fecha que no sea futura." }),
   gastoarchivo: () => ({ kind: "err", text: "El soporte debe ser una foto (JPG, PNG, WebP) o un PDF de máximo 5 MB." }),
@@ -192,7 +200,7 @@ const NAV = [
 
 /** Phones get five tabs: the daily ones, and "Más" for what is used less (cuentas, ajustes, bitácora). */
 const TABS = [...NAV.slice(0, 4), { key: "mas", href: "/panel/mas", label: "Más", icon: "mas" }];
-const MORE_KEYS = ["mas", "cuentas", "ajustes", "bitacora"];
+const MORE_KEYS = ["mas", "cuentas", "conceptos", "ajustes", "bitacora"];
 
 const BRAND_ON_DARK = html`<span class="brand on-dark"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span>`;
 
@@ -220,7 +228,7 @@ export function panelLayout(title, ctx, content) {
       <div class="conj">
         <span class="eyebrow">Conjunto</span>
         <b>${tenant.name}</b>
-        <small>${houseCount} casa${houseCount === 1 ? "" : "s"}${cuota ? ` · Vigilancia ${cuota}` : ""}</small>
+        <small>${houseCount} casa${houseCount === 1 ? "" : "s"}${cuota ? ` · ${cuota}` : ""}</small>
       </div>
       <div class="me">
         <span class="small" title="${user.email}">${user.email}</span>
@@ -261,7 +269,7 @@ function reminderLink({ tenant, dues, period }) {
   const owing = dues.filter((d) => d.status === "pending");
   if (owing.length === 0) return null;
   const text = [
-    `Hola vecinos, les recordamos la cuota de vigilancia de ${periodLabel(period)} (${peso(owing[0].amountCents)}).`,
+    `Hola vecinos, les recordamos la cuota de ${periodLabel(period)} (${peso(owing[0].amountCents)}).`,
     `Casas pendientes: ${owing.map((d) => d.houseCode).join(", ")}.`,
     tenant.payKey ? `Pueden pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : "",
     "¡Gracias!",
@@ -289,7 +297,7 @@ function personalReminder(tenant, group) {
   const names = group.months.map((m) => monthName(m).toLowerCase());
   const when = names.length === 1 ? `de ${names[0]}` : `de ${names.slice(0, -1).join(", ")} y ${names.at(-1)}`;
   return [
-    `Hola ${first}, te recordamos la cuota de vigilancia ${when}: ${peso(group.totalCents)}.`,
+    `Hola ${first}, te recordamos la cuota ${when}: ${peso(group.totalCents)}.`,
     tenant.payKey ? `Puedes pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : "",
     "Cuando pagues, avísame para registrarlo. ¡Gracias!",
   ].filter(Boolean).join(" ");
@@ -364,7 +372,7 @@ export function panelPage(args) {
   <header class="head">
     <div class="head-text">
       <h1>Hola, ${user.name}</h1>
-      <span class="muted">Así va el recaudo de vigilancia.</span>
+      <span class="muted">Así va el recaudo del mes.</span>
     </div>
     <div class="head-actions">
       <nav class="monthnav" aria-label="Elegir mes">
@@ -538,7 +546,7 @@ export function cobrosPage(args) {
   ];
   const href = (f) => `/panel/cobros${f || q ? `?${new URLSearchParams({ ...(f ? { f } : {}), ...(q ? { q } : {}) })}` : ""}`;
   const everyone = groups.length
-    ? `https://wa.me/?text=${encodeURIComponent(`Hola vecinos, les recordamos la cuota de vigilancia pendiente. Casas: ${groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; ")}.${tenant.payKey ? ` Pueden pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : ""} ¡Gracias!`)}`
+    ? `https://wa.me/?text=${encodeURIComponent(`Hola vecinos, les recordamos la cuota pendiente. Casas: ${groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; ")}.${tenant.payKey ? ` Pueden pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : ""} ¡Gracias!`)}`
     : null;
   return panelLayout("Por cobrar", { ...args, active: "cobros" }, html`
   <header class="head">
@@ -1165,6 +1173,73 @@ export function residentCuentasPage({ tenant, token, period, current, books, exp
 </main>`, { manifest: `/r/${token}/manifest.webmanifest` });
 }
 
+/** What the conjunto charges: monthly concepts, and one-off charges (cuota extraordinaria, multa) for all houses or one. */
+export function conceptosPage(args) {
+  const { tenant, csrf, flash, concepts, houses, current, months } = args;
+  const monthly = concepts.filter((c) => c.kind === "monthly");
+  const once = concepts.filter((c) => c.kind === "once");
+  const sum = monthly.filter((c) => c.active).reduce((n, c) => n + c.amountCents, 0);
+  return panelLayout("Qué cobras", { ...args, active: "conceptos" }, html`
+  <div class="heading"><h1>Qué cobras</h1><span class="muted">${tenant.name}</span></div>
+  ${flashBox(flash)}
+
+  <section class="card">
+    <div class="row wrap"><h2>Cuotas mensuales</h2><span class="muted small">Cada casa paga ${peso(sum)} al mes</span></div>
+    <p class="muted small">Se cobran todos los meses a todas las casas. Si cambias un valor, aplica a las cuotas que se creen desde ahora: las que ya existen no cambian.</p>
+    <ul class="list stack">${monthly.map((c) => html`<li class="concept${c.active ? "" : " paused"}">
+      <div class="row"><span><b>${c.name}</b><small class="muted">${c.active ? "Se cobra cada mes" : "En pausa: no se crean cuotas nuevas"}</small></span><b>${peso(c.amountCents)}</b></div>
+      <div class="actions">
+        <details class="undo"><summary>Cambiar valor</summary>
+          <form class="stack-form" method="post" action="/panel/conceptos/${c.id}/valor">${csrfField(csrf)}
+            <label>Nuevo valor (pesos)<input type="text" name="valor" inputmode="numeric" maxlength="14" required value="${(c.amountCents / 100).toLocaleString("es-CO")}"></label>
+            <button class="btn small" type="submit">Guardar</button>
+          </form>
+        </details>
+        <details class="undo"><summary>${c.active ? "Pausar" : "Reanudar"}</summary>
+          <p class="muted small">${c.active ? "No se crean más cuotas de este cobro. Las que ya existen siguen y se pueden pagar." : "Vuelve a crear la cuota de este cobro cada mes."}</p>
+          <form method="post" action="/panel/conceptos/${c.id}/estado">${csrfField(csrf)}<input type="hidden" name="activo" value="${c.active ? "0" : "1"}"><button class="btn ghost small" type="submit">Sí, ${c.active ? "pausar" : "reanudar"}</button></form>
+        </details>
+      </div>
+    </li>`)}</ul>
+    <form class="grid-form" method="post" action="/panel/conceptos">
+      ${csrfField(csrf)}
+      <label>Nuevo cobro mensual<input type="text" name="nombre" maxlength="60" required placeholder="Administración"></label>
+      <label>Valor (pesos)<input type="text" name="valor" inputmode="numeric" maxlength="14" required placeholder="120.000"></label>
+      <button class="btn" type="submit">Agregar cobro mensual</button>
+    </form>
+  </section>
+
+  <section class="card" id="especial">
+    <h2>Cobro especial</h2>
+    <p class="muted small">Para una cuota extraordinaria (a todas las casas) o una multa (a una sola). Se crea una cuota por casa para el mes que elijas, y se paga como cualquier otra.</p>
+    <form class="stack-form" method="post" action="/panel/conceptos/especial">
+      ${csrfField(csrf)}
+      <div class="grid-form">
+        <label>Nombre<input type="text" name="nombre" maxlength="60" required placeholder="Arreglo del portón"></label>
+        <label>Valor por casa (pesos)<input type="text" name="valor" inputmode="numeric" maxlength="14" required placeholder="45.000"></label>
+        <label>Mes en que se cobra<select name="mes">${months.map((m) => html`<option value="${m}"${m === current ? raw(" selected") : ""}>${periodLabel(m)}</option>`)}</select></label>
+      </div>
+      <fieldset>
+        <legend>¿A quién?</legend>
+        <label class="check"><input type="radio" name="alcance" value="todas" checked><span><b>A todas las casas</b> (${houses.length})</span></label>
+        <label class="check"><input type="radio" name="alcance" value="una"><span><b>Solo a una casa</b> (una multa, por ejemplo)</span></label>
+        <div class="combo">
+          <input type="search" class="combo-search" hidden data-select-filter="#casa-especial" placeholder="Buscar casa o nombre…" aria-label="Buscar la casa" autocomplete="off">
+          <select id="casa-especial" name="casa" aria-label="Casa para el cobro"><option value="">Elegir casa…</option>${houseOptions(houses)}</select>
+        </div>
+      </fieldset>
+      <button class="btn" type="submit">Crear el cobro</button>
+    </form>
+  </section>
+
+  ${once.length
+    ? html`<section class="card">
+        <h2>Cobros especiales hechos</h2>
+        <ul class="list stack">${once.map((c) => html`<li class="concept"><div class="row"><span><b>${c.name}</b><small class="muted">${c.period ? periodLabel(c.period) : ""} · ${c.dues} cuota${c.dues === 1 ? "" : "s"} · ${c.pending ? `${c.pending} sin pagar (${peso(c.pendingCents)})` : "todas pagadas"}</small></span><b>${peso(c.amountCents)}</b></div></li>`)}</ul>
+      </section>`
+    : ""}`);
+}
+
 /** The "Más" tab on a phone: what is not used every day. */
 export function masPage(args) {
   const { tenant } = args;
@@ -1172,6 +1247,7 @@ export function masPage(args) {
   return panelLayout("Más", { ...args, active: "mas" }, html`
   <div class="heading"><h1>Más</h1><span class="muted">${tenant.name}</span></div>
   ${item("/panel/cuentas", "cuentas", "Cuentas claras", "Gastos, saldo en caja y resumen para los vecinos")}
+  ${item("/panel/conceptos", "cobrar", "Qué cobras", "Vigilancia, administración, cuotas extraordinarias y multas")}
   ${item("/panel/ajustes", "ajustes", "Ajustes", "Cuenta para cobrar, fechas, equipo y avisos")}
   ${item("/panel/bitacora", "bitacora", "Bitácora", "Quién hizo qué en el panel")}`);
 }
@@ -1305,7 +1381,7 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
 
   <section class="hero" aria-label="Tu cuota">
     <div class="row">
-      <span class="eyebrow">${owed.length ? "Tu cuota" : "Vigilancia"} · ${periodLabel(period).split(" ")[0]}</span>
+      <span class="eyebrow">Tu cuota · ${periodLabel(period).split(" ")[0]}</span>
       ${owed.length ? (overdue ? html`<span class="pill bad"><i></i>Vencida</span>` : STATUS.pending) : STATUS.paid}
     </div>
     ${owed.length
@@ -1328,7 +1404,7 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
 
   <section class="card">
     <h2>Mis documentos</h2>
-    <ul class="list">
+    <ul class="list stack docs">
       <li><a class="strong" href="/r/${token}/estado">Estado de cuenta</a><small class="muted">Todo lo que has pagado y lo que debes</small></li>
       <li><a class="strong" href="/r/${token}/paz-y-salvo">Paz y salvo</a><small class="muted">Certificado, cuando no tienes cuotas vencidas</small></li>
     </ul>
@@ -1355,7 +1431,7 @@ export function residentPayPage({ tenant, house, dues, token, proofs = [] }) {
   const total = owed.reduce((s, d) => s + d.amountCents, 0);
   return layout("Pagar", html`
 <main class="narrow res">
-  <header class="backbar"><a href="/r/${token}" aria-label="Volver">${icon("back", 24, 2.2)}</a><h1>Pagar vigilancia</h1></header>
+  <header class="backbar"><a href="/r/${token}" aria-label="Volver">${icon("back", 24, 2.2)}</a><h1>Pagar mi cuota</h1></header>
 
   <section class="hero center-text" aria-label="Total a pagar">
     <span class="eyebrow">Total a pagar</span>

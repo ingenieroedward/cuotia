@@ -241,6 +241,11 @@ const MIGRATIONS = [
   );
   CREATE INDEX audit_by_tenant ON audit_log (tenant_id, id);
   `,
+  /* V15: what a conjunto charges. 'monthly' concepts (vigilancia, administración) get a due for every active house every
+     month; 'once' concepts are a special charge (cuota extraordinaria, multa) made for a month and some houses. */
+  `
+  ALTER TABLE concepts ADD COLUMN kind TEXT NOT NULL DEFAULT 'monthly' CHECK (kind IN ('monthly', 'once'));
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -501,13 +506,61 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    const CONCEPT_MIN_CENTS = 100_000; // $1.000
+    const CONCEPT_MAX_CENTS = 10_000_000_000; // $100.000.000
+    const checkConcept = (name, amountCents) => {
+      const clean = String(name ?? "").trim();
+      if (clean.length < 2 || clean.length > 60) throw new Error("El nombre debe tener entre 2 y 60 letras");
+      if (!Number.isSafeInteger(amountCents) || amountCents < CONCEPT_MIN_CENTS || amountCents > CONCEPT_MAX_CENTS) throw new Error("El valor debe estar entre $1.000 y $100.000.000");
+      return clean;
+    };
+    const conceptRow = (r) => ({ id: r.id, name: r.name, amountCents: r.amount_cents, kind: r.kind, active: !!r.active });
     const concepts = {
-      create({ name, amountCents }) {
+      create({ name, amountCents, kind = "monthly" }) {
+        const clean = checkConcept(name, amountCents);
+        if (db.prepare("SELECT 1 FROM concepts WHERE tenant_id = ? AND LOWER(name) = LOWER(?)").get(tenantId, clean)) throw new Error("Ya existe un cobro con ese nombre");
         const id = newId("cn");
-        db.prepare("INSERT INTO concepts (id, tenant_id, name, amount_cents) VALUES (?, ?, ?, ?)").run(id, tenantId, name, amountCents);
+        db.prepare("INSERT INTO concepts (id, tenant_id, name, amount_cents, kind) VALUES (?, ?, ?, ?, ?)").run(id, tenantId, clean, amountCents, kind === "once" ? "once" : "monthly");
         return id;
       },
-      list: () => db.prepare("SELECT * FROM concepts WHERE tenant_id = ? AND active = 1 ORDER BY name").all(tenantId).map((r) => ({ id: r.id, name: r.name, amountCents: r.amount_cents })),
+      /** What is charged every month: the active monthly concepts. */
+      list: () => db.prepare("SELECT * FROM concepts WHERE tenant_id = ? AND active = 1 AND kind = 'monthly' ORDER BY name").all(tenantId).map(conceptRow),
+      /** Everything this conjunto has ever charged, with how many dues each one made and how many are still unpaid. */
+      all: () => db.prepare(
+        `SELECT c.*, COUNT(d.id) AS dues, COALESCE(SUM(d.status = 'pending'), 0) AS pending, COALESCE(SUM(CASE WHEN d.status = 'pending' THEN d.amount_cents ELSE 0 END), 0) AS pending_cents,
+                MIN(d.period) AS period
+         FROM concepts c LEFT JOIN dues d ON d.concept_id = c.id WHERE c.tenant_id = ? GROUP BY c.id ORDER BY c.kind, c.name`,
+      ).all(tenantId).map((r) => ({ ...conceptRow(r), dues: Number(r.dues), pending: Number(r.pending), pendingCents: Number(r.pending_cents), period: r.period })),
+      /** A new amount: only the dues made from now on use it; the ones already made keep what they were charged. */
+      setAmount(id, amountCents) {
+        const row = db.prepare("SELECT * FROM concepts WHERE id = ? AND tenant_id = ? AND kind = 'monthly'").get(id, tenantId);
+        if (!row) throw new Error("Ese cobro no existe en este conjunto");
+        checkConcept(row.name, amountCents);
+        db.prepare("UPDATE concepts SET amount_cents = ? WHERE id = ? AND tenant_id = ?").run(amountCents, id, tenantId);
+      },
+      /** Stops (or resumes) a monthly concept: no new dues are made for it; the existing ones stay. Never the last active one. */
+      setActive(id, active) {
+        const row = db.prepare("SELECT * FROM concepts WHERE id = ? AND tenant_id = ? AND kind = 'monthly'").get(id, tenantId);
+        if (!row) throw new Error("Ese cobro no existe en este conjunto");
+        if (!active && Number(db.prepare("SELECT COUNT(*) AS n FROM concepts WHERE tenant_id = ? AND kind = 'monthly' AND active = 1 AND id != ?").get(tenantId, id).n) === 0) throw new Error("Debe quedar al menos un cobro mensual activo");
+        db.prepare("UPDATE concepts SET active = ? WHERE id = ? AND tenant_id = ?").run(active ? 1 : 0, id, tenantId);
+      },
+      /**
+       * A special charge (cuota extraordinaria, multa): one concept and one due for each of the chosen active houses, for
+       * one month. All or nothing; the name must be new.
+       */
+      charge({ name, amountCents, period, houseIds }) {
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw new Error("El período debe ser AAAA-MM");
+        const ids = [...new Set(houseIds ?? [])];
+        if (ids.length === 0) throw new Error("Elige al menos una casa");
+        return tx(() => {
+          for (const id of ids) if (!ownHouse(id).active) throw new Error("Una de las casas está dada de baja");
+          const conceptId = concepts.create({ name, amountCents, kind: "once" });
+          const insert = db.prepare("INSERT INTO dues (id, tenant_id, house_id, concept_id, period, amount_cents) VALUES (?, ?, ?, ?, ?, ?)");
+          for (const id of ids) insert.run(newId("du"), tenantId, id, conceptId, period, amountCents);
+          return { conceptId, created: ids.length };
+        });
+      },
     };
 
     const DUE_SELECT = `SELECT d.*, h.code AS house_code, h.resident_name, c.name AS concept_name
@@ -543,6 +596,23 @@ export function openStore(path = ":memory:") {
       periods: () => db.prepare("SELECT DISTINCT period FROM dues WHERE tenant_id = ? ORDER BY period DESC LIMIT 36").all(tenantId).map((r) => r.period),
       /** Unpaid dues of active houses, oldest first: what a manual payment can settle. */
       listPending: () => db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.status = 'pending' AND h.active = 1 ORDER BY h.code, d.period, c.name`).all(tenantId).map(dueRow),
+      /**
+       * Which unpaid dues of this house does a payment of exactly `amountCents` cover? Deterministic, and never a guess:
+       *  1. one due with exactly that amount (the oldest; among equals, by concept name);
+       *  2. else all the unpaid dues of ONE month (the oldest month that adds up), when there are several;
+       *  3. else all the house's unpaid dues, when together they add up (what the resident's "Total a pagar" says).
+       * Anything else returns [] and the payment waits for the treasurer.
+       */
+      matchFor(houseId, amountCents) {
+        const open = db.prepare(`${DUE_SELECT} WHERE d.tenant_id = ? AND d.house_id = ? AND d.status = 'pending' ORDER BY d.period, c.name`).all(tenantId, houseId).map(dueRow);
+        const single = open.find((d) => d.amountCents === amountCents);
+        if (single) return [single];
+        const byMonth = new Map();
+        for (const d of open) byMonth.set(d.period, [...(byMonth.get(d.period) ?? []), d]);
+        for (const list of byMonth.values()) if (list.length > 1 && list.reduce((n, d) => n + d.amountCents, 0) === amountCents) return list;
+        if (open.length > 1 && open.reduce((n, d) => n + d.amountCents, 0) === amountCents) return open;
+        return [];
+      },
       /** The oldest unpaid due of this house for exactly this amount. */
       oldestOpen(houseId, amountCents) {
         const r = db.prepare("SELECT * FROM dues WHERE tenant_id = ? AND house_id = ? AND amount_cents = ? AND status = 'pending' ORDER BY period LIMIT 1").get(tenantId, houseId, amountCents);
@@ -701,10 +771,9 @@ export function openStore(path = ":memory:") {
           if (p.status !== "unassigned") throw new Error("Ese pago ya está asignado");
           ownHouse(houseId);
           db.prepare("UPDATE payments SET house_id = ?, status = 'assigned' WHERE id = ? AND tenant_id = ?").run(houseId, paymentId, tenantId);
-          const due = dues.oldestOpen(houseId, p.amountCents);
-          const settled = due ? dues.settle(due.id, paymentId, p.paidAt) : false;
+          const covered = dues.matchFor(houseId, p.amountCents).filter((d) => dues.settle(d.id, paymentId, p.paidAt));
           if (rememberAlias) aliases.add(houseId, p.payerName);
-          return { dueId: settled ? due.id : null };
+          return { dueId: covered[0]?.id ?? null, dueIds: covered.map((d) => d.id) };
         });
       },
     };

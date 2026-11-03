@@ -3,6 +3,7 @@ export const AUDIT_ACTIONS = {
   pagos: "Pagos",
   casas: "Casas",
   cuotas: "Cuotas",
+  cobros: "Cobros",
   comprobantes: "Comprobantes",
   gastos: "Gastos",
   ajustes: "Ajustes",
