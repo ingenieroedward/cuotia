@@ -73,7 +73,7 @@ pagoradar ──signed webhook──▶ POST /webhooks/pagoradar/<tenantId> ─�
 
 Ideas ranked after comparing with other community-fee apps (Cuentas claras is done; **the rest are pending, in this order**):
 
-1. To sell: operator panel to create conjuntos, off-server backups, data-protection policy (Ley 1581).
+1. To sell: off-server backups.
 2. Deliberately not copying: reservations, parcels, PQRS, access control, assemblies/voting.
 
 - Passkeys; self-service recovery (today the operator runs `restablecer-2fa` / `restablecer-clave`); off-server copy of the backups (they land on the same disk).
