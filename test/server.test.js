@@ -2020,6 +2020,8 @@ test("borrar los datos personales de una casa dada de baja desde el panel, anota
   // Another conjunto's house can't be reached from here.
   assert.match((await go(`/panel/casas/${s.b01.house.id}/anonimizar`)).headers.get("location"), /m=err/);
   assert.equal(s.B.houses.get(s.b01.house.id).residentName, "Carlos Mejía");
+}));
+
 // ---- operator panel ----------------------------------------------------------------------------------------------
 
 /** Password + code for an operator: returns the full cookie (and the key the first time). */
