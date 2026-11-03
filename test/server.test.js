@@ -1979,3 +1979,126 @@ test("qué cobras: se agrega Administración, se cambia un valor, se hace un cob
   assert.ok(log.some((t) => /^Hizo un cobro especial "Multa por ruido" de \$50\.000 a la casa 14/.test(t)));
   assert.match(await get("/panel/mas"), /href="\/panel\/conceptos"/);
 }));
+
+// ---- operator panel ----------------------------------------------------------------------------------------------
+
+/** Password + code for an operator: returns the full cookie (and the key the first time). */
+async function opSignIn(base, email, password, { step = totpStep() } = {}) {
+  const res1 = await form(`${base}/operador/entrar`, { email, password });
+  const partial = cookieOf(res1);
+  const page = await (await fetch(`${base}/operador/2fa`, { headers: { cookie: partial } })).text();
+  const key = page.match(/class="key secret" translate="no">([A-Z2-7 ]+)</)?.[1].replace(/ /g, "");
+  const res = await form(`${base}/operador/2fa`, { code: totpCode(key, step) }, partial);
+  return { res, cookie: cookieOf(res), secret: key, first: res1 };
+}
+
+test("operador: el panel no existe (404) hasta que se crea un operador, y entonces exige contraseña y código", () => withServer(async (s) => {
+  for (const p of ["/operador", "/operador/entrar", "/operador/2fa", "/operador/cuenta"]) assert.equal((await fetch(`${s.base}${p}`, { redirect: "manual" })).status, 404, p);
+  s.store.operators.create({ email: "dev@cuotia.co", passwordHash: await hashPassword("clave-del-operador"), name: "Dev" });
+
+  assert.equal((await fetch(`${s.base}/operador`, { redirect: "manual" })).headers.get("location"), "/operador/entrar");
+  assert.match(await (await fetch(`${s.base}/operador/entrar`)).text(), /Panel de Cuotia/);
+  const bad = await form(`${s.base}/operador/entrar`, { email: "dev@cuotia.co", password: "mala" });
+  assert.equal(bad.status, 401);
+  assert.match(await bad.text(), /Correo o contraseña incorrectos/);
+  assert.equal((await form(`${s.base}/operador/entrar`, { email: "nadie@cuotia.co", password: "x" })).status, 401, "mismo mensaje con un correo que no existe");
+
+  // Only the password: the short session opens nothing but the code page.
+  const pwd = await form(`${s.base}/operador/entrar`, { email: "dev@cuotia.co", password: "clave-del-operador" });
+  const partial = cookieOf(pwd);
+  assert.equal(pwd.headers.get("location"), "/operador/2fa");
+  assert.equal((await fetch(`${s.base}/operador`, { headers: { cookie: partial }, redirect: "manual" })).headers.get("location"), "/operador/2fa");
+  const setup = await (await fetch(`${s.base}/operador/2fa`, { headers: { cookie: partial } })).text();
+  assert.match(setup, /action="\/operador\/2fa"/);
+  assert.match(setup, /<svg[^>]*aria-label="Código QR/);
+  assert.equal((await form(`${s.base}/operador/2fa`, { code: "000000" }, partial)).status, 401);
+
+  const ok = await opSignIn(s.base, "dev@cuotia.co", "clave-del-operador");
+  assert.equal(ok.res.headers.get("location"), "/operador");
+  assert.match(ok.res.headers.get("set-cookie"), /Path=\/operador/, "la cookie solo viaja a /operador");
+  assert.match(await (await fetch(`${s.base}/operador`, { headers: { cookie: ok.cookie } })).text(), /Crear un conjunto/);
+  // Neither login opens the other panel.
+  assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie: ok.cookie }, redirect: "manual" })).headers.get("location"), "/login");
+  const tre = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  assert.equal((await fetch(`${s.base}/operador`, { headers: { cookie: tre.cookie }, redirect: "manual" })).headers.get("location"), "/operador/entrar");
+  // And the treasurers' login page does not accept the operator.
+  assert.equal((await form(`${s.base}/login`, { email: "dev@cuotia.co", password: "clave-del-operador" })).status, 401);
+}));
+
+test("operador: ve cuántas casas y personas tiene cada conjunto, nunca residentes, pagos ni cuentas", () => withServer(async (s) => {
+  s.store.operators.create({ email: "dev@cuotia.co", passwordHash: await hashPassword("clave-del-operador"), name: "Dev" });
+  s.A.dues.generate(currentPeriod());
+  s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: [s.A.dues.listForHouse(s.a14.house.id)[0].id], method: "cash" });
+  const { cookie } = await opSignIn(s.base, "dev@cuotia.co", "clave-del-operador");
+  const page = await (await fetch(`${s.base}/operador`, { headers: { cookie } })).text();
+  assert.match(page, /Jardines de Ibiza/);
+  assert.match(page, /Los Robles/);
+  assert.match(page, /3 casas/, "2 + 1 casas en total");
+  for (const secret of ["Sandra", "Diana", "Carlos", "$30.000", "marta@ejemplo.com", "3001234567"]) assert.ok(!page.includes(secret), `el operador no ve: ${secret}`);
+}));
+
+test("operador: crea un conjunto con su tesorero invitado, valida los datos y no mezcla nada con los demás", () => withServer(async (s) => {
+  s.store.operators.create({ email: "dev@cuotia.co", passwordHash: await hashPassword("clave-del-operador"), name: "Dev" });
+  const { cookie } = await opSignIn(s.base, "dev@cuotia.co", "clave-del-operador");
+  const csrf = await csrfOf(s.base, cookie, "/operador");
+  const go = (path, fields, extra = {}) => form(`${s.base}${path}`, { _csrf: csrf, ...fields }, cookie, extra);
+  const ok = { nombre: "Los Robles", cuota: "45.000", llave: "@robles", titular: "Ana Gómez", tesorero: "Ana Gómez", correo: "ana@robles.co" };
+
+  assert.equal((await form(`${s.base}/operador/conjuntos`, ok, cookie)).status, 403, "sin token no crea nada");
+  assert.equal((await go("/operador/conjuntos", ok, { origin: "https://malo.example" })).status, 403);
+  for (const bad of [{ nombre: "ab" }, { cuota: "mucho" }, { cuota: "500" }, { tesorero: "" }, { correo: "no-es-correo" }, { correo: "marta@ejemplo.com" }]) {
+    const res = await go("/operador/conjuntos", { ...ok, ...bad });
+    assert.equal(res.status, 400, JSON.stringify(bad));
+  }
+  assert.equal(s.store.tenants.list().length, 2, "los intentos malos no crearon nada");
+
+  const res = await go("/operador/conjuntos", ok);
+  assert.equal(res.status, 200);
+  const page = await res.text();
+  const link = /http:\/\/localhost:3000(\/invitacion\/[A-Za-z0-9_-]+)/.exec(page)?.[1];
+  assert.ok(link, "muestra el enlace de invitación una vez");
+  assert.equal(s.store.tenants.list().length, 3);
+  const created = s.store.tenants.list().find((t) => t.name === "Los Robles" && t.id !== s.b.id);
+  assert.equal(created.slug, "los-robles");
+  const twin = await go("/operador/conjuntos", { ...ok, correo: "ana2@robles.co" });
+  assert.equal(twin.status, 200);
+  assert.ok(s.store.tenants.bySlug("los-robles-2"), "el nombre se repite pero el identificador no");
+  assert.equal(created.payKey, "@robles");
+  const ledger = s.store.forTenant(created.id);
+  assert.deepEqual(ledger.concepts.list().map((c) => [c.name, c.amountCents]), [["Vigilancia", 4_500_000]]);
+  assert.equal(ledger.houses.list().length, 0);
+  assert.ok(ledger.audit.list().rows.some((r) => r.summary === "Se creó el conjunto"));
+
+  // The invited treasurer picks a password and lands in THEIR conjunto only.
+  const done = await form(`${s.base}${link}`, { nombre: "Ana Gómez", clave: "clave-de-ana-12", clave2: "clave-de-ana-12" });
+  assert.match(done.headers.get("location"), /\/login\?m=invitado/);
+  const ana = await signIn(s.base, "ana@robles.co", "clave-de-ana-12");
+  const anaPanel = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: ana.cookie } })).text();
+  assert.match(anaPanel, /Los Robles/);
+  assert.doesNotMatch(anaPanel, /Jardines de Ibiza/);
+  assert.equal(s.store.users.byEmail("ana@robles.co").tenantId, created.id);
+
+  // An extra invitation for an existing conjunto, shown once.
+  const inv = await go(`/operador/conjuntos/${s.a.id}/invitar`, { nombre: "Pedro", correo: "pedro@ibiza.co" });
+  assert.equal(inv.status, 200);
+  assert.match(await inv.text(), /\/invitacion\//);
+  assert.ok(s.A.team.invitations().some((i) => i.email === "pedro@ibiza.co"));
+  assert.match((await go(`/operador/conjuntos/${s.a.id}/invitar`, { correo: "marta@ejemplo.com" })).headers.get("location"), /m=err/, "un correo que ya tiene cuenta");
+  assert.match((await go("/operador/conjuntos/ten_000000/invitar", { correo: "x@y.co" })).headers.get("location"), /m=err/);
+}));
+
+test("operador: cambiar la contraseña cierra las otras sesiones y salir cierra la actual", () => withServer(async (s) => {
+  s.store.operators.create({ email: "dev@cuotia.co", passwordHash: await hashPassword("clave-del-operador"), name: "Dev" });
+  const first = await opSignIn(s.base, "dev@cuotia.co", "clave-del-operador");
+  const second = await opSignIn(s.base, "dev@cuotia.co", "clave-del-operador", { step: totpStep() + 1 });
+  const csrf = await csrfOf(s.base, first.cookie, "/operador/cuenta");
+  const change = (fields) => form(`${s.base}/operador/cuenta/clave`, { _csrf: csrf, ...fields }, first.cookie);
+  assert.match((await change({ actual: "mala", nueva: "otra-clave-larga-1", nueva2: "otra-clave-larga-1" })).headers.get("location"), /m=claveerr/);
+  assert.match((await change({ actual: "clave-del-operador", nueva: "corta", nueva2: "corta" })).headers.get("location"), /m=claveerr/);
+  assert.match((await change({ actual: "clave-del-operador", nueva: "otra-clave-larga-1", nueva2: "otra-clave-larga-1" })).headers.get("location"), /m=clave$/);
+  assert.equal((await fetch(`${s.base}/operador`, { headers: { cookie: first.cookie }, redirect: "manual" })).status, 200, "la sesión que cambió la clave sigue");
+  assert.equal((await fetch(`${s.base}/operador`, { headers: { cookie: second.cookie }, redirect: "manual" })).headers.get("location"), "/operador/entrar", "la otra se cerró");
+  assert.equal((await form(`${s.base}/operador/entrar`, { email: "dev@cuotia.co", password: "clave-del-operador" })).status, 401, "la clave vieja ya no sirve");
+  assert.equal((await form(`${s.base}/operador/salir`, { _csrf: csrf }, first.cookie)).headers.get("location"), "/operador/entrar");
+  assert.equal((await fetch(`${s.base}/operador`, { headers: { cookie: first.cookie }, redirect: "manual" })).headers.get("location"), "/operador/entrar");
+}));

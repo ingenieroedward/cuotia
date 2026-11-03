@@ -246,6 +246,26 @@ const MIGRATIONS = [
   `
   ALTER TABLE concepts ADD COLUMN kind TEXT NOT NULL DEFAULT 'monthly' CHECK (kind IN ('monthly', 'once'));
   `,
+  /* V16: the operator (the owner of the platform): people who create conjuntos and who belong to none. They have their own
+     table and sessions so nothing of a conjunto's login can ever reach /operador, and the reverse. */
+  `
+  CREATE TABLE operators (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    password_hash TEXT NOT NULL,
+    totp_secret TEXT,
+    totp_enabled INTEGER NOT NULL DEFAULT 0,
+    totp_last_step INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE operator_sessions (
+    token_hash TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL REFERENCES operators(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    stage TEXT NOT NULL
+  );
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -255,7 +275,7 @@ const nowIso = () => new Date().toISOString();
 const newId = (prefix) => `${prefix}_${randomBytes(8).toString("hex")}`;
 
 const tenantRow = (r) => !r ? null : {
-  id: r.id, slug: r.slug, name: r.name, payKey: r.pay_key, payHolder: r.pay_holder,
+  id: r.id, slug: r.slug, name: r.name, payKey: r.pay_key, payHolder: r.pay_holder, createdAt: r.created_at ?? null,
   // The secret itself never travels in the DTO: views get only whether it is set.
   pagoradarConfigured: !!r.pagoradar_secret, pagoradarLastAt: r.pagoradar_last_at,
   openDay: r.open_day ?? null, dueDay: r.due_day ?? null,
@@ -359,6 +379,49 @@ export function openStore(path = ":memory:") {
     claimTotpStep(userId, step) {
       return Number(db.prepare("UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?").run(step, userId, step).changes) === 1;
     },
+  };
+
+  const operatorRow = (r) => !r ? null : {
+    id: r.id, email: r.email, name: r.display_name || r.email.split("@")[0], passwordHash: r.password_hash,
+    totpSecret: r.totp_secret, totpEnabled: !!r.totp_enabled,
+  };
+  /** The platform's owners. Not tenant data: nothing here belongs to a conjunto. */
+  const operators = {
+    count: () => Number(db.prepare("SELECT COUNT(*) AS n FROM operators").get().n),
+    create({ email, passwordHash, name = null }) {
+      const id = newId("op");
+      db.prepare("INSERT INTO operators (id, email, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)").run(id, String(email).trim().toLowerCase(), name?.trim() || null, passwordHash, nowIso());
+      return id;
+    },
+    byEmail: (email) => operatorRow(db.prepare("SELECT * FROM operators WHERE email = ?").get(String(email ?? "").trim().toLowerCase())),
+    byId: (id) => operatorRow(db.prepare("SELECT * FROM operators WHERE id = ?").get(id)),
+    setPasswordHash: (id, hash) => void db.prepare("UPDATE operators SET password_hash = ? WHERE id = ?").run(hash, id),
+    resetTotp: (id) => void db.prepare("UPDATE operators SET totp_secret = NULL, totp_enabled = 0, totp_last_step = 0 WHERE id = ?").run(id),
+    setTotpSecret: (id, encrypted) => void db.prepare("UPDATE operators SET totp_secret = ?, totp_enabled = 0, totp_last_step = 0 WHERE id = ?").run(encrypted, id),
+    enableTotp: (id) => void db.prepare("UPDATE operators SET totp_enabled = 1 WHERE id = ?").run(id),
+    claimTotpStep: (id, step) => Number(db.prepare("UPDATE operators SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?").run(step, id, step).changes) === 1,
+  };
+  const operatorSessions = {
+    create(operatorId, { stage = "full", ttlMs = 12 * 3600_000 } = {}) {
+      const token = newToken();
+      db.prepare("INSERT INTO operator_sessions (token_hash, operator_id, expires_at, stage) VALUES (?, ?, ?, ?)").run(sha256(token), operatorId, new Date(Date.now() + ttlMs).toISOString(), stage);
+      return token;
+    },
+    resolve(token) {
+      if (!token) return null;
+      const r = db.prepare("SELECT s.stage, o.* FROM operator_sessions s JOIN operators o ON o.id = s.operator_id WHERE s.token_hash = ? AND s.expires_at > ?").get(sha256(token), nowIso());
+      return r ? { stage: r.stage, operator: operatorRow(r) } : null;
+    },
+    /** After a valid code: a new full session replaces the pending one (the token changes at privilege change). */
+    promote(token, ttlMs = 12 * 3600_000) {
+      const s = operatorSessions.resolve(token);
+      if (!s) return null;
+      operatorSessions.delete(token);
+      return operatorSessions.create(s.operator.id, { stage: "full", ttlMs });
+    },
+    delete: (token) => void db.prepare("DELETE FROM operator_sessions WHERE token_hash = ?").run(sha256(token)),
+    deleteForOperator: (operatorId, exceptToken = null) => void db.prepare("DELETE FROM operator_sessions WHERE operator_id = ? AND token_hash != ?").run(operatorId, exceptToken ? sha256(exceptToken) : ""),
+    purgeExpired: () => void db.prepare("DELETE FROM operator_sessions WHERE expires_at <= ?").run(nowIso()),
   };
 
   /** Checks a paz y salvo by its code. Global by design (the code is the credential) and it reveals no name. */
@@ -1018,5 +1081,5 @@ export function openStore(path = ":memory:") {
     return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, expenses, books, matchHouse, summary };
   }
 
-  return { db, tenants, users, invitations, certificates, settings, sessions, residentByToken, forTenant, close: () => db.close() };
+  return { db, tenants, users, invitations, certificates, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };
 }

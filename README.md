@@ -190,3 +190,15 @@ vienen del servidor; solo guarda estilos, tipografía e íconos.
 Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
 alias, doble factor, panel completo y página del residente (responsive). Pendiente: passkeys,
 panel del operador, transparencia. Ver `CLAUDE.md`.
+
+## Panel del operador (para vender Cuotia a más conjuntos)
+
+El dueño de la plataforma tiene su propio panel en **`/operador`**, aparte del de los tesoreros. No existe (responde 404) hasta que se crea un operador desde la terminal del contenedor:
+
+```bash
+npm run admin -- crear-operador --correo tu@correo.com --nombre "Tu nombre"
+```
+
+Imprime una contraseña temporal (una sola vez). Entra en `/operador/entrar`, activa el código de verificación y cambia la contraseña en **Mi cuenta**. Si la pierdes o pierdes el celular: `npm run admin -- restablecer-operador --correo tu@correo.com`.
+
+Desde ahí **creas un conjunto** (nombre, cuota mensual, llave opcional y el correo del tesorero): se genera un enlace de invitación de un solo uso para que el tesorero escoja su propia contraseña. Solo ves cuántas casas y personas tiene cada conjunto y si usa pagoradar; nunca residentes, pagos ni cuentas.

@@ -129,6 +129,130 @@ export function loginPage({ error, notice } = {}) {
 </main>`);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Operator panel (the platform's owner). Own login, no conjunto data: only counts.
+// ---------------------------------------------------------------------------------------------------------------
+
+export function operadorLoginPage({ error } = {}) {
+  return layout("Operador", html`
+<main class="center">
+  <form class="card login" method="post" action="/operador/entrar">
+    ${BRAND_MARK}
+    <h1>Operador</h1>
+    <p class="muted">Panel de Cuotia para crear y acompañar conjuntos</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    <label>Correo<input type="email" name="email" autocomplete="username" required autofocus></label>
+    <label>Contraseña<input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="btn" type="submit">Continuar</button>
+  </form>
+</main>`, { legal: false });
+}
+
+const OPERADOR_FLASH = {
+  clave: { kind: "ok", text: "Contraseña cambiada. En los demás dispositivos tendrás que entrar de nuevo." },
+  claveerr: { kind: "err", text: "La contraseña actual no es correcta, o la nueva tiene menos de 10 caracteres o no coincide." },
+  invitado: { kind: "ok", text: "Invitación creada." },
+  err: { kind: "err", text: "No se pudo completar. Revisa los datos." },
+};
+
+const operadorShell = (title, { csrf, operator, active }, body) => layout(title, html`
+<div class="operador">
+  <header class="op-bar">
+    <span class="op-brand">${BRAND_MARK}<span class="chip">Operador</span></span>
+    <nav class="op-nav" aria-label="Operador">
+      <a href="/operador"${active === "conjuntos" ? raw(' aria-current="page"') : ""}>Conjuntos</a>
+      <a href="/operador/cuenta"${active === "cuenta" ? raw(' aria-current="page"') : ""}>Mi cuenta</a>
+    </nav>
+    <form method="post" action="/operador/salir">${csrfField(csrf)}<button class="btn ghost small" type="submit">Salir</button></form>
+  </header>
+  <main class="op-page">${body}</main>
+</div>`, { legal: false });
+
+export function operadorPage({ csrf, operator, flash, tenants, totals, error = "", values = {} }) {
+  const flashBox = flash ? html`<p class="flash ${flash.kind}" role="status">${flash.text}</p>` : "";
+  return operadorShell("Conjuntos", { csrf, operator, active: "conjuntos" }, html`
+  <div class="heading"><h1>Conjuntos</h1><span class="muted">${totals.tenants} conjunto${totals.tenants === 1 ? "" : "s"} · ${totals.houses} casa${totals.houses === 1 ? "" : "s"}</span></div>
+  ${flashBox}
+  <section class="card">
+    <p class="muted small">Aquí solo ves cuántas casas y personas tiene cada conjunto y si está conectado. No ves nombres de residentes, pagos ni cuentas: eso es de cada conjunto.</p>
+    ${tenants.length
+      ? html`<ul class="list stack">${tenants.map((t) => html`<li class="op-tenant">
+          <div class="row"><span><b>${t.name}</b><small class="muted">${t.slug} · creado el ${shortDate(t.createdAt)}</small></span>
+            ${t.pagoradarConfigured ? html`<span class="pill ok"><i></i>pagoradar${t.pagoradarLastAt ? ` · ${shortDate(t.pagoradarLastAt)}` : ""}</span>` : html`<span class="pill warn"><i></i>Manual</span>`}</div>
+          <dl class="op-stats">
+            <div><dt>Casas</dt><dd>${t.houses}</dd></div>
+            <div><dt>Equipo</dt><dd>${t.team}</dd></div>
+            <div><dt>Invitaciones</dt><dd>${t.invites}</dd></div>
+            <div><dt>Último ingreso</dt><dd>${t.lastLogin ? shortDateTime(t.lastLogin) : "—"}</dd></div>
+          </dl>
+          <details class="undo"><summary>Invitar a otra persona</summary>
+            <form class="grid-form" method="post" action="/operador/conjuntos/${t.id}/invitar">${csrfField(csrf)}
+              <label>Nombre<input type="text" name="nombre" maxlength="80" placeholder="Pedro Gómez"></label>
+              <label>Correo<input type="email" name="correo" maxlength="120" required></label>
+              <button class="btn small" type="submit">Crear invitación</button>
+            </form>
+          </details>
+        </li>`)}</ul>`
+      : html`<p class="muted">Todavía no hay conjuntos.</p>`}
+  </section>
+
+  <section class="card" id="nuevo">
+    <h2>Crear un conjunto</h2>
+    <p class="muted small">Se crea el conjunto con su cobro mensual y se genera un enlace de invitación para quien será su tesorero: esa persona escoge su propia contraseña y activa su código de verificación. Tú nunca ves su contraseña.</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    <form class="stack-form" method="post" action="/operador/conjuntos">
+      ${csrfField(csrf)}
+      <fieldset>
+        <legend>Conjunto</legend>
+        <label>Nombre<input type="text" name="nombre" maxlength="80" required value="${values.nombre ?? ""}" placeholder="Los Robles"></label>
+        <label>Cuota mensual (pesos)<input type="text" name="cuota" inputmode="numeric" maxlength="12" required value="${values.cuota ?? "30.000"}"></label>
+        <label>Llave Bre-B para cobrar <span class="muted small">(opcional)</span><input type="text" name="llave" maxlength="80" value="${values.llave ?? ""}" placeholder="@mi.llave"></label>
+        <label>Titular de la cuenta <span class="muted small">(opcional)</span><input type="text" name="titular" maxlength="80" value="${values.titular ?? ""}"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Tesorero</legend>
+        <label>Nombre<input type="text" name="tesorero" maxlength="80" required value="${values.tesorero ?? ""}"></label>
+        <label>Correo<input type="email" name="correo" maxlength="120" required value="${values.correo ?? ""}"></label>
+      </fieldset>
+      <button class="btn" type="submit">Crear conjunto e invitar</button>
+    </form>
+  </section>`);
+}
+
+/** The invitation link, shown once. */
+export function operadorLinkPage({ csrf, operator, tenantName, email, url }) {
+  const text = `Hola, te invito a ${tenantName} en Cuotia. Crea tu contraseña aquí (el enlace vence en 7 días y sirve una sola vez): ${url}`;
+  return operadorShell("Invitación", { csrf, operator, active: "conjuntos" }, html`
+  <div class="heading"><h1>Invitación lista</h1><span class="muted">${tenantName}</span></div>
+  <section class="card">
+    <p class="small">Envíale este enlace a <b>${email}</b>. <b>Solo se muestra ahora</b>; si se pierde, crea otra invitación para el mismo correo y la anterior deja de servir. Sirve una sola vez y vence en 7 días.</p>
+    <p class="key url" translate="no" id="enlace">${url}</p>
+    <div class="actions">
+      <button class="btn" type="button" data-copy="${url}" data-copy-target="#enlace">Copiar enlace</button>
+      <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(text)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
+      <a class="btn ghost" href="/operador">Volver a conjuntos</a>
+    </div>
+  </section>`);
+}
+
+export function operadorCuentaPage({ csrf, operator, flash }) {
+  return operadorShell("Mi cuenta", { csrf, operator, active: "cuenta" }, html`
+  <div class="heading"><h1>Mi cuenta</h1><span class="muted">${operator.email}</span></div>
+  ${flash ? html`<p class="flash ${flash.kind}" role="status">${flash.text}</p>` : ""}
+  <section class="card">
+    <h2>Cambiar contraseña</h2>
+    <form class="grid-form" method="post" action="/operador/cuenta/clave" autocomplete="off">
+      ${csrfField(csrf)}
+      <label>Contraseña actual<input type="password" name="actual" required autocomplete="current-password"></label>
+      <label>Contraseña nueva (mínimo 10 caracteres)<input type="password" name="nueva" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+      <label>Repite la nueva<input type="password" name="nueva2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+      <button class="btn" type="submit">Cambiar contraseña</button>
+    </form>
+    <p class="muted small">Si pierdes el celular del código, desde la terminal: <code>npm run admin -- restablecer-operador --correo ${operator.email}</code></p>
+  </section>`);
+}
+export const OPERADOR_FLASHES = OPERADOR_FLASH;
+
 /** First-run form: creates the first conjunto and its treasurer. Reached only through the private setup link. */
 export function setupPage({ token, error, values = {} }) {
   return layout("Configuración inicial", html`
@@ -160,11 +284,11 @@ export function setupPage({ token, error, values = {} }) {
 }
 
 /** Second step. "setup" shows the key to add to an authenticator app; "pending" only asks for the code. */
-export function twoFaPage({ stage, error, secret, uri, email }) {
+export function twoFaPage({ stage, error, secret, uri, email, action = "/2fa" }) {
   const grouped = secret ? secret.replace(/(.{4})/g, "$1 ").trim() : "";
   return layout("Código de verificación", html`
 <main class="center">
-  <form class="card login" method="post" action="/2fa" autocomplete="off">
+  <form class="card login" method="post" action="${action}" autocomplete="off">
     ${BRAND_MARK}
     <h1>${stage === "setup" ? "Protege tu cuenta" : "Código de verificación"}</h1>
     ${stage === "setup"

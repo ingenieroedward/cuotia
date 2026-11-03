@@ -1,4 +1,6 @@
-// Operator tasks from the command line (no panel for the operator yet).
+// Operator tasks from the command line (the operator panel is at /operador; these also work without it).
+//   npm run admin -- crear-operador --correo dev@ejemplo.com [--nombre "Dev"]     the platform owner: prints a temporary password
+//   npm run admin -- restablecer-operador --correo dev@ejemplo.com              lost password or phone: new temporary password and a new code
 //   npm run admin -- crear-conjunto --slug jardines-de-ibiza --nombre "Jardines de Ibiza" --correo marta@ejemplo.com [--tesorero "Marta Rojas"] [--llave @llave] [--titular "Marta Rojas"] [--cuota 30000]
 //   npm run admin -- agregar-casa --conjunto jardines-de-ibiza --codigo 14 --residente "Sandra Duque" [--telefono 3001234567]
 //   npm run admin -- generar-cuotas --conjunto jardines-de-ibiza [--periodo 2026-11]
@@ -74,6 +76,23 @@ if (command === "crear-conjunto") {
   console.log(`Respaldo listo: ${file} (${Math.round(bytes / 1024)} KB)`);
   console.log(removed.length ? `Se borraron ${removed.length} respaldo(s) viejo(s); se conservan los últimos ${v.conservar ?? 14}.` : `Se conservan los últimos ${v.conservar ?? 14}.`);
   console.log("Ojo: está en el mismo disco que la base. Copia esa carpeta a otro lugar (otro servidor, tu computador o la nube).");
+} else if (command === "crear-operador" || command === "restablecer-operador") {
+  // The operator is the platform's owner (panel at /operador): belongs to no conjunto and sees only counts.
+  const correo = (v.correo ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) fail("Usa --correo con un correo válido");
+  const password = randomBytes(9).toString("base64url");
+  const passwordHash = await hashPassword(password);
+  if (command === "crear-operador") {
+    if (store.operators.byEmail(correo)) fail("Ya hay un operador con ese correo (para recuperarlo: restablecer-operador)");
+    store.operators.create({ email: correo, passwordHash, name: v.nombre ?? null });
+    console.log(`Operador creado: ${correo}\nContraseña temporal: ${password}\n(no se vuelve a mostrar). Entra en /operador/entrar: te pedirá activar el código de verificación y puedes cambiar la contraseña en "Mi cuenta".`);
+  } else {
+    const op = store.operators.byEmail(correo) ?? fail("No hay un operador con ese correo");
+    store.operators.setPasswordHash(op.id, passwordHash);
+    store.operators.resetTotp(op.id);
+    store.operatorSessions.deleteForOperator(op.id);
+    console.log(`Listo: ${correo} tiene contraseña temporal ${password} (no se vuelve a mostrar), deberá activar un código nuevo y se cerraron sus sesiones.`);
+  }
 } else if (command === "restablecer-2fa" || command === "restablecer-clave") {
   const user = store.users.byEmail(v.correo ?? "") ?? fail("No hay un usuario con ese correo: usa --correo");
   if (command === "restablecer-2fa") {
@@ -87,6 +106,6 @@ if (command === "crear-conjunto") {
     console.log(`Contraseña nueva para ${user.email}: ${password}\n(es temporal: que la cambie en Ajustes; no se vuelve a mostrar).`);
   }
 } else {
-  fail("Comandos: crear-conjunto | configurar-pagoradar | agregar-casa | generar-cuotas | respaldar | restablecer-2fa | restablecer-clave");
+  fail("Comandos: crear-conjunto | configurar-pagoradar | agregar-casa | generar-cuotas | respaldar | restablecer-2fa | restablecer-clave | crear-operador | restablecer-operador");
 }
 store.close();
