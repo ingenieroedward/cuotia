@@ -12,10 +12,11 @@ import { MAX_PROOF_BYTES, parseMultipart, sniffProof } from "./upload.js";
 import { sendPush, validEndpoint, validKeys } from "./webpush.js";
 import { createNotifier } from "./notifier.js";
 import { createOperator } from "./operator.js";
+import { backupName, backupTo } from "./backup.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
 import { MANUAL_LABELS, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
-import { ajustesPage, bitacoraPage, conceptosPage, masPage, privacidadPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, bitacoraPage, conceptosPage, masPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -629,6 +630,10 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       }));
     }
 
+    if (method === "GET" && path === "/panel/reiniciar") {
+      return send(res, 200, reiniciarPage({ ...base, flash: flashOf(url.searchParams), preview: ledger.resetPreview(), withBackup: !!config.backupDir }));
+    }
+
     if (method === "GET" && path === "/panel/mas") return send(res, 200, masPage({ ...base }));
 
     if (method === "GET" && path === "/panel/bitacora") {
@@ -766,6 +771,31 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         }
         audit("cobros", `Hizo un cobro especial "${name}" de ${peso(amount)} a ${all ? `todas las casas (${made.created})` : houseTag(targets[0])} para ${periodLabel(month)}`);
         return redirect(res, "/panel/cobros?m=espok");
+      }
+
+      if (path === "/panel/reiniciar") {
+        // The most destructive thing the panel can do: password again, the word typed, and a copy of the database first.
+        const key = `reiniciar|${s.user.id}`;
+        const user = store.users.byId(s.user.id);
+        if (loginLimiter.blocked(key) || !(await verifyPassword(String(form.get("clave") ?? ""), user.passwordHash))) {
+          loginLimiter.fail(key);
+          return redirect(res, "/panel/reiniciar?m=rsclave");
+        }
+        if (String(form.get("confirmar") ?? "").trim().toUpperCase() !== "BORRAR") return redirect(res, "/panel/reiniciar?m=rsconf");
+        const keepHouses = form.get("alcance") !== "todo";
+        if (config.backupDir) {
+          // No copy, nothing is erased. Two copies in the same second would share a name: the next second's name is used.
+          let saved = false;
+          for (let i = 0; i < 3 && !saved; i++) {
+            try { backupTo(store.db, join(config.backupDir, backupName(new Date(Date.now() + i * 1000)))); saved = true; } catch (e) { if (!/Ya existe/.test(e.message)) break; }
+          }
+          if (!saved) return redirect(res, "/panel/reiniciar?m=rscopia");
+        }
+        loginLimiter.clear(key);
+        const gone = ledger.reset({ keepHouses });
+        ledger.dues.generate(period);
+        audit("ajustes", `Empezó de cero: borró ${gone.payments} pago${gone.payments === 1 ? "" : "s"}, ${gone.dues} cuota${gone.dues === 1 ? "" : "s"}, ${gone.proofs} comprobante${gone.proofs === 1 ? "" : "s"} y ${gone.expenses} gasto${gone.expenses === 1 ? "" : "s"}; ${keepHouses ? "conservó las casas" : `borró también ${gone.houses} casa${gone.houses === 1 ? "" : "s"}`}`);
+        return redirect(res, `/panel?m=${config.backupDir ? "reinicio" : "reiniciosc"}`);
       }
 
       const voidExpense = path.match(/^\/panel\/gastos\/(gt_[a-f0-9]+)\/anular$/);

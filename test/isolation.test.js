@@ -420,3 +420,43 @@ test("borrar datos personales: solo en una casa dada de baja, conserva el histor
   assert.equal(B.houses.get(b01.house.id).residentName, "Carlos Mejía", "el otro conjunto no cambió");
   assert.ok(store);
 });
+
+test("empezar de cero: borra solo los datos de operación de ese conjunto, todo o nada, y conserva ajustes, cobros mensuales, equipo y bitácora", () => {
+  const { store, a, A, B, a14, a03, b01 } = twoConjuntos();
+  const uid = store.users.create({ tenantId: a.id, email: "marta@ejemplo.com", passwordHash: "x" });
+  for (const L of [A, B]) L.dues.generate("2026-11");
+  A.concepts.charge({ name: "Multa", amountCents: 5_000_000, period: "2026-11", houseIds: [a14.house.id] });
+  A.expenses.create({ spentOn: "2026-11-03", amountCents: 100_000, category: "Otros", description: "x" });
+  A.proofs.create({ houseId: a14.house.id, mime: "image/png", data: Buffer.from("x") });
+  A.aliases.add(a14.house.id, "SANDRA D");
+  A.housePush.add({ houseId: a14.house.id, endpoint: "https://fcm.googleapis.com/fcm/send/h", p256dh: "p", auth: "a" });
+  A.push.add({ userId: uid, endpoint: "https://fcm.googleapis.com/fcm/send/u", p256dh: "p", auth: "a" });
+  A.reminders.claim(a14.house.id, "2026-11", "vence");
+  A.certificates.issue({ houseId: a14.house.id, kind: "paz_y_salvo", issuedOn: "2026-11-03" });
+  A.audit.record({ userName: "Marta", action: "pagos", summary: "algo" });
+  store.tenants.setDates(a.id, { openDay: 1, dueDay: 10 });
+
+  const gone = A.reset({ keepHouses: true });
+  assert.deepEqual([gone.dues, gone.expenses, gone.proofs, gone.specialCharges, gone.houses], [3, 1, 1, 1, 2]);
+  const left = A.resetPreview();
+  assert.deepEqual([left.dues, left.payments, left.proofs, left.expenses, left.specialCharges, left.houses], [0, 0, 0, 0, 0, 2]);
+  assert.equal(A.aliases.list(a14.house.id).length, 1);
+  assert.equal(A.housePush.count(a14.house.id), 1, "con las casas se quedan sus avisos");
+  assert.equal(A.push.countForUser(uid), 1, "y los avisos del equipo");
+  assert.equal(A.concepts.list().length, 1, "el cobro mensual sigue");
+  assert.equal(A.team.list().length, 1);
+  assert.equal(A.audit.list().total, 1, "la bitácora no se toca");
+  assert.equal(store.tenants.get(a.id).dueDay, 10);
+  assert.equal(B.resetPreview().dues, 1, "el otro conjunto no cambió");
+  assert.equal(B.houses.list().length, 1);
+  assert.equal(A.reminders.claim(a14.house.id, "2026-11", "vence"), true, "los recordatorios se pueden volver a enviar");
+  assert.equal(A.certificates.issue({ houseId: a14.house.id, kind: "paz_y_salvo", issuedOn: "2026-11-03" }).length, 11, "un código nuevo");
+
+  A.reset({ keepHouses: false });
+  assert.equal(A.resetPreview().houses, 0);
+  assert.equal(A.aliases.list(a14.house.id).length, 0);
+  assert.equal(A.housePush.count(a14.house.id), 0);
+  assert.equal(A.push.countForUser(uid), 1);
+  assert.equal(B.houses.list().length, 1);
+  assert.ok(a03.house.id && b01.house.id);
+});

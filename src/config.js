@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { dirname, join } from "node:path";
 
 /** Reads the process configuration. Only what cannot live in the database comes from the environment (each conjunto's pagoradar secret does live there). */
 export function loadConfig(env = process.env) {
@@ -11,6 +12,8 @@ export function loadConfig(env = process.env) {
   return {
     port: Number(env.PORT ?? 3000),
     databasePath: env.DATABASE_PATH ?? "./data/cuotia.db",
+    // Where the copies made before a destructive action are kept (same folder as `npm run admin -- respaldar`).
+    backupDir: env.BACKUP_DIR ?? join(dirname(env.DATABASE_PATH ?? "./data/cuotia.db"), "backups"),
     publicUrl,
     secureCookies: publicUrl.startsWith("https://"),
     masterKey,

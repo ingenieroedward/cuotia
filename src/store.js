@@ -947,6 +947,45 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** What would be erased by `reset`, so the screen can show it before asking. */
+    const resetPreview = () => {
+      const n = (sql) => Number(db.prepare(sql).get(tenantId).n);
+      return {
+        houses: n("SELECT COUNT(*) AS n FROM houses WHERE tenant_id = ?"),
+        dues: n("SELECT COUNT(*) AS n FROM dues WHERE tenant_id = ?"),
+        payments: n("SELECT COUNT(*) AS n FROM payments WHERE tenant_id = ?"),
+        proofs: n("SELECT COUNT(*) AS n FROM proofs WHERE tenant_id = ?"),
+        expenses: n("SELECT COUNT(*) AS n FROM expenses WHERE tenant_id = ?"),
+        specialCharges: n("SELECT COUNT(*) AS n FROM concepts WHERE tenant_id = ? AND kind = 'once'"),
+      };
+    };
+
+    /**
+     * "Empezar de cero": erases the operating data of this conjunto only, for good. Kept always: the settings (key, dates,
+     * pagoradar secret), the monthly concepts, the team and their phones, and the audit log. With `keepHouses` the houses stay
+     * (with their personal links and payment names); without it they go too, with their payment names and phone notifications.
+     * All or nothing. The caller makes a backup first.
+     */
+    function reset({ keepHouses = true } = {}) {
+      return tx(() => {
+        const gone = resetPreview();
+        const del = (table, extra = "") => db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?${extra}`).run(tenantId);
+        del("reminders_sent");
+        del("certificates");
+        del("proofs");
+        del("expenses");
+        del("dues");
+        del("payments");
+        del("concepts", " AND kind = 'once'");
+        if (!keepHouses) {
+          del("house_push_subscriptions");
+          del("aliases");
+          del("houses");
+        }
+        return { ...gone, keptHouses: keepHouses };
+      });
+    }
+
     /** Who did what in this conjunto. Append-only. */
     const audit = {
       record({ userId = null, userName, action, summary, targetType = null, targetId = null }) {
@@ -1093,7 +1132,7 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, expenses, books, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, expenses, books, reset, resetPreview, matchHouse, summary };
   }
 
   return { db, tenants, users, invitations, certificates, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };
