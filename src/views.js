@@ -63,6 +63,11 @@ const FLASH = {
   ed: () => ({ kind: "ok", text: "Datos de la casa guardados." }),
   aliasok: () => ({ kind: "ok", text: "Nombre agregado: los pagos con ese nombre se asignarán a esta casa." }),
   aliasdel: () => ({ kind: "ok", text: "Nombre quitado." }),
+  reinicio: () => ({ kind: "ok", text: "Listo: empezaste de cero. Antes de borrar se guardó una copia de seguridad en el servidor, por si algo hiciera falta." }),
+  reiniciosc: () => ({ kind: "ok", text: "Listo: empezaste de cero." }),
+  rsclave: () => ({ kind: "err", text: "La contraseña no es correcta (o hiciste demasiados intentos). No se borró nada." }),
+  rsconf: () => ({ kind: "err", text: "Escribe BORRAR para confirmar. No se borró nada." }),
+  rscopia: () => ({ kind: "err", text: "No se pudo guardar la copia de seguridad, así que no se borró nada." }),
   anon: () => ({ kind: "ok", text: "Datos personales borrados. El historial de cuotas y pagos quedó sin nombre." }),
   desact: () => ({ kind: "ok", text: "Casa dada de baja. Su historial se conserva y la puedes reactivar cuando quieras." }),
   react: () => ({ kind: "ok", text: "Casa dada de alta otra vez: vuelve a recibir cuotas. Genera su enlace personal nuevo si lo necesita." }),
@@ -914,6 +919,11 @@ export function ajustesPage(args) {
   </section>
 
   <section class="card">
+    <div class="row wrap"><h2>Empezar de cero</h2><a class="btn ghost small" href="/panel/reiniciar">Limpiar los datos</a></div>
+    <p class="muted small">Para borrar lo que hiciste de prueba y arrancar limpio. Pide tu contraseña y guarda una copia antes de borrar.</p>
+  </section>
+
+  <section class="card">
     <p class="small"><a href="/privacidad" target="_blank" rel="noopener">Política de tratamiento de datos personales</a><br><span class="muted">La ven los residentes en el pie de sus pantallas. Revisa con un abogado que sirva para tu conjunto.</span></p>
     <div class="row wrap"><h2>Bitácora</h2><a class="btn ghost small" href="/panel/bitacora">Ver quién hizo qué</a></div>
     <p class="muted small">Cada pago, cambio de casa, gasto y ajuste queda anotado con la persona y la hora.</p>
@@ -1373,6 +1383,49 @@ export function conceptosPage(args) {
         <ul class="list stack">${once.map((c) => html`<li class="concept"><div class="row"><span><b>${c.name}</b><small class="muted">${c.period ? periodLabel(c.period) : ""} · ${c.dues} cuota${c.dues === 1 ? "" : "s"} · ${c.pending ? `${c.pending} sin pagar (${peso(c.pendingCents)})` : "todas pagadas"}</small></span><b>${peso(c.amountCents)}</b></div></li>`)}</ul>
       </section>`
     : ""}`);
+}
+
+/** "Empezar de cero": the confirmation screen. Shows what will be erased, asks for the password and the word. */
+export function reiniciarPage(args) {
+  const { tenant, csrf, flash, preview: p, withBackup } = args;
+  const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+  return panelLayout("Empezar de cero", { ...args, active: "ajustes" }, html`
+  <div class="heading"><h1>Empezar de cero</h1><span class="muted">${tenant.name}</span></div>
+  <p><a href="/panel/ajustes">← Volver a Ajustes</a></p>
+  ${flashBox(flash)}
+  <section class="card danger-zone">
+    <h2>Esto borra datos y no se puede deshacer</h2>
+    <p>Úsalo para quitar las pruebas y empezar a cobrar desde este mes, con las cuentas limpias.</p>
+    <h3>Se borra</h3>
+    <ul class="check-list">
+      <li>${n(p.dues, "cuota", "cuotas")} de todos los meses (las de este mes se vuelven a crear limpias)</li>
+      <li>${n(p.payments, "pago", "pagos")} con sus recibos</li>
+      <li>${n(p.proofs, "comprobante", "comprobantes")}</li>
+      <li>${n(p.expenses, "gasto", "gastos")} de Cuentas claras</li>
+      <li>${n(p.specialCharges, "cobro especial", "cobros especiales")} (cuotas extraordinarias y multas)</li>
+      <li>Los códigos de paz y salvo y los recordatorios ya enviados</li>
+    </ul>
+    <h3>Se conserva</h3>
+    <ul class="check-list">
+      <li>Los ajustes: llave, fechas de pago, saldo inicial, conexión con pagoradar</li>
+      <li>Los cobros mensuales (vigilancia, administración…) y sus valores</li>
+      <li>El equipo, sus contraseñas y los avisos de sus celulares</li>
+      <li>La bitácora, que anotará que empezaste de cero</li>
+    </ul>
+    <p class="muted small">${withBackup ? "Antes de borrar, Cuotia guarda una copia de seguridad de toda la base en el servidor. Si no la puede guardar, no borra nada." : "Esta instalación no guarda copia antes de borrar."}</p>
+
+    <form class="stack-form" method="post" action="/panel/reiniciar" autocomplete="off">
+      ${csrfField(csrf)}
+      <fieldset>
+        <legend>¿Qué pasa con las casas?</legend>
+        <label class="check"><input type="radio" name="alcance" value="conservar" checked><span><b>Conservar las ${n(p.houses, "casa", "casas")}</b> con sus enlaces personales y nombres de pago (lo más común)</span></label>
+        <label class="check"><input type="radio" name="alcance" value="todo"><span><b>Borrar también las casas</b>, sus enlaces, nombres de pago y avisos de celular: volverás a cargarlas</span></label>
+      </fieldset>
+      <label>Para confirmar escribe <b>BORRAR</b><input type="text" name="confirmar" required autocomplete="off" autocapitalize="characters" placeholder="BORRAR"></label>
+      <label>Tu contraseña<input type="password" name="clave" required autocomplete="current-password"></label>
+      <button class="btn danger" type="submit">Borrar y empezar de cero</button>
+    </form>
+  </section>`);
 }
 
 /** The "Más" tab on a phone: what is not used every day. */

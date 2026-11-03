@@ -15,9 +15,9 @@ const SETUP_TOKEN = "token-de-configuracion-inicial-123";
 const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
 
 /** Runs `fn` against a real server and always closes it, so a failed assertion can't leave the test run hanging. */
-async function withServer(fn, { empty = false, secure = false, pushSend } = {}) {
+async function withServer(fn, { empty = false, secure = false, pushSend, backupDir } = {}) {
   const ctx = empty ? { store: openStore(":memory:") } : twoConjuntos();
-  const config = { publicUrl: "http://localhost:3000", secureCookies: secure, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN };
+  const config = { publicUrl: "http://localhost:3000", secureCookies: secure, masterKey: MASTER_KEY, setupToken: SETUP_TOKEN, ...(backupDir ? { backupDir } : {}) };
   if (!empty) {
     await ctx.store.users.create({ tenantId: ctx.a.id, email: "marta@ejemplo.com", passwordHash: await hashPassword("clave-de-marta") });
     await ctx.store.users.create({ tenantId: ctx.b.id, email: "luis@ejemplo.com", passwordHash: await hashPassword("clave-de-luis") });
@@ -2144,3 +2144,76 @@ test("operador: cambiar la contraseña cierra las otras sesiones y salir cierra 
   assert.equal((await form(`${s.base}/operador/salir`, { _csrf: csrf }, first.cookie)).headers.get("location"), "/operador/entrar");
   assert.equal((await fetch(`${s.base}/operador`, { headers: { cookie: first.cookie }, redirect: "manual" })).headers.get("location"), "/operador/entrar");
 }));
+
+test("empezar de cero: pide contraseña y la palabra, guarda una copia antes, borra solo lo de este conjunto y conserva lo demás", async () => {
+  const { mkdtempSync, readdirSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { DatabaseSync } = await import("node:sqlite");
+  const dir = mkdtempSync(join(tmpdir(), "cuotia-reset-"));
+  try {
+    await withServer(async (s) => {
+      const month = currentPeriod();
+      s.A.dues.generate(shiftPeriod(month, -1)); s.A.dues.generate(month); s.B.dues.generate(month);
+      s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: [s.A.dues.listForHouse(s.a14.house.id)[0].id], method: "cash" });
+      s.A.expenses.create({ spentOn: `${month}-01`, amountCents: 500_000, category: "Otros", description: "Prueba" });
+      s.A.concepts.charge({ name: "Cobro de prueba", amountCents: 1_000_000, period: month, houseIds: [s.a14.house.id] });
+      s.A.aliases.add(s.a14.house.id, "SANDRA D");
+      s.store.tenants.setDates(s.a.id, { openDay: 1, dueDay: 10 });
+      s.store.tenants.setAccounts(s.a.id, { openingCents: 25_000_000, showAccounts: false });
+      const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+      const csrf = await csrfOf(s.base, cookie, "/panel/reiniciar");
+      const go = (fields) => form(`${s.base}/panel/reiniciar`, { _csrf: csrf, alcance: "conservar", confirmar: "BORRAR", clave: "clave-de-marta", ...fields }, cookie);
+      const counts = () => s.A.resetPreview();
+
+      const page = await (await fetch(`${s.base}/panel/reiniciar`, { headers: { cookie } })).text();
+      assert.match(page, /Esto borra datos y no se puede deshacer/);
+      assert.match(page, /Antes de borrar, Cuotia guarda una copia/);
+      assert.equal((await fetch(`${s.base}/panel/reiniciar`, { redirect: "manual" })).headers.get("location"), "/login");
+      assert.equal(counts().payments, 1, "mirar la pantalla no borra nada");
+
+      // Every safety refuses and erases nothing (and leaves no backup).
+      assert.equal((await form(`${s.base}/panel/reiniciar`, { alcance: "conservar", confirmar: "BORRAR", clave: "clave-de-marta" }, cookie)).status, 403, "sin token");
+      assert.match((await go({ clave: "mala" })).headers.get("location"), /m=rsclave/);
+      assert.match((await go({ confirmar: "borrar ya" })).headers.get("location"), /m=rsconf/);
+      assert.match((await go({ confirmar: "" })).headers.get("location"), /m=rsconf/);
+      assert.deepEqual([counts().payments, counts().dues, counts().expenses], [1, 5, 1]);
+      assert.equal(readdirSync(dir).length, 0, "los intentos rechazados no dejan copia");
+
+      // Conservar las casas.
+      assert.match((await go({})).headers.get("location"), /m=reinicio$/);
+      const files = readdirSync(dir);
+      assert.equal(files.length, 1, "una copia antes de borrar");
+      const old = new DatabaseSync(join(dir, files[0]));
+      assert.equal(old.prepare("SELECT COUNT(*) AS n FROM payments").get().n, 1, "la copia todavía tiene lo que se borró");
+      old.close();
+      const after = counts();
+      assert.deepEqual([after.payments, after.proofs, after.expenses, after.specialCharges, after.houses], [0, 0, 0, 0, 2]);
+      assert.deepEqual(s.A.dues.listByPeriod(shiftPeriod(month, -1)), [], "los meses anteriores desaparecen");
+      assert.equal(s.A.dues.listByPeriod(month).length, 2, "este mes queda recién creado para las dos casas");
+      assert.ok(s.A.dues.listByPeriod(month).every((d) => d.status === "pending"));
+      assert.equal(s.A.houses.list().length, 2);
+      assert.equal(s.A.aliases.list(s.a14.house.id).length, 1, "los nombres de pago se conservan con las casas");
+      assert.equal(s.store.tenants.get(s.a.id).dueDay, 10, "ajustes intactos");
+      assert.equal(s.store.tenants.get(s.a.id).openingCents, 25_000_000);
+      assert.equal(s.A.concepts.list().length, 1, "el cobro mensual sigue");
+      assert.equal(s.A.team.list().length, 1, "y el equipo");
+      assert.ok(s.A.audit.list().rows.some((r) => /^Empezó de cero: borró 1 pago, 5 cuotas, 0 comprobantes y 1 gasto; conservó las casas/.test(r.summary)));
+      assert.equal(s.A.audit.list().total > 1, true, "la bitácora no se borra");
+      // The other conjunto is untouched.
+      assert.equal(s.B.resetPreview().dues, 1);
+      assert.equal(s.B.houses.list().length, 1);
+
+      // Borrar también las casas.
+      assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}`)).status, 200, "el enlace de una casa conservada sigue");
+      assert.match((await go({ alcance: "todo" })).headers.get("location"), /m=reinicio$/);
+      assert.deepEqual([counts().houses, counts().dues], [0, 0]);
+      assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}`)).status, 404, "y el de una casa borrada ya no");
+      assert.equal(readdirSync(dir).length, 2, "otra copia");
+      assert.equal(s.B.houses.list().length, 1);
+      assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Empezar de cero/);
+    }, { backupDir: dir });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
