@@ -17,6 +17,7 @@ import { EXPENSE_CATEGORIES } from "./store.js";
 import { MANUAL_LABELS, payMethodTitle, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
 import { MESSAGES, MESSAGE_KEYS, validateTemplate } from "./messages.js";
+import { ALLOWED_ALGS, b64u, fromB64u, verifyAssertion, verifyRegistration } from "./webauthn.js";
 import { message } from "./messages.js";
 import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
@@ -105,6 +106,10 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     }
     const invite = (method === "GET" || method === "POST") && path.match(/^\/invitacion\/([A-Za-z0-9_-]{20,})$/);
     if (invite) return invitation(req, res, invite[1], method);
+
+    // Passkeys: sign in without typing (the browser offers the saved passkey).
+    if (method === "POST" && path === "/login/passkey/opciones") return passkeyLoginOptions(req, res);
+    if (method === "POST" && path === "/login/passkey") return passkeyLogin(req, res);
 
     if (path === "/login") {
       if (method === "GET") {
@@ -285,6 +290,87 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       "Content-Security-Policy": "default-src 'none'; sandbox",
       "Cache-Control": "private, no-store",
     });
+  }
+
+  // ---------- passkeys (WebAuthn) ----------
+
+  const rpId = new URL(config.publicUrl).hostname;
+  const rpOrigin = new URL(config.publicUrl).origin;
+  const jsonBody = async (req, limit = 16 * 1024) => { try { return JSON.parse(await readBody(req, limit)); } catch (e) { if (e.status === 413) throw e; return null; } };
+  const passkeyDenied = (res, status = 401) => sendJson(res, status, { error: "No se pudo entrar con el passkey. Usa tu correo y contraseña." });
+  /** The challenge a browser signed is inside its clientDataJSON: read it to find (and burn) the one we issued. */
+  const challengeOf = (credential) => { try { return JSON.parse(fromB64u(credential?.response?.clientDataJSON).toString("utf8")).challenge; } catch { return null; } };
+
+  async function passkeyLoginOptions(req, res) {
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const key = `passkey|${req.socket.remoteAddress}`;
+    if (loginLimiter.blocked(key)) return passkeyDenied(res, 429);
+    // No allowCredentials: the passkey itself says who it is (discoverable credential), so no email is typed.
+    return sendJson(res, 200, { challenge: store.webauthnChallenges.create({ purpose: "login" }), rpId, userVerification: "required", timeout: 60_000 });
+  }
+
+  async function passkeyLogin(req, res) {
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const key = `passkey|${req.socket.remoteAddress}`;
+    if (loginLimiter.blocked(key)) return passkeyDenied(res, 429);
+    const body = await jsonBody(req);
+    const credential = body?.credential;
+    const fail = () => { loginLimiter.fail(key); return passkeyDenied(res); };
+    const challenge = challengeOf(credential);
+    if (!challenge || !store.webauthnChallenges.consume(challenge, "login")) return fail();
+    const stored = store.passkeys.byCredentialId(credential?.id);
+    if (!stored) return fail();
+    let result;
+    try {
+      result = verifyAssertion({ response: credential.response, challenge, origin: rpOrigin, rpId, publicKey: stored.publicKey, storedSignCount: stored.signCount });
+      const handle = credential.response.userHandle ? fromB64u(credential.response.userHandle).toString("utf8") : null;
+      if (handle && handle !== stored.userId) throw new Error("userHandle");
+    } catch {
+      return fail();
+    }
+    const user = store.users.byId(stored.userId);
+    if (!user) return fail();
+    store.passkeys.touch(stored.id, result.signCount);
+    loginLimiter.clear(key);
+    // A passkey needs the device's fingerprint, face or PIN (checked above): that is both login steps in one.
+    const token = store.sessions.create(user.id, { stage: "full", ttlMs: FULL_TTL_S * 1000 });
+    try { store.forTenant(user.tenantId).audit.record({ userId: user.id, userName: user.name, action: "sesion", summary: "Inició sesión con passkey" }); } catch { /* the sign-in stands */ }
+    return sendJson(res, 200, { ok: true, redirect: "/panel" }, setCookie(token, FULL_TTL_S));
+  }
+
+  /** Panel side: options to create a passkey, and the check of what the browser made. CSRF travels in the JSON body. */
+  async function passkeyApi(req, res, s, ledger, path) {
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const body = await jsonBody(req);
+    if (!body || !csrfValid(s.token, body._csrf)) return send(res, 403, "Formulario vencido. Recarga la página e inténtalo de nuevo.");
+    const audit = auditFor(ledger, s);
+    if (path === "/panel/passkeys/opciones") {
+      const mine = ledger.passkeys.list(s.user.id);
+      return sendJson(res, 200, {
+        challenge: store.webauthnChallenges.create({ purpose: "register", userId: s.user.id }),
+        rp: { name: "Cuotia", id: rpId },
+        user: { id: b64u(Buffer.from(s.user.id)), name: s.user.email, displayName: s.user.name },
+        pubKeyCredParams: ALLOWED_ALGS.map((alg) => ({ type: "public-key", alg })),
+        authenticatorSelection: { residentKey: "required", userVerification: "required" },
+        attestation: "none", timeout: 60_000,
+        excludeCredentials: mine.map((p) => ({ type: "public-key", id: p.credentialId })),
+      });
+    }
+    // /panel/passkeys/registrar
+    const credential = body.credential;
+    const challenge = challengeOf(credential);
+    const issued = challenge ? store.webauthnChallenges.consume(challenge, "register") : null;
+    if (!issued || issued.userId !== s.user.id) return sendJson(res, 400, { error: "El intento venció. Inténtalo de nuevo." });
+    try {
+      const made = verifyRegistration({ response: credential.response, challenge, origin: rpOrigin, rpId });
+      if (credential.id !== made.credentialId) throw new Error("La credencial no coincide");
+      const name = String(body.name ?? "").trim().slice(0, 40) || "Este dispositivo";
+      ledger.passkeys.add({ userId: s.user.id, ...made, name, transports: Array.isArray(credential.response.transports) ? credential.response.transports.filter((t) => typeof t === "string") : null });
+      audit("seguridad", `Agregó un passkey: ${name}`);
+    } catch (e) {
+      return sendJson(res, 400, { error: /Máximo|ya está registrado/.test(e.message) ? e.message : "No se pudo guardar el passkey. Inténtalo de nuevo." });
+    }
+    return sendJson(res, 200, { ok: true });
   }
 
   async function addExpense(req, res, s, ledger, period) {
@@ -608,7 +694,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (method === "GET" && path === "/panel/casas/importar") return send(res, 200, importPage({ ...base }));
 
     if (method === "GET" && path === "/panel/ajustes") {
-      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
+      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), passkeys: ledger.passkeys.list(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
 
     if (method === "GET" && (path === "/panel/cuentas" || path === "/panel/cuentas.csv")) {
@@ -671,6 +757,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
 
     // A new expense carries a file, so it is multipart; the form token travels as a field.
     if (path === "/panel/gastos") return addExpense(req, res, s, ledger, period);
+    if (path === "/panel/passkeys/opciones" || path === "/panel/passkeys/registrar") return passkeyApi(req, res, s, ledger, path);
 
     // Every state change: same origin AND the session's form token.
     if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
@@ -806,6 +893,14 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         ledger.dues.generate(period);
         audit("ajustes", `Empezó de cero: borró ${gone.payments} pago${gone.payments === 1 ? "" : "s"}, ${gone.dues} cuota${gone.dues === 1 ? "" : "s"}, ${gone.proofs} comprobante${gone.proofs === 1 ? "" : "s"} y ${gone.expenses} gasto${gone.expenses === 1 ? "" : "s"}; ${keepHouses ? "conservó las casas" : `borró también ${gone.houses} casa${gone.houses === 1 ? "" : "s"}`}`);
         return redirect(res, `/panel?m=${config.backupDir ? "reinicio" : "reiniciosc"}`);
+      }
+
+      const removePasskey = path.match(/^\/panel\/passkeys\/(pk_[a-f0-9]+)\/quitar$/);
+      if (removePasskey) {
+        const mine = ledger.passkeys.list(s.user.id).find((p) => p.id === removePasskey[1]);
+        try { ledger.passkeys.remove(removePasskey[1], s.user.id); } catch { return redirect(res, "/panel/ajustes?m=pkbad"); }
+        audit("seguridad", `Quitó un passkey: ${mine?.name ?? ""}`.trim());
+        return redirect(res, "/panel/ajustes?m=pkquit");
       }
 
       const saveMessage = path.match(/^\/panel\/mensajes\/([a-z_]+)$/);

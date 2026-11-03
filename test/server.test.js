@@ -10,6 +10,7 @@ import { openStore } from "../src/store.js";
 import { qrSvg } from "../src/qr.js";
 import { paymentEvent, SECRET_A, SECRET_B, twoConjuntos } from "./fixtures.js";
 import { fakeS3 } from "./fake-s3.js";
+import { fakeAuthenticator } from "./fake-authenticator.js";
 
 const MASTER_KEY = "a".repeat(64);
 const SETUP_TOKEN = "token-de-configuracion-inicial-123";
@@ -2400,4 +2401,104 @@ test("mensajes de WhatsApp: los botones usan el texto del conjunto, se edita con
   for (const body of [
     "Hola {nombre}, debes {valor}.", "Hola {nombre}\n\n\n\n{plazo}\n\nAdiós", "  {plazo}   {como_pagar}  \n{detalle}", "{desconocida} y {nombre}", "{vacio}", "línea   con    espacios\t\n  sangría {nombre}  ",
   ]) assert.equal(sandbox.cuotia.renderMessage(body, vars), renderTemplate(body, vars), JSON.stringify(body));
+}));
+
+test("passkeys: se registra uno desde Ajustes, se entra con él sin contraseña ni código, y se rechazan repetición, firma ajena y passkeys de otro conjunto", () => withServer(async (s) => {
+  const rp = { rpId: "localhost", origin: "http://localhost:3000" };
+  const json = (path, body, cookie) => fetch(`${s.base}${path}`, { method: "POST", headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body), redirect: "manual" });
+  const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text(), /data-passkey-add/);
+  assert.match(await (await fetch(`${s.base}/login`)).text(), /data-passkey-login-box/);
+
+  // ---- registering
+  assert.equal((await json("/panel/passkeys/opciones", {}, marta.cookie)).status, 403, "sin token");
+  const opts = await (await json("/panel/passkeys/opciones", { _csrf: csrf }, marta.cookie)).json();
+  assert.equal(opts.rp.id, "localhost");
+  assert.deepEqual(opts.authenticatorSelection, { residentKey: "required", userVerification: "required" });
+  assert.deepEqual(opts.pubKeyCredParams.map((p) => p.alg), [-7, -257]);
+  assert.equal(opts.attestation, "none");
+  const phone = fakeAuthenticator(rp);
+  const register = (dev, challenge, extra = {}, cookie = marta.cookie, token = csrf) => json("/panel/passkeys/registrar", { _csrf: token, name: "iPhone de Marta", credential: dev.create({ challenge, ...extra }), ...extra.body }, cookie);
+
+  assert.equal((await register(phone, opts.challenge, { o: "https://falso.example.com" })).status, 400, "origen falso");
+  const reused = await (await json("/panel/passkeys/opciones", { _csrf: csrf }, marta.cookie)).json();
+  assert.equal((await register(phone, reused.challenge, { flags: 0x41 })).status, 400, "sin huella o rostro");
+  const ok = await (await json("/panel/passkeys/opciones", { _csrf: csrf }, marta.cookie)).json();
+  assert.equal((await register(phone, ok.challenge)).status, 200);
+  assert.equal((await register(phone, ok.challenge)).status, 400, "el mismo desafío no sirve dos veces");
+  const again = await (await json("/panel/passkeys/opciones", { _csrf: csrf }, marta.cookie)).json();
+  const dup = await register(phone, again.challenge);
+  assert.equal(dup.status, 400);
+  assert.match((await dup.json()).error, /ya está registrado/);
+  // A challenge issued to someone else's session can't be used to register on mine.
+  const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
+  const luisOpts = await (await json("/panel/passkeys/opciones", { _csrf: csrfL }, luis.cookie)).json();
+  assert.equal((await register(fakeAuthenticator(rp), luisOpts.challenge)).status, 400);
+  assert.equal(s.A.passkeys.list(s.store.users.byEmail("marta@ejemplo.com").id).length, 1);
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text(), /iPhone de Marta/);
+
+  // ---- signing in
+  const options = async () => (await (await json("/login/passkey/opciones", {})).json());
+  const o1 = await options();
+  assert.equal(o1.rpId, "localhost");
+  assert.equal(o1.userVerification, "required");
+  assert.equal(o1.allowCredentials, undefined, "sin lista: el passkey dice quién es");
+  const assertion = phone.get({ challenge: o1.challenge, userHandle: Buffer.from(s.store.users.byEmail("marta@ejemplo.com").id) });
+  const entered = await json("/login/passkey", { credential: assertion });
+  assert.equal(entered.status, 200);
+  assert.deepEqual(await entered.json(), { ok: true, redirect: "/panel" });
+  const cookie = cookieOf(entered);
+  assert.match(entered.headers.get("set-cookie"), /HttpOnly/);
+  assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie } })).status, 200, "entra al panel sin contraseña ni código");
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /usado el/);
+  assert.ok(s.A.audit.list({ q: "con passkey" }).rows.some((r) => r.summary === "Inició sesión con passkey"));
+
+  // ---- attacks
+  assert.equal((await json("/login/passkey", { credential: assertion })).status, 401, "repetir la misma respuesta");
+  const o2 = await options();
+  assert.equal((await json("/login/passkey", { credential: phone.get({ challenge: o2.challenge, key: phone.otherKey() }) })).status, 401, "firma de otra llave");
+  const o3 = await options();
+  assert.equal((await json("/login/passkey", { credential: fakeAuthenticator(rp).get({ challenge: o3.challenge }) })).status, 401, "un passkey que no conocemos");
+  const o4 = await options();
+  assert.equal((await json("/login/passkey", { credential: phone.get({ challenge: o4.challenge, userHandle: Buffer.from("usr_otro") }) })).status, 401, "el userHandle debe ser el de ese usuario");
+  // A good sign-in clears the failure count (five failures in a row from one place would block the sixth).
+  const oGood = await options();
+  assert.equal((await json("/login/passkey", { credential: phone.get({ challenge: oGood.challenge, userHandle: Buffer.from(s.store.users.byEmail("marta@ejemplo.com").id) }) })).status, 200);
+  assert.equal((await json("/login/passkey", { credential: phone.get({ challenge: "inventado" }) })).status, 401, "un desafío que no emitimos");
+  const o5 = await options();
+  assert.equal((await json("/login/passkey", { credential: phone.get({ challenge: o5.challenge, flags: 0x01 }) })).status, 401, "sin verificación del usuario");
+  assert.equal((await fetch(`${s.base}/login/passkey`, { method: "POST", headers: { "content-type": "application/json", origin: "https://malo.example" }, body: "{}" })).status, 403);
+
+  // ---- another conjunto's treasurer can't remove it; the owner can, and then it stops working
+  const pk = s.A.passkeys.list(s.store.users.byEmail("marta@ejemplo.com").id)[0];
+  assert.match((await form(`${s.base}/panel/passkeys/${pk.id}/quitar`, { _csrf: csrfL }, luis.cookie)).headers.get("location"), /m=pkbad/);
+  assert.equal(s.A.passkeys.list(s.store.users.byEmail("marta@ejemplo.com").id).length, 1);
+  assert.match((await form(`${s.base}/panel/passkeys/${pk.id}/quitar`, { _csrf: csrf }, marta.cookie)).headers.get("location"), /m=pkquit/);
+  const o6 = await options();
+  assert.equal((await json("/login/passkey", { credential: phone.get({ challenge: o6.challenge }) })).status, 401, "quitado: ya no entra");
+  assert.ok(s.A.audit.list({ limit: 50 }).rows.some((r) => r.summary === "Quitó un passkey: iPhone de Marta"));
+}));
+
+test("passkeys: demasiados intentos fallidos desde un mismo lugar se frenan, y un passkey entra al conjunto de su dueño y a ningún otro", () => withServer(async (s) => {
+  const rp = { rpId: "localhost", origin: "http://localhost:3000" };
+  const json = (path, body) => fetch(`${s.base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const luisUser = s.store.users.byEmail("luis@ejemplo.com");
+  const dev = fakeAuthenticator(rp);
+  const c = s.store.webauthnChallenges.create({ purpose: "register", userId: luisUser.id });
+  const { verifyRegistration } = await import("../src/webauthn.js");
+  s.B.passkeys.add({ userId: luisUser.id, ...verifyRegistration({ response: dev.create({ challenge: c }).response, challenge: c, origin: rp.origin, rpId: rp.rpId }), name: "Portátil de Luis" });
+  assert.throws(() => s.A.passkeys.add({ userId: luisUser.id, credentialId: "x", publicKey: "x", alg: -7, name: "ajeno" }), /no es de este conjunto/);
+
+  const options = async () => (await (await json("/login/passkey/opciones", {})).json()).challenge;
+  const ok = await json("/login/passkey", { credential: dev.get({ challenge: await options() }) });
+  assert.equal(ok.status, 200);
+  const cookie = cookieOf(ok);
+  const panel = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  assert.match(panel, /Los Robles/);
+  assert.doesNotMatch(panel, /Jardines de Ibiza/);
+
+  for (let i = 0; i < 5; i++) assert.equal((await json("/login/passkey", { credential: { id: "nada", response: {} } })).status, 401);
+  assert.equal((await json("/login/passkey/opciones", {})).status, 429, "el intento número seis se frena");
 }));

@@ -503,3 +503,19 @@ test("mensajes de WhatsApp: cada conjunto edita los suyos, se validan y volver a
   assert.deepEqual(A.templates.all(), {});
   B.templates.reset("recordatorio_casa");
 });
+
+test("passkeys: cada conjunto solo lista, agrega y quita los de su gente", async () => {
+  const { A, B, store, a: ta, b: tb } = twoConjuntos();
+  const a = { id: store.users.create({ tenantId: ta.id, email: "marta@ejemplo.com", passwordHash: "x" }) };
+  const b = { id: store.users.create({ tenantId: tb.id, email: "luis@ejemplo.com", passwordHash: "x" }) };
+  const key = (n) => ({ credentialId: `cred-${n}`, publicKey: "pk", alg: -7, name: `Equipo ${n}` });
+  A.passkeys.add({ userId: a.id, ...key(1) });
+  assert.deepEqual(B.passkeys.list(a.id), [], "otro conjunto no ve passkeys ajenos");
+  assert.throws(() => B.passkeys.add({ userId: a.id, ...key(2) }), /no es de este conjunto/);
+  const mine = A.passkeys.list(a.id)[0];
+  assert.throws(() => B.passkeys.remove(mine.id, a.id), /no existe|no es de este conjunto/);
+  assert.equal(A.passkeys.list(a.id).length, 1);
+  assert.throws(() => A.passkeys.remove(mine.id, b.id), /no existe|no es de este conjunto/, "ni siquiera un usuario de otro conjunto con el id correcto");
+  A.passkeys.remove(mine.id, a.id);
+  assert.deepEqual(A.passkeys.list(a.id), []);
+});

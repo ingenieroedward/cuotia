@@ -69,6 +69,8 @@ const FLASH = {
   rsclave: () => ({ kind: "err", text: "La contraseña no es correcta (o hiciste demasiados intentos). No se borró nada." }),
   rsconf: () => ({ kind: "err", text: "Escribe BORRAR para confirmar. No se borró nada." }),
   rscopia: () => ({ kind: "err", text: "No se pudo guardar la copia de seguridad, así que no se borró nada." }),
+  pkquit: () => ({ kind: "ok", text: "Passkey quitado. Ya no se puede entrar con él." }),
+  pkbad: () => ({ kind: "err", text: "Ese passkey no existe." }),
   pmok: () => ({ kind: "ok", text: "Medio de pago agregado. Los residentes ya lo ven en su pantalla de pagar." }),
   pmbad: () => ({ kind: "err", text: "Revisa los datos del medio de pago: el celular de Nequi o Daviplata tiene 10 dígitos y empieza por 3; Bancolombia pide el número de cuenta y si es de ahorros o corriente." }),
   pmdup: () => ({ kind: "err", text: "Ya agregaste ese medio de pago." }),
@@ -139,6 +141,11 @@ export function loginPage({ error, notice } = {}) {
     <label>Correo<input type="email" name="email" autocomplete="username" required autofocus></label>
     <label>Contraseña<input type="password" name="password" autocomplete="current-password" required></label>
     <button class="btn" type="submit">Continuar</button>
+    <div class="passkey-box" data-passkey-login-box hidden>
+      <p class="muted small center-text">o</p>
+      <button class="btn ghost" type="button" data-passkey-login>Entrar con passkey</button>
+      <p class="small" data-passkey-status role="status"></p>
+    </div>
   </form>
 </main>`);
 }
@@ -876,7 +883,7 @@ export function pagoManualPage(args) {
 
 
 export function ajustesPage(args) {
-  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0 } = args;
+  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, passkeys = [] } = args;
   return panelLayout("Ajustes", { ...args, active: "ajustes" }, html`
   <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
   ${flashBox(flash)}
@@ -957,6 +964,22 @@ export function ajustesPage(args) {
       <label>Titular de la cuenta<input type="text" name="titular" maxlength="80" value="${tenant.payHolder ?? ""}" placeholder="Quien recibe el dinero"></label>
       <button class="btn" type="submit">Guardar</button>
     </form>
+  </section>
+
+  <section class="card" id="passkeys" data-passkeys data-csrf="${csrf}">
+    <div class="row wrap"><h2>Passkeys</h2>${passkeys.length ? html`<span class="pill ok"><i></i>${passkeys.length} activo${passkeys.length === 1 ? "" : "s"}</span>` : html`<span class="pill warn"><i></i>Sin passkeys</span>`}</div>
+    <p class="muted small">Entra con la huella, el rostro o el PIN de tu celular o computador, sin escribir contraseña ni código. Es más seguro que la contraseña: no se puede robar con un enlace falso. Tu contraseña y tu código siguen sirviendo si cambias de teléfono.</p>
+    ${passkeys.length ? html`<ul class="list stack">${passkeys.map((p) => html`<li class="concept">
+      <div class="row"><span><b>${p.name}</b><small class="muted">Agregado el ${shortDate(p.createdAt)}${p.lastUsedAt ? ` · usado el ${shortDate(p.lastUsedAt)}` : " · sin usar"}</small></span>
+        <details class="undo"><summary>Quitar</summary>
+          <form method="post" action="/panel/passkeys/${p.id}/quitar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, quitar</button></form>
+        </details></div>
+    </li>`)}</ul>` : ""}
+    <p class="small" data-passkey-status role="status"></p>
+    <div class="grid-form">
+      <label>Nombre del dispositivo<input type="text" name="nombre" maxlength="40" placeholder="iPhone de Marta" data-passkey-name></label>
+      <button class="btn" type="button" data-passkey-add hidden>Agregar passkey en este dispositivo</button>
+    </div>
   </section>
 
   <section class="card" id="avisos" data-push data-key="${pushKey}" data-csrf="${csrf}">

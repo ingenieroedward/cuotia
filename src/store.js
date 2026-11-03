@@ -293,6 +293,29 @@ const MIGRATIONS = [
     PRIMARY KEY (tenant_id, key)
   );
   `,
+  /* V19: passkeys (WebAuthn). A user may register several; `credential_id` is what the browser sends back at sign-in. The
+     challenges are single-use and short-lived. */
+  `
+  CREATE TABLE passkeys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential_id TEXT NOT NULL UNIQUE,
+    public_key TEXT NOT NULL,
+    alg INTEGER NOT NULL,
+    sign_count INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL,
+    transports TEXT,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+  );
+  CREATE INDEX passkeys_by_user ON passkeys (user_id);
+  CREATE TABLE webauthn_challenges (
+    challenge TEXT PRIMARY KEY,
+    purpose TEXT NOT NULL CHECK (purpose IN ('register', 'login')),
+    user_id TEXT,
+    expires_at TEXT NOT NULL
+  );
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -449,6 +472,32 @@ export function openStore(path = ":memory:") {
     delete: (token) => void db.prepare("DELETE FROM operator_sessions WHERE token_hash = ?").run(sha256(token)),
     deleteForOperator: (operatorId, exceptToken = null) => void db.prepare("DELETE FROM operator_sessions WHERE operator_id = ? AND token_hash != ?").run(operatorId, exceptToken ? sha256(exceptToken) : ""),
     purgeExpired: () => void db.prepare("DELETE FROM operator_sessions WHERE expires_at <= ?").run(nowIso()),
+  };
+
+  /** A sign-in credential looked up by the id the browser sends: global by design (it identifies a user, like a session). */
+  const passkeys = {
+    byCredentialId(credentialId) {
+      const r = db.prepare("SELECT p.*, u.tenant_id FROM passkeys p JOIN users u ON u.id = p.user_id WHERE p.credential_id = ?").get(String(credentialId ?? ""));
+      return r ? { id: r.id, userId: r.user_id, tenantId: r.tenant_id, publicKey: r.public_key, alg: r.alg, signCount: Number(r.sign_count) } : null;
+    },
+    touch: (id, signCount) => void db.prepare("UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?").run(signCount, nowIso(), id),
+  };
+  /** Single-use challenges for the two ceremonies; they die in 3 minutes or at first use. */
+  const webauthnChallenges = {
+    create({ purpose, userId = null }) {
+      db.prepare("DELETE FROM webauthn_challenges WHERE expires_at <= ?").run(nowIso());
+      const challenge = randomBytes(32).toString("base64url");
+      db.prepare("INSERT INTO webauthn_challenges (challenge, purpose, user_id, expires_at) VALUES (?, ?, ?, ?)").run(challenge, purpose, userId, new Date(Date.now() + 3 * 60_000).toISOString());
+      return challenge;
+    },
+    /** `{ userId }` the first time a live challenge of that purpose is shown, null every other time. */
+    consume(challenge, purpose) {
+      return tx(() => {
+        const r = db.prepare("SELECT user_id FROM webauthn_challenges WHERE challenge = ? AND purpose = ? AND expires_at > ?").get(String(challenge ?? ""), purpose, nowIso());
+        db.prepare("DELETE FROM webauthn_challenges WHERE challenge = ?").run(String(challenge ?? ""));
+        return r ? { userId: r.user_id } : null;
+      });
+    },
   };
 
   /** Checks a paz y salvo by its code. Global by design (the code is the credential) and it reveals no name. */
@@ -1088,6 +1137,30 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** Passkeys of this conjunto's people. Each person manages their own. */
+    const MAX_PASSKEYS = 5;
+    const passkeysOf = {
+      list: (userId) => db.prepare("SELECT p.* FROM passkeys p JOIN users u ON u.id = p.user_id WHERE u.tenant_id = ? AND p.user_id = ? ORDER BY p.created_at").all(tenantId, userId)
+        .map((r) => ({ id: r.id, name: r.name, credentialId: r.credential_id, createdAt: r.created_at, lastUsedAt: r.last_used_at })),
+      add({ userId, credentialId, publicKey, alg, signCount = 0, name, transports = null }) {
+        if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND tenant_id = ?").get(userId, tenantId)) throw new Error("Esa persona no es de este conjunto");
+        if (Number(db.prepare("SELECT COUNT(*) AS n FROM passkeys WHERE user_id = ?").get(userId).n) >= MAX_PASSKEYS) throw new Error(`Máximo ${MAX_PASSKEYS} passkeys por persona`);
+        const id = newId("pk");
+        try {
+          db.prepare("INSERT INTO passkeys (id, user_id, credential_id, public_key, alg, sign_count, name, transports, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .run(id, userId, credentialId, publicKey, alg, signCount, String(name ?? "").trim().slice(0, 40) || "Este dispositivo", transports ? JSON.stringify(transports).slice(0, 100) : null, nowIso());
+        } catch (e) {
+          if (/UNIQUE/.test(e.message)) throw new Error("Ese passkey ya está registrado");
+          throw e;
+        }
+        return id;
+      },
+      remove(id, userId) {
+        const r = db.prepare("DELETE FROM passkeys WHERE id = ? AND user_id = ? AND user_id IN (SELECT id FROM users WHERE tenant_id = ?)").run(id, userId, tenantId);
+        if (Number(r.changes) !== 1) throw new Error("Ese passkey no existe");
+      },
+    };
+
     /** The WhatsApp messages this conjunto edited: `all()` is { key: text } for those only; the rest use the original. */
     const templates = {
       all: () => Object.fromEntries(db.prepare("SELECT key, body FROM message_templates WHERE tenant_id = ?").all(tenantId).map((r) => [r.key, r.body])),
@@ -1206,8 +1279,8 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, payMethods, templates, expenses, books, reset, resetPreview, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, payMethods, templates, passkeys: passkeysOf, expenses, books, reset, resetPreview, matchHouse, summary };
   }
 
-  return { db, tenants, users, invitations, certificates, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };
+  return { db, tenants, users, invitations, certificates, passkeys, webauthnChallenges, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };
 }

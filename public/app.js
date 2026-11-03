@@ -194,3 +194,63 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     }
   }
 })();
+
+// Passkeys (WebAuthn): sign in without typing, and register one from Ajustes. The server does all the checking.
+(() => {
+  if (!("PublicKeyCredential" in globalThis) || !navigator.credentials) return;
+  const enc = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const dec = (s) => Uint8Array.from(atob(String(s).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const post = async (url, body) => {
+    const res = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "No se pudo completar");
+    return data;
+  };
+  const say = (node, text) => { if (node) node.textContent = text; };
+
+  // Sign-in page.
+  const box = document.querySelector("[data-passkey-login-box]");
+  if (box) {
+    box.hidden = false;
+    const status = box.querySelector("[data-passkey-status]");
+    box.querySelector("[data-passkey-login]").addEventListener("click", async (event) => {
+      event.target.disabled = true;
+      say(status, "");
+      try {
+        const options = await post("/login/passkey/opciones", {});
+        const cred = await navigator.credentials.get({ publicKey: { challenge: dec(options.challenge), rpId: options.rpId, userVerification: "required", timeout: options.timeout } });
+        const result = await post("/login/passkey", { credential: { id: cred.id, rawId: enc(cred.rawId), response: {
+          clientDataJSON: enc(cred.response.clientDataJSON), authenticatorData: enc(cred.response.authenticatorData),
+          signature: enc(cred.response.signature), userHandle: cred.response.userHandle ? enc(cred.response.userHandle) : null } } });
+        location.href = result.redirect;
+      } catch (e) {
+        say(status, e.name === "NotAllowedError" ? "Cancelaste o no se pudo verificar. Puedes entrar con tu correo y contraseña." : e.message);
+        event.target.disabled = false;
+      }
+    });
+  }
+
+  // Ajustes: add a passkey on this device.
+  const card = document.querySelector("[data-passkeys]");
+  if (card) {
+    const add = card.querySelector("[data-passkey-add]");
+    const status = card.querySelector("[data-passkey-status]");
+    add.hidden = false;
+    add.addEventListener("click", async () => {
+      add.disabled = true;
+      say(status, "");
+      try {
+        const csrf = card.dataset.csrf;
+        const o = await post("/panel/passkeys/opciones", { _csrf: csrf });
+        const cred = await navigator.credentials.create({ publicKey: { ...o, challenge: dec(o.challenge), user: { ...o.user, id: dec(o.user.id) }, excludeCredentials: o.excludeCredentials.map((c) => ({ ...c, id: dec(c.id) })) } });
+        await post("/panel/passkeys/registrar", { _csrf: csrf, name: card.querySelector("[data-passkey-name]").value, credential: { id: cred.id, rawId: enc(cred.rawId), response: {
+          clientDataJSON: enc(cred.response.clientDataJSON), attestationObject: enc(cred.response.attestationObject),
+          transports: cred.response.getTransports ? cred.response.getTransports() : [] } } });
+        location.reload();
+      } catch (e) {
+        say(status, e.name === "NotAllowedError" ? "Cancelaste o este dispositivo no pudo crear el passkey." : e.name === "InvalidStateError" ? "Este dispositivo ya tiene un passkey de Cuotia." : e.message);
+        add.disabled = false;
+      }
+    });
+  }
+})();

@@ -205,8 +205,7 @@ vienen del servidor; solo guarda estilos, tipografía e íconos.
 ## Estado
 
 Funcional para el piloto: base multi-conjunto con aislamiento probado, webhook firmado, conciliación por
-alias, doble factor, panel completo y página del residente (responsive). Pendiente: passkeys,
-panel del operador, transparencia. Ver `CLAUDE.md`.
+alias, doble factor, panel completo y página del residente (responsive). Incluye passkeys, panel del operador y respaldos. Pendiente: transparencia pública. Ver `CLAUDE.md`.
 
 ## Panel del operador (para vender Cuotia a más conjuntos)
 
