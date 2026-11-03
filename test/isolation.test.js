@@ -460,3 +460,30 @@ test("empezar de cero: borra solo los datos de operación de ese conjunto, todo 
   assert.equal(B.houses.list().length, 1);
   assert.ok(a03.house.id && b01.house.id);
 });
+
+test("medios de pago: se validan por tipo, no se repiten, tienen tope y cada conjunto ve y quita solo los suyos", () => {
+  const { A, B } = twoConjuntos();
+  const nequi = A.payMethods.add({ kind: "nequi", account: "300 123 4567", holder: "Marta Rojas", note: "Escribe tu casa" });
+  A.payMethods.add({ kind: "daviplata", account: "3109876543" });
+  A.payMethods.add({ kind: "bancolombia", account: "123-456789-01", accountType: "ahorros", holder: "Marta Rojas" });
+  A.payMethods.add({ kind: "otro", label: "Ahorro a la mano", account: "3001112233" });
+  assert.deepEqual(A.payMethods.list().map((m) => [m.kind, m.account, m.accountType, m.label]), [
+    ["nequi", "3001234567", null, null], ["daviplata", "3109876543", null, null], ["bancolombia", "12345678901", "ahorros", null], ["otro", "3001112233", null, "Ahorro a la mano"],
+  ]);
+  for (const bad of [
+    { kind: "nequi", account: "12345" }, { kind: "nequi", account: "2001234567" }, { kind: "daviplata", account: "abc" },
+    { kind: "bancolombia", account: "123456" }, { kind: "bancolombia", account: "12", accountType: "ahorros" }, { kind: "bancolombia", account: "123456", accountType: "vista" },
+    { kind: "otro", account: "123" }, { kind: "otro", label: "X", account: "123456" }, { kind: "paypal", account: "3001234567" },
+  ]) assert.throws(() => A.payMethods.add(bad), undefined, JSON.stringify(bad));
+  assert.throws(() => A.payMethods.add({ kind: "nequi", account: "3001234567" }), /Ya agregaste/);
+  A.payMethods.add({ kind: "nequi", account: "3201234567" });
+  A.payMethods.add({ kind: "daviplata", account: "3101234567" });
+  assert.throws(() => A.payMethods.add({ kind: "nequi", account: "3301234567" }), /Máximo 6/);
+
+  assert.deepEqual(B.payMethods.list(), [], "el otro conjunto no los ve");
+  assert.throws(() => B.payMethods.remove(nequi), /no existe en este conjunto/);
+  assert.equal(A.payMethods.list().length, 6);
+  A.payMethods.remove(nequi);
+  assert.equal(A.payMethods.list().length, 5);
+  assert.throws(() => A.payMethods.remove(nequi), /no existe/);
+});

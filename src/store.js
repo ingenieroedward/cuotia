@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { MANUAL_LABELS, namesMatch, normalizeName, periodRange } from "./text.js";
+import { MANUAL_LABELS, PAY_KINDS, namesMatch, normalizeName, periodRange } from "./text.js";
 import { newToken, sha256 } from "./security.js";
 
 /**
@@ -265,6 +265,22 @@ const MIGRATIONS = [
     expires_at TEXT NOT NULL,
     stage TEXT NOT NULL
   );
+  `,
+  /* V17: more ways to pay besides the Bre-B key (Nequi, Daviplata, Bancolombia…), shown to residents on their pay screen. */
+  `
+  CREATE TABLE pay_methods (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    kind TEXT NOT NULL CHECK (kind IN ('nequi', 'daviplata', 'bancolombia', 'otro')),
+    label TEXT,
+    account TEXT NOT NULL,
+    account_type TEXT CHECK (account_type IN ('ahorros', 'corriente')),
+    holder TEXT,
+    note TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX pay_methods_by_tenant ON pay_methods (tenant_id, position);
   `,
 ];
 
@@ -1026,6 +1042,41 @@ export function openStore(path = ":memory:") {
       },
     };
 
+    /** Other ways to pay (Nequi, Daviplata, Bancolombia…), in the order the treasurer added them. The Bre-B key stays in the tenant. */
+    const MAX_PAY_METHODS = 6;
+    const payMethodRow = (r) => ({ id: r.id, kind: r.kind, label: r.label, account: r.account, accountType: r.account_type, holder: r.holder, note: r.note });
+    const payMethods = {
+      list: () => db.prepare("SELECT * FROM pay_methods WHERE tenant_id = ? ORDER BY position, created_at").all(tenantId).map(payMethodRow),
+      add({ kind, label = "", account, accountType = null, holder = "", note = "" }) {
+        const spec = PAY_KINDS[kind];
+        if (!spec) throw new Error("Ese medio de pago no existe");
+        let acc = String(account ?? "").trim();
+        if (spec.phone) {
+          acc = acc.replace(/[\s.-]/g, "");
+          if (!/^3\d{9}$/.test(acc)) throw new Error("El celular debe tener 10 dígitos y empezar por 3");
+        } else if (kind === "bancolombia") {
+          acc = acc.replace(/[\s.-]/g, "");
+          if (!/^\d{6,20}$/.test(acc)) throw new Error("El número de cuenta debe tener entre 6 y 20 dígitos");
+          if (!spec.types.includes(accountType)) throw new Error("Elige si es cuenta de ahorros o corriente");
+        } else if (acc.length < 3 || acc.length > 60) {
+          throw new Error("Escribe el número o la llave (3 a 60 caracteres)");
+        }
+        const name = String(label ?? "").trim().slice(0, 30);
+        if (spec.custom && name.length < 2) throw new Error("Ponle un nombre al medio de pago");
+        if (Number(db.prepare("SELECT COUNT(*) AS n FROM pay_methods WHERE tenant_id = ?").get(tenantId).n) >= MAX_PAY_METHODS) throw new Error(`Máximo ${MAX_PAY_METHODS} medios de pago`);
+        if (db.prepare("SELECT 1 FROM pay_methods WHERE tenant_id = ? AND kind = ? AND account = ?").get(tenantId, kind, acc)) throw new Error("Ya agregaste ese medio de pago");
+        const id = newId("pm");
+        const position = Number(db.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS n FROM pay_methods WHERE tenant_id = ?").get(tenantId).n);
+        db.prepare("INSERT INTO pay_methods (id, tenant_id, kind, label, account, account_type, holder, note, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(id, tenantId, kind, spec.custom ? name : null, acc, kind === "bancolombia" ? accountType : null, String(holder ?? "").trim().slice(0, 80) || null, String(note ?? "").trim().slice(0, 120) || null, position, nowIso());
+        return id;
+      },
+      remove(id) {
+        const r = db.prepare("DELETE FROM pay_methods WHERE id = ? AND tenant_id = ?").run(id, tenantId);
+        if (Number(r.changes) !== 1) throw new Error("Ese medio de pago no existe en este conjunto");
+      },
+    };
+
     /** What the conjunto spends. A mistake is voided (it stays visible as "anulado"), never erased. */
     const expenses = {
       create({ spentOn, amountCents, category, description, proof = null, userId = null }) {
@@ -1132,7 +1183,7 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, expenses, books, reset, resetPreview, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, payMethods, expenses, books, reset, resetPreview, matchHouse, summary };
   }
 
   return { db, tenants, users, invitations, certificates, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };

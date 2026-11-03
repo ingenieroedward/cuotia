@@ -1,6 +1,6 @@
 import { html, raw } from "./http.js";
 import { qrSvg } from "./qr.js";
-import { MANUAL_LABELS, bankLabel, bogotaDay, longDate, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
+import { MANUAL_LABELS, PAY_KINDS, bankLabel, bogotaDay, longDate, payMethodAccount, paySummary, payMethodTitle, lastPeriods, matchesSearch, monthName, monthShort, paymentMedium, peso, periodLabel, shortDate, shortDateTime, whatsappNumber } from "./text.js";
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
@@ -68,6 +68,10 @@ const FLASH = {
   rsclave: () => ({ kind: "err", text: "La contraseña no es correcta (o hiciste demasiados intentos). No se borró nada." }),
   rsconf: () => ({ kind: "err", text: "Escribe BORRAR para confirmar. No se borró nada." }),
   rscopia: () => ({ kind: "err", text: "No se pudo guardar la copia de seguridad, así que no se borró nada." }),
+  pmok: () => ({ kind: "ok", text: "Medio de pago agregado. Los residentes ya lo ven en su pantalla de pagar." }),
+  pmbad: () => ({ kind: "err", text: "Revisa los datos del medio de pago: el celular de Nequi o Daviplata tiene 10 dígitos y empieza por 3; Bancolombia pide el número de cuenta y si es de ahorros o corriente." }),
+  pmdup: () => ({ kind: "err", text: "Ya agregaste ese medio de pago." }),
+  pmquit: () => ({ kind: "ok", text: "Medio de pago quitado. Los residentes ya no lo ven." }),
   anon: () => ({ kind: "ok", text: "Datos personales borrados. El historial de cuotas y pagos quedó sin nombre." }),
   desact: () => ({ kind: "ok", text: "Casa dada de baja. Su historial se conserva y la puedes reactivar cuando quieras." }),
   react: () => ({ kind: "ok", text: "Casa dada de alta otra vez: vuelve a recibir cuotas. Genera su enlace personal nuevo si lo necesita." }),
@@ -418,7 +422,7 @@ function reminderLink({ tenant, dues, period }) {
   const text = [
     `Hola vecinos, les recordamos la cuota de ${periodLabel(period)} (${peso(owing[0].amountCents)}).`,
     `Casas pendientes: ${owing.map((d) => d.houseCode).join(", ")}.`,
-    tenant.payKey ? `Pueden pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : "",
+    paySummary(tenant),
     "¡Gracias!",
   ].filter(Boolean).join(" ");
   return `https://wa.me/?text=${encodeURIComponent(text)}`;
@@ -445,7 +449,7 @@ function personalReminder(tenant, group) {
   const when = names.length === 1 ? `de ${names[0]}` : `de ${names.slice(0, -1).join(", ")} y ${names.at(-1)}`;
   return [
     `Hola ${first}, te recordamos la cuota ${when}: ${peso(group.totalCents)}.`,
-    tenant.payKey ? `Puedes pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : "",
+    paySummary(tenant, { asking: true }),
     "Cuando pagues, avísame para registrarlo. ¡Gracias!",
   ].filter(Boolean).join(" ");
 }
@@ -503,7 +507,7 @@ export function panelPage(args) {
 
   const essentials = [
     { done: houses.length > 0, title: "Agrega las casas", text: "Pega la lista desde Excel y Cuotia crea cada casa y su enlace.", href: "/panel/casas/importar", cta: "Importar casas" },
-    { done: Boolean(tenant.payKey), title: "Escribe la llave Bre-B", text: "La ven los vecinos cuando van a pagar.", href: "/panel/ajustes", cta: "Ir a Ajustes" },
+    { done: Boolean(tenant.payKey) || (tenant.payMethods ?? []).length > 0, title: "Agrega cómo pagar", text: "Tu llave Bre-B, Nequi, Daviplata o cuenta: la ven los vecinos cuando van a pagar.", href: "/panel/ajustes", cta: "Ir a Ajustes" },
     { done: recent.length > 0, title: "Registra el primer pago", text: "A mano, o déjalo para cuando conectes pagoradar.", href: "/panel/pagos/nuevo", cta: "Registrar pago" },
   ];
   const showSteps = essentials.some((s) => !s.done);
@@ -693,7 +697,7 @@ export function cobrosPage(args) {
   ];
   const href = (f) => `/panel/cobros${f || q ? `?${new URLSearchParams({ ...(f ? { f } : {}), ...(q ? { q } : {}) })}` : ""}`;
   const everyone = groups.length
-    ? `https://wa.me/?text=${encodeURIComponent(`Hola vecinos, les recordamos la cuota pendiente. Casas: ${groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; ")}.${tenant.payKey ? ` Pueden pagar por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}.` : ""} ¡Gracias!`)}`
+    ? `https://wa.me/?text=${encodeURIComponent(`Hola vecinos, les recordamos la cuota pendiente. Casas: ${groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; ")}.${paySummary(tenant) ? ` ${paySummary(tenant)}` : ""} ¡Gracias!`)}`
     : null;
   return panelLayout("Por cobrar", { ...args, active: "cobros" }, html`
   <header class="head">
@@ -911,6 +915,31 @@ export function ajustesPage(args) {
       <label>Se empieza a pagar el día<input type="number" name="desde" min="1" max="28" inputmode="numeric" value="${tenant.openDay ?? ""}" placeholder="1"></label>
       <label>Último día para pagar<input type="number" name="hasta" min="1" max="28" inputmode="numeric" value="${tenant.dueDay ?? ""}" placeholder="10"></label>
       <button class="btn" type="submit">Guardar fechas</button>
+    </form>
+  </section>
+
+  <section class="card" id="medios">
+    <h2>Otros medios de pago</h2>
+    <p class="muted small">Además de la llave Bre-B. Los residentes los ven todos en su pantalla de pagar, con un botón para copiar el número. Los pagos que lleguen por aquí los registras tú (o el residente sube su comprobante): pagoradar solo lee los de la cuenta Bre-B.</p>
+    ${(tenant.payMethods ?? []).length
+      ? html`<ul class="list stack">${tenant.payMethods.map((m) => html`<li class="concept">
+          <div class="row"><span><b>${payMethodTitle(m)}</b><small class="muted" translate="no">${payMethodAccount(m)}${m.holder ? ` · ${m.holder}` : ""}${m.note ? ` · ${m.note}` : ""}</small></span>
+            <details class="undo"><summary>Quitar</summary>
+              <form method="post" action="/panel/ajustes/medios/${m.id}/quitar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, quitar</button></form>
+            </details></div>
+        </li>`)}</ul>`
+      : html`<p class="muted small">Todavía no hay otros medios de pago.</p>`}
+    <form class="stack-form" method="post" action="/panel/ajustes/medios">
+      ${csrfField(csrf)}
+      <div class="grid-form">
+        <label>Medio<select name="tipo" id="tipo-medio">${Object.entries(PAY_KINDS).map(([k, v]) => html`<option value="${k}">${v.label}</option>`)}</select></label>
+        <label>Número (celular o cuenta)<input type="text" name="cuenta" inputmode="numeric" maxlength="60" required placeholder="3001234567"></label>
+        <label>Clase de cuenta <span class="muted small">(solo Bancolombia)</span><select name="clase"><option value="">—</option><option value="ahorros">Ahorros</option><option value="corriente">Corriente</option></select></label>
+        <label>Nombre del medio <span class="muted small">(solo "Otro")</span><input type="text" name="nombre" maxlength="30" placeholder="Ahorro a la mano"></label>
+        <label>A nombre de <span class="muted small">(opcional)</span><input type="text" name="titular" maxlength="80" placeholder="Quien recibe el dinero"></label>
+        <label>Indicación <span class="muted small">(opcional)</span><input type="text" name="nota" maxlength="120" placeholder="Escribe tu número de casa en el mensaje"></label>
+      </div>
+      <button class="btn" type="submit">Agregar medio de pago</button>
     </form>
   </section>
 
@@ -1644,9 +1673,9 @@ export function residentPayPage({ tenant, house, dues, token, proofs = [] }) {
     <span class="hero-sub">Casa ${house.code} · ${tenant.name}</span>
   </section>
 
-  ${tenant.payKey
-    ? html`<section class="card">
-        <span class="eyebrow dim">Paga por Bre-B a la llave</span>
+  ${tenant.payKey || (tenant.payMethods ?? []).length
+    ? html`${tenant.payKey ? html`<section class="card pay-method">
+        <span class="eyebrow dim">Bre-B · llave</span>
         <p class="key" id="llave" translate="no">${tenant.payKey}</p>
         ${tenant.payHolder ? html`<p class="muted small">Titular: <b>${tenant.payHolder}</b></p>` : ""}
         <button class="btn" type="button" data-copy="${tenant.payKey}" data-copy-target="#llave">Copiar llave</button>
@@ -1655,7 +1684,15 @@ export function residentPayPage({ tenant, house, dues, token, proofs = [] }) {
           <li>Elige pagar o transferir con <b>llave Bre-B</b>.</li>
           <li>Escribe la llave y el valor <b>exacto: ${peso(total)}</b>.</li>
         </ol>
-      </section>`
+      </section>` : ""}
+      ${(tenant.payMethods ?? []).map((m) => html`<section class="card pay-method">
+        <span class="eyebrow dim">${payMethodTitle(m)}</span>
+        <p class="key" id="medio-${m.id}" translate="no">${payMethodAccount(m)}</p>
+        ${m.holder ? html`<p class="muted small">A nombre de: <b>${m.holder}</b></p>` : ""}
+        ${m.note ? html`<p class="small">${m.note}</p>` : ""}
+        <button class="btn" type="button" data-copy="${m.account}" data-copy-target="#medio-${m.id}">Copiar ${m.kind === "bancolombia" ? "número de cuenta" : "número"}</button>
+        <p class="muted small">Envía el valor <b>exacto: ${peso(total)}</b> y después sube tu comprobante.</p>
+      </section>`)}`
     : html`<section class="card"><p>El tesorero aún no ha configurado cómo pagar. Escríbele para que te indique.</p></section>`}
 
   <section class="card">
