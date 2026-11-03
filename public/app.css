@@ -633,3 +633,7 @@ section.message textarea { min-height: 11rem; }
 .chip-var { font: inherit; font-size: .8125rem; padding: .3rem .6rem; min-height: 36px; border-radius: 999px; border: 1px solid var(--line); background: var(--ground); color: var(--text); cursor: pointer; }
 .chip-var:hover { background: var(--accent); }
 pre.wa-preview { margin: .35rem 0 0; padding: .9rem 1rem; background: #dcf8c6; color: #111; border-radius: 14px 14px 14px 4px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .9rem; }
+
+.passkey-box { margin-top: 12px; text-align: center; }
+.passkey-box .btn { width: 100%; }
+.center-text { text-align: center; }

@@ -42,8 +42,8 @@ export function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
-export function sendJson(res, status, obj) {
-  send(res, status, JSON.stringify(obj), { "Content-Type": "application/json; charset=utf-8" });
+export function sendJson(res, status, obj, headers = {}) {
+  send(res, status, JSON.stringify(obj), { "Content-Type": "application/json; charset=utf-8", ...headers });
 }
 
 export function redirect(res, location, headers = {}) {
