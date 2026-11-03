@@ -14,7 +14,7 @@ import { createNotifier } from "./notifier.js";
 import { createOperator } from "./operator.js";
 import { backupName, backupTo } from "./backup.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
-import { MANUAL_LABELS, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
+import { MANUAL_LABELS, payMethodTitle, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
 import { ajustesPage, bitacoraPage, conceptosPage, masPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
@@ -171,7 +171,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       if (pay) {
         // Nothing left to pay (the bank confirmed while the page was open): go back to the home, which says "Al día".
         if (!dues.some((d) => d.status === "pending")) return redirect(res, `/r/${token}`);
-        return send(res, 200, residentPayPage({ ...found, dues, token, proofs: ledger.proofs.listForHouse(found.house.id) }));
+        return send(res, 200, residentPayPage({ ...found, tenant: { ...found.tenant, payMethods: ledger.payMethods.list() }, dues, token, proofs: ledger.proofs.listForHouse(found.house.id) }));
       }
       return send(res, 200, residentPage({ ...found, dues, period: currentPeriod(), token, proofs: ledger.proofs.listForHouse(found.house.id), pushKey: notifier.publicKey(), pushOn: ledger.housePush.count(found.house.id) }));
     }
@@ -498,7 +498,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const debts = { groups, totals: debtTotals(groups) };
     // What the sidebar and tab bar show on every page.
     const base = {
-      tenant: s.tenant, user: s.user, csrf,
+      tenant: { ...s.tenant, payMethods: ledger.payMethods.list() }, user: s.user, csrf,
       badge: ledger.payments.countUnassigned() + ledger.proofs.countPending(), owing: groups.length, houseCount: houses.length,
       cuota: (() => { const m = ledger.concepts.list(); return m.length === 0 ? "" : m.length === 1 ? `${m[0].name} ${peso(m[0].amountCents)}` : `Cuota mensual ${peso(m.reduce((n, c) => n + c.amountCents, 0))}`; })(),
     };
@@ -835,6 +835,24 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         store.tenants.setDates(s.tenant.id, { openDay, dueDay });
         audit("ajustes", `Cambió las fechas de pago: del ${openDay ?? "—"} al ${dueDay ?? "—"}`);
         return redirect(res, "/panel/ajustes?m=fechas");
+      }
+
+      if (path === "/panel/ajustes/medios") {
+        const kind = String(form.get("tipo") ?? "");
+        try {
+          ledger.payMethods.add({ kind, label: form.get("nombre"), account: form.get("cuenta"), accountType: form.get("clase"), holder: form.get("titular"), note: form.get("nota") });
+        } catch (e) {
+          return redirect(res, `/panel/ajustes?m=${/Ya agregaste/.test(e.message) ? "pmdup" : "pmbad"}`);
+        }
+        audit("ajustes", `Agregó un medio de pago: ${payMethodTitle({ kind, label: String(form.get("nombre") ?? "").trim(), accountType: kind === "bancolombia" ? String(form.get("clase") ?? "") : null })}`);
+        return redirect(res, "/panel/ajustes?m=pmok");
+      }
+      const removeMethod = path.match(/^\/panel\/ajustes\/medios\/(pm_[a-f0-9]+)\/quitar$/);
+      if (removeMethod) {
+        const before = ledger.payMethods.list().find((m) => m.id === removeMethod[1]);
+        try { ledger.payMethods.remove(removeMethod[1]); } catch { return redirect(res, "/panel/ajustes?m=pmbad"); }
+        audit("ajustes", `Quitó un medio de pago: ${before ? payMethodTitle(before) : ""}`.trim());
+        return redirect(res, "/panel/ajustes?m=pmquit");
       }
 
       if (path === "/panel/ajustes/cobro") {

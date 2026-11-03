@@ -2270,3 +2270,57 @@ test("operador: ve el estado de los respaldos, respalda ahora y prueba la conexi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("medios de pago: el tesorero agrega Nequi, Daviplata y Bancolombia y el residente los ve todos con su botón de copiar", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const go = (fields) => form(`${s.base}/panel/ajustes/medios`, { _csrf: csrf, ...fields }, cookie);
+  const pay = async () => (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text();
+
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Otros medios de pago/);
+  assert.doesNotMatch(await pay(), /Nequi/, "todavía solo la llave Bre-B");
+  assert.equal((await form(`${s.base}/panel/ajustes/medios`, { tipo: "nequi", cuenta: "3001234567" }, cookie)).status, 403, "sin token no agrega");
+
+  assert.match((await go({ tipo: "nequi", cuenta: "300 123 4567", titular: "Marta Rojas", nota: "Escribe tu número de casa" })).headers.get("location"), /m=pmok/);
+  assert.match((await go({ tipo: "daviplata", cuenta: "3109876543" })).headers.get("location"), /m=pmok/);
+  assert.match((await go({ tipo: "bancolombia", cuenta: "123456789012", clase: "ahorros", titular: "Marta Rojas" })).headers.get("location"), /m=pmok/);
+  for (const bad of [{ tipo: "nequi", cuenta: "123" }, { tipo: "bancolombia", cuenta: "123456789", clase: "" }, { tipo: "otro", cuenta: "123456", nombre: "" }, { tipo: "cripto", cuenta: "3001234567" }]) {
+    assert.match((await go(bad)).headers.get("location"), /m=pmbad/, JSON.stringify(bad));
+  }
+  assert.match((await go({ tipo: "nequi", cuenta: "3001234567" })).headers.get("location"), /m=pmdup/);
+  assert.equal(s.A.payMethods.list().length, 3);
+
+  const page = await pay();
+  assert.match(page, /Bre-B · llave/, "la llave Bre-B sigue");
+  assert.match(page, /Nequi/);
+  assert.match(page, /300 123 4567/, "el celular se muestra separado");
+  assert.match(page, /data-copy="3001234567"/, "pero se copia sin espacios");
+  assert.match(page, /Daviplata/);
+  assert.match(page, /Bancolombia · ahorros/);
+  assert.match(page, /data-copy="123456789012"/);
+  assert.match(page, /A nombre de: <b>Marta Rojas<\/b>/);
+  assert.match(page, /Escribe tu número de casa/);
+  assert.equal((page.match(/class="card pay-method"/g) ?? []).length, 4, "Bre-B + tres");
+  assert.doesNotMatch(await (await fetch(`${s.base}/r/${s.b01.accessToken}/pagar`)).text(), /Nequi|Daviplata/, "el otro conjunto no los comparte");
+
+  // The WhatsApp reminders carry every way to pay.
+  const cobros = await (await fetch(`${s.base}/panel/cobros`, { headers: { cookie } })).text();
+  const wa = decodeURIComponent(/https:\/\/wa\.me\/\?text=([^"&]+)/.exec(cobros)[1]);
+  assert.match(wa, /Nequi 300 123 4567/);
+  assert.match(wa, /Bancolombia · ahorros 123456789012/);
+
+  // Removing one; another conjunto's treasurer can't.
+  const nequi = s.A.payMethods.list().find((m) => m.kind === "nequi");
+  const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes");
+  assert.match((await form(`${s.base}/panel/ajustes/medios/${nequi.id}/quitar`, { _csrf: otherCsrf }, other.cookie)).headers.get("location"), /m=pmbad/);
+  assert.equal(s.A.payMethods.list().length, 3);
+  assert.match((await form(`${s.base}/panel/ajustes/medios/${nequi.id}/quitar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=pmquit/);
+  assert.doesNotMatch(await pay(), /Nequi/);
+  const log = s.A.audit.list({ limit: 50 }).rows.map((r) => r.summary);
+  assert.ok(log.includes("Agregó un medio de pago: Nequi"));
+  assert.ok(log.includes("Agregó un medio de pago: Bancolombia · ahorros"));
+  assert.ok(log.includes("Quitó un medio de pago: Nequi"));
+  assert.ok(!log.some((t) => t.includes("3001234567") || t.includes("123456789012")), "la bitácora no lleva números de cuenta");
+}));

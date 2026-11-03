@@ -112,7 +112,7 @@ export function paymentMedium(p) {
   return p.method === "other" ? "Otro" : "Efectivo";
 }
 
-const BANKS = { nequi: "Nequi", nequi_negocios: "Nequi Negocios", bancolombia: "Bancolombia" };
+const BANKS = { nequi: "Nequi", nequi_negocios: "Nequi Negocios", bancolombia: "Bancolombia", daviplata: "Daviplata" };
 export const bankLabel = (bank) => BANKS[bank] ?? (bank ? String(bank) : "Banco");
 
 /** The [from, to) UTC instants of a "YYYY-MM" month in Colombia (UTC-5, no daylight saving), as ISO strings. */
@@ -184,4 +184,27 @@ export function parseHouseLines(text, { max = 300 } = {}) {
     rows.push({ code, residentName, phone: phoneRaw.replace(/\D/g, "").slice(0, 20) || null, line: i + 1 });
   });
   return { rows, errors };
+}
+
+/** The other ways a conjunto can be paid, besides its Bre-B key: what each kind needs and how it is named. */
+export const PAY_KINDS = {
+  nequi: { label: "Nequi", account: "Número de celular", phone: true },
+  daviplata: { label: "Daviplata", account: "Número de celular", phone: true },
+  bancolombia: { label: "Bancolombia", account: "Número de cuenta", types: ["ahorros", "corriente"] },
+  otro: { label: "Otro", account: "Número o llave", custom: true },
+};
+
+/** "Nequi", "Bancolombia · ahorros" or the custom name. */
+export const payMethodTitle = (m) => (m.kind === "otro" ? m.label : `${PAY_KINDS[m.kind]?.label ?? m.kind}${m.accountType ? ` · ${m.accountType}` : ""}`);
+
+/** "3001234567" -> "300 123 4567"; anything else as typed. */
+export const payMethodAccount = (m) => (PAY_KINDS[m.kind]?.phone && /^\d{10}$/.test(m.account) ? `${m.account.slice(0, 3)} ${m.account.slice(3, 6)} ${m.account.slice(6)}` : m.account);
+
+/** One sentence for a WhatsApp message: how the conjunto can be paid, or "" when nothing is set. */
+export function paySummary(tenant, { asking = false } = {}) {
+  const parts = [];
+  if (tenant.payKey) parts.push(`por Bre-B a la llave ${tenant.payKey}${tenant.payHolder ? ` (titular: ${tenant.payHolder})` : ""}`);
+  for (const m of tenant.payMethods ?? []) parts.push(`${payMethodTitle(m)} ${payMethodAccount(m)}${m.holder ? ` (a nombre de ${m.holder})` : ""}`);
+  if (parts.length === 0) return "";
+  return `${asking ? "Puedes pagar" : "Pueden pagar"} ${parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join("; ")} o ${parts.at(-1)}`}.`;
 }
