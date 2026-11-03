@@ -14,7 +14,7 @@ import { createNotifier } from "./notifier.js";
 import { EXPENSE_CATEGORIES } from "./store.js";
 import { MANUAL_LABELS, bogotaDateTime, csvCell, currentPeriod, lastPeriods, matchesSearch, parseHouseLines, paymentMedium, periodLabel, peso, shiftPeriod, slugify, whatsappNumber } from "./text.js";
 import { AUDIT_ACTIONS } from "./audit.js";
-import { ajustesPage, bitacoraPage, masPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, bitacoraPage, conceptosPage, masPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -492,7 +492,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const base = {
       tenant: s.tenant, user: s.user, csrf,
       badge: ledger.payments.countUnassigned() + ledger.proofs.countPending(), owing: groups.length, houseCount: houses.length,
-      cuota: ledger.concepts.list()[0] ? peso(ledger.concepts.list()[0].amountCents) : "",
+      cuota: (() => { const m = ledger.concepts.list(); return m.length === 0 ? "" : m.length === 1 ? `${m[0].name} ${peso(m[0].amountCents)}` : `Cuota mensual ${peso(m.reduce((n, c) => n + c.amountCents, 0))}`; })(),
     };
 
     if (method === "GET" && (path === "/" || path === "/panel")) {
@@ -615,6 +615,13 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       }));
     }
 
+    if (method === "GET" && path === "/panel/conceptos") {
+      return send(res, 200, conceptosPage({
+        ...base, flash: flashOf(url.searchParams), concepts: ledger.concepts.all(), houses, current: period,
+        months: lastPeriods(period, 6), today: period,
+      }));
+    }
+
     if (method === "GET" && path === "/panel/mas") return send(res, 200, masPage({ ...base }));
 
     if (method === "GET" && path === "/panel/bitacora") {
@@ -701,6 +708,57 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         try { ledger.team.remove(removeUser[1]); } catch { return redirect(res, "/panel/ajustes?m=equltimo"); }
         audit("equipo", `Quitó a ${gone?.name ?? "una persona"} (${gone?.email ?? ""}) del equipo`);
         return redirect(res, "/panel/ajustes?m=eqquit");
+      }
+
+      if (path === "/panel/conceptos") {
+        const amount = parsePesos(String(form.get("valor") ?? ""));
+        const name = String(form.get("nombre") ?? "").trim();
+        if (amount === null) return redirect(res, "/panel/conceptos?m=cnbad");
+        try {
+          ledger.concepts.create({ name, amountCents: amount, kind: "monthly" });
+        } catch (e) {
+          return redirect(res, `/panel/conceptos?m=${/ya existe/i.test(e.message) ? "cndup" : "cnbad"}`);
+        }
+        ledger.dues.generate(period); // this month's due appears right away, not at the next hourly run
+        audit("cobros", `Agregó el cobro mensual "${name}" por ${peso(amount)}`);
+        return redirect(res, "/panel/conceptos?m=cnok");
+      }
+
+      const conceptAmount = path.match(/^\/panel\/conceptos\/(cn_[a-f0-9]+)\/valor$/);
+      if (conceptAmount) {
+        const amount = parsePesos(String(form.get("valor") ?? ""));
+        if (amount === null) return redirect(res, "/panel/conceptos?m=cnbad");
+        const before = ledger.concepts.all().find((c) => c.id === conceptAmount[1]);
+        try { ledger.concepts.setAmount(conceptAmount[1], amount); } catch { return redirect(res, "/panel/conceptos?m=cnbad"); }
+        audit("cobros", `Cambió el valor de "${before?.name ?? "un cobro"}" de ${peso(before?.amountCents ?? 0)} a ${peso(amount)} (solo para las cuotas nuevas)`);
+        return redirect(res, "/panel/conceptos?m=cnval");
+      }
+
+      const conceptState = path.match(/^\/panel\/conceptos\/(cn_[a-f0-9]+)\/estado$/);
+      if (conceptState) {
+        const on = form.get("activo") === "1";
+        const before = ledger.concepts.all().find((c) => c.id === conceptState[1]);
+        try { ledger.concepts.setActive(conceptState[1], on); } catch { return redirect(res, "/panel/conceptos?m=cnultimo"); }
+        if (on) ledger.dues.generate(period);
+        audit("cobros", `${on ? "Reanudó" : "Pausó"} el cobro mensual "${before?.name ?? "un cobro"}"`);
+        return redirect(res, "/panel/conceptos?m=cnest");
+      }
+
+      if (path === "/panel/conceptos/especial") {
+        const amount = parsePesos(String(form.get("valor") ?? ""));
+        const name = String(form.get("nombre") ?? "").trim();
+        const month = String(form.get("mes") ?? "");
+        if (amount === null || !validPastPeriod(month)) return redirect(res, "/panel/conceptos?m=espbad");
+        const all = form.get("alcance") !== "una";
+        const targets = all ? ledger.houses.list().map((h) => h.id) : [String(form.get("casa") ?? "")];
+        let made;
+        try {
+          made = ledger.concepts.charge({ name, amountCents: amount, period: month, houseIds: targets });
+        } catch (e) {
+          return redirect(res, `/panel/conceptos?m=${/ya existe/i.test(e.message) ? "cndup" : "espbad"}`);
+        }
+        audit("cobros", `Hizo un cobro especial "${name}" de ${peso(amount)} a ${all ? `todas las casas (${made.created})` : houseTag(targets[0])} para ${periodLabel(month)}`);
+        return redirect(res, "/panel/cobros?m=espok");
       }
 
       const voidExpense = path.match(/^\/panel\/gastos\/(gt_[a-f0-9]+)\/anular$/);
@@ -965,7 +1023,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const icon = (src, sizes, type, purpose = "any") => ({ src, sizes, type, purpose });
     return {
       id: base, name: `Cuotia · Casa ${house.code}`, short_name: `Casa ${house.code}`,
-      description: `Tu cuota de vigilancia en ${tenant.name}.`, lang: "es-CO", dir: "ltr",
+      description: `Tu cuota en ${tenant.name}.`, lang: "es-CO", dir: "ltr",
       start_url: base, scope: base, display: "standalone", background_color: "#f3f8f6", theme_color: "#0b4a3a",
       icons: [
         icon("/static/icons/icon-192.png", "192x192", "image/png"), icon("/static/icons/icon-512.png", "512x512", "image/png"),
@@ -978,7 +1036,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   function whatsappLink(house, linkUrl) {
     const to = whatsappNumber(house.phone);
     if (!to) return null;
-    const text = `Hola ${house.residentName.split(" ")[0]}, este es tu enlace personal de Cuotia para ver y pagar tu cuota de vigilancia: ${linkUrl}`;
+    const text = `Hola ${house.residentName.split(" ")[0]}, este es tu enlace personal de Cuotia para ver y pagar tu cuota: ${linkUrl}`;
     return `https://wa.me/${to}?text=${encodeURIComponent(text)}`;
   }
 
