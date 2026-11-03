@@ -572,3 +572,15 @@ body.doc-page { background: var(--ground); }
 .doc-table td:nth-child(1) { text-transform: capitalize; }
 .doc-table td:nth-child(1) small { text-transform: none; }
 @media (max-width: 360px) { .doc-code-value { font-size: 1.3rem; letter-spacing: .04em; } .doc-sheet { padding: 1.1rem; } }
+
+/* ---- audit log ---- */
+li.audit { display: grid; gap: .25rem; }
+.audit-text { overflow-wrap: anywhere; }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: 1rem; flex-wrap: wrap; }
+
+/* ---- "Más" tab ---- */
+a.card.more-item { display: flex; flex-direction: row; align-items: center; gap: .9rem; text-decoration: none; color: var(--text); min-height: 72px; }
+a.card.more-item > span { display: grid; flex: 1; min-width: 0; }
+a.card.more-item > svg { flex: none; }
+.tab { min-width: 0; }
+.tab span { white-space: nowrap; }

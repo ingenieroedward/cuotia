@@ -1820,3 +1820,93 @@ test("estado de cuenta y paz y salvo: el residente y el tesorero los ven, solo s
   assert.equal((await fetch(`${s.base}/panel/casas/${s.a03.house.id}/paz-y-salvo`, hdr)).status, 404);
   assert.equal((await fetch(`${s.base}/r/${tok(s.a03)}/estado`)).status, 404);
 }));
+
+test("bitácora: queda anotado quién hizo qué, sin secretos, con filtros, aislada por conjunto y solo para quien tiene sesión", () => withServer(async (s) => {
+  s.A.dues.generate(currentPeriod());
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const act = (path, fields) => form(`${s.base}${path}`, { _csrf: csrf, ...fields }, cookie);
+  const rows = () => s.A.audit.list({ limit: 200 }).rows;
+
+  // A mix of actions, including the ones that carry secrets.
+  const due = s.A.dues.listForHouse(s.a14.house.id)[0];
+  await act("/panel/pagos/nuevo", { casa: s.a14.house.id, cuota: due.id, medio: "transfer", banco: "Nequi", fecha: today });
+  await act(`/panel/casas/${s.a03.house.id}/desactivar`, {});
+  await act(`/panel/casas/${s.a03.house.id}/reactivar`, {});
+  await act("/panel/ajustes/pagoradar", { secret: "secreto-de-pagoradar-muy-largo" });
+  await act("/panel/ajustes/clave", { actual: "clave-de-marta", nueva: "nueva-clave-segura-1", nueva2: "nueva-clave-segura-1" });
+  await act("/panel/ajustes/fechas", { desde: "1", hasta: "10" });
+  await act("/panel/equipo/invitar", { correo: "pedro@ejemplo.com", nombre: "Pedro" });
+  const fd = new FormData();
+  for (const [k, v] of Object.entries({ _csrf: csrf, descripcion: "Pago del vigilante", valor: "1.200.000", categoria: "Vigilancia", fecha: today })) fd.append(k, v);
+  await fetch(`${s.base}/panel/gastos`, { method: "POST", body: fd, redirect: "manual", headers: { cookie } });
+  // Failed attempts leave no trace.
+  const before = rows().length;
+  await act("/panel/pagos/nuevo", { casa: s.a14.house.id, cuota: due.id, medio: "transfer", fecha: "2999-01-01" });
+  await act("/panel/ajustes/clave", { actual: "mala", nueva: "otra-clave-segura-22", nueva2: "otra-clave-segura-22" });
+  assert.equal(rows().length, before, "un intento fallido no se anota");
+
+  const texts = rows().map((r) => r.summary);
+  assert.ok(texts.some((t) => /^Registró un pago de \$30\.000 de la casa 14 \(Transferencia\)/.test(t)), texts.join(" | "));
+  assert.ok(texts.includes("Dio de baja la casa 03"));
+  assert.ok(texts.includes("Dio de alta otra vez la casa 03"));
+  assert.ok(texts.includes("Guardó el secreto de pagoradar"));
+  assert.ok(texts.includes("Cambió su contraseña"));
+  assert.ok(texts.includes("Cambió las fechas de pago: del 1 al 10"));
+  assert.ok(texts.includes("Invitó a pedro@ejemplo.com al equipo"));
+  assert.ok(texts.some((t) => /^Registró un gasto de \$1\.200\.000: Pago del vigilante \(Vigilancia\)/.test(t)));
+  assert.ok(texts.includes("Inició sesión"));
+  assert.ok(rows().every((r) => r.userName === "Marta"), "con el nombre de quien lo hizo");
+
+  // Never a secret or a password, anywhere in the table.
+  const dump = JSON.stringify(s.store.db.prepare("SELECT * FROM audit_log").all());
+  for (const secret of ["secreto-de-pagoradar-muy-largo", "clave-de-marta", "nueva-clave-segura-1", "otra-clave-segura-22"]) assert.ok(!dump.includes(secret), secret);
+
+  // The page: filters, wildcards escaped, only the signed-in conjunto.
+  const page = await (await fetch(`${s.base}/panel/bitacora`, { headers: { cookie } })).text();
+  assert.match(page, /Bitácora/);
+  assert.match(page, /Dio de baja la casa 03/);
+  const onlyHouses = await (await fetch(`${s.base}/panel/bitacora?tipo=casas`, { headers: { cookie } })).text();
+  assert.match(onlyHouses, /Dio de baja la casa 03/);
+  assert.doesNotMatch(onlyHouses, /Guardó el secreto de pagoradar/);
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel/bitacora?q=%25`, { headers: { cookie } })).text(), /Dio de baja/);
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Ver quién hizo qué/);
+  const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const luisPage = await (await fetch(`${s.base}/panel/bitacora`, { headers: { cookie: other.cookie } })).text();
+  assert.doesNotMatch(luisPage, /Dio de baja la casa 03|Marta/);
+  assert.equal((await fetch(`${s.base}/panel/bitacora`, { redirect: "manual" })).headers.get("location"), "/login");
+  assert.equal((await act("/panel/bitacora", {})).status, 404, "la bitácora no se escribe desde el navegador");
+
+  // Pagination: 60 more lines make a second page.
+  for (let i = 0; i < 60; i++) s.A.audit.record({ userName: "Marta", action: "pagos", summary: `Prueba ${i}` });
+  assert.match(await (await fetch(`${s.base}/panel/bitacora`, { headers: { cookie } })).text(), /Página 1 de 2/);
+  assert.match(await (await fetch(`${s.base}/panel/bitacora?p=2`, { headers: { cookie } })).text(), /Página 2 de 2/);
+
+  // Removing a person keeps their old lines under the name they had.
+  const { token } = s.A.team.invite({ email: "ana@ejemplo.com" });
+  const { userId } = s.store.invitations.accept(token, { passwordHash: "h", name: "Ana" });
+  s.A.audit.record({ userId, userName: "Ana", action: "pagos", summary: "Algo de Ana" });
+  s.A.team.remove(userId);
+  assert.ok(s.A.audit.list({ q: "Ana" }).rows.some((r) => r.userName === "Ana" && r.summary === "Algo de Ana"));
+}));
+
+test("navegación: el celular tiene cinco pestañas (la quinta es Más) y el computador sigue mostrando todo, incluidos Cuentas y Ajustes", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const get = async (p) => (await fetch(`${s.base}${p}`, { headers: { cookie }, redirect: "manual" })).text();
+  const html = await get("/panel");
+  const tabbar = /<nav class="tabbar"[\s\S]*?<\/nav>/.exec(html)[0];
+  assert.equal((tabbar.match(/<a class="tab"/g) ?? []).length, 5, "cinco pestañas");
+  assert.match(tabbar, /href="\/panel\/mas"/);
+  assert.doesNotMatch(tabbar, /href="\/panel\/cuentas"|href="\/panel\/ajustes"/, "esas viven dentro de Más");
+  const side = /<nav class="side-nav"[\s\S]*?<\/nav>/.exec(html)[0];
+  for (const href of ["/panel", "/panel/cobros", "/panel/casas", "/panel/pagos", "/panel/cuentas", "/panel/ajustes"]) assert.ok(side.includes(`href="${href}"`), `el menú lateral tiene ${href}`);
+
+  const mas = await get("/panel/mas");
+  for (const href of ["/panel/cuentas", "/panel/ajustes", "/panel/bitacora"]) assert.ok(mas.includes(`href="${href}"`), href);
+  assert.match(/<nav class="tabbar"[\s\S]*?<\/nav>/.exec(mas)[0], /href="\/panel\/mas" aria-current="page"/, "Más queda marcada");
+  // Inside Cuentas or Ajustes the Más tab stays highlighted too.
+  assert.match(/<nav class="tabbar"[\s\S]*?<\/nav>/.exec(await get("/panel/cuentas"))[0], /href="\/panel\/mas" aria-current="page"/);
+  assert.match(/<nav class="tabbar"[\s\S]*?<\/nav>/.exec(await get("/panel/ajustes"))[0], /href="\/panel\/mas" aria-current="page"/);
+  assert.equal((await fetch(`${s.base}/panel/mas`, { redirect: "manual" })).headers.get("location"), "/login");
+}));

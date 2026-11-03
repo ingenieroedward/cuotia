@@ -13,6 +13,8 @@ const ICONS = {
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   back: '<path d="M15 6l-6 6 6 6"/>',
   next: '<path d="M9 6l6 6-6 6"/>',
+  mas: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+  bitacora: '<path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/>',
   cuentas: '<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M9 9h6M9 13h6"/>',
   cobrar: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6.5l1 1 2-2M4 12.5l1 1 2-2M4 18.5l1 1 2-2"/>',
 };
@@ -188,6 +190,10 @@ const NAV = [
   { key: "ajustes", href: "/panel/ajustes", label: "Ajustes", icon: "ajustes" },
 ];
 
+/** Phones get five tabs: the daily ones, and "Más" for what is used less (cuentas, ajustes, bitácora). */
+const TABS = [...NAV.slice(0, 4), { key: "mas", href: "/panel/mas", label: "Más", icon: "mas" }];
+const MORE_KEYS = ["mas", "cuentas", "ajustes", "bitacora"];
+
 const BRAND_ON_DARK = html`<span class="brand on-dark"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span>`;
 
 /**
@@ -207,7 +213,8 @@ export function panelLayout(title, ctx, content) {
     <nav class="side-nav" aria-label="Principal">
       ${NAV.slice(0, 4).map(sideLink)}
       <a class="nav-link" href="/panel#por-asignar">${icon("asignar")}<span>Por asignar</span>${unassigned}</a>
-      ${sideLink(NAV[4])}
+      ${sideLink(NAV.find((n) => n.key === "cuentas"))}
+      ${sideLink(NAV.find((n) => n.key === "ajustes"))}
     </nav>
     <div class="side-foot">
       <div class="conj">
@@ -231,7 +238,7 @@ export function panelLayout(title, ctx, content) {
   </div>
 
   <nav class="tabbar" aria-label="Principal">
-    ${NAV.map((n) => html`<a class="tab" href="${n.href}"${current(n.key)}>${icon(n.icon, 22)}<span>${n.label}</span>${n.key === "resumen" ? unassigned : owes(n)}</a>`)}
+    ${TABS.map((n) => html`<a class="tab" href="${n.href}"${n.key === "mas" ? (MORE_KEYS.includes(active) ? raw(' aria-current="page"') : "") : current(n.key)}>${icon(n.icon, 22)}<span>${n.label}</span>${n.key === "resumen" ? unassigned : owes(n)}</a>`)}
   </nav>
 </div>`);
 }
@@ -773,6 +780,11 @@ export function ajustesPage(args) {
     </div>
   </section>
 
+  <section class="card">
+    <div class="row wrap"><h2>Bitácora</h2><a class="btn ghost small" href="/panel/bitacora">Ver quién hizo qué</a></div>
+    <p class="muted small">Cada pago, cambio de casa, gasto y ajuste queda anotado con la persona y la hora.</p>
+  </section>
+
   <section class="card" id="equipo">
     <h2>Equipo</h2>
     <p class="muted small">Quienes pueden entrar al panel de ${tenant.name}. Cada persona tiene su propia contraseña y su propio código de verificación. Todas pueden hacer lo mismo: invita solo a gente de confianza.</p>
@@ -1151,6 +1163,53 @@ export function residentCuentasPage({ tenant, token, period, current, books, exp
   </section>
   <p class="muted small center-text">${period === current ? "Estas cuentas se actualizan cada vez que el tesorero registra un pago o un gasto." : ""}</p>
 </main>`, { manifest: `/r/${token}/manifest.webmanifest` });
+}
+
+/** The "Más" tab on a phone: what is not used every day. */
+export function masPage(args) {
+  const { tenant } = args;
+  const item = (href, iconName, title, text) => html`<a class="card more-item" href="${href}">${icon(iconName, 24)}<span><b>${title}</b><small class="muted">${text}</small></span>${icon("next", 20, 2.4)}</a>`;
+  return panelLayout("Más", { ...args, active: "mas" }, html`
+  <div class="heading"><h1>Más</h1><span class="muted">${tenant.name}</span></div>
+  ${item("/panel/cuentas", "cuentas", "Cuentas claras", "Gastos, saldo en caja y resumen para los vecinos")}
+  ${item("/panel/ajustes", "ajustes", "Ajustes", "Cuenta para cobrar, fechas, equipo y avisos")}
+  ${item("/panel/bitacora", "bitacora", "Bitácora", "Quién hizo qué en el panel")}`);
+}
+
+/** Who did what: the conjunto's audit log, newest first. Read-only. */
+export function bitacoraPage(args) {
+  const { tenant, result, tipo, q, page, pages, actions } = args;
+  const link = (extra = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries({ tipo, q, p: page, ...extra })) if (v && !(k === "p" && Number(v) <= 1)) qs.set(k, String(v));
+    return `/panel/bitacora${qs.toString() ? `?${qs}` : ""}`;
+  };
+  return panelLayout("Bitácora", { ...args, active: "ajustes" }, html`
+  <div class="heading"><h1>Bitácora</h1><span class="muted">${tenant.name} · ${result.total} registro${result.total === 1 ? "" : "s"}</span></div>
+  <p><a href="/panel/ajustes">← Volver a Ajustes</a></p>
+  <section class="card">
+    <p class="muted small">Quién hizo qué en el panel. No se puede editar ni borrar. Nunca guarda contraseñas ni secretos, solo la frase de lo que se hizo.</p>
+    <form class="filters" method="get" action="/panel/bitacora">
+      <label>Tipo
+        <select name="tipo"><option value="">Todos</option>${Object.entries(actions).map(([k, label]) => html`<option value="${k}"${tipo === k ? raw(" selected") : ""}>${label}</option>`)}</select>
+      </label>
+      <label>Buscar<input type="text" name="q" value="${q}" maxlength="60" placeholder="Nombre o texto"></label>
+      <button class="btn wide" type="submit">Filtrar</button>
+    </form>
+  </section>
+  <section class="card">
+    ${result.rows.length
+      ? html`<ul class="list stack">${result.rows.map((r) => html`<li class="audit">
+          <span class="who"><b>${r.userName}</b><small class="muted">${shortDateTime(r.at)} · ${actions[r.action] ?? r.action}</small></span>
+          <span class="audit-text">${r.summary}</span>
+        </li>`)}</ul>
+        ${pages > 1 ? html`<nav class="pager" aria-label="Páginas">
+          ${page > 1 ? html`<a class="btn ghost small" href="${link({ p: page - 1 })}">← Más recientes</a>` : html`<span></span>`}
+          <span class="muted small">Página ${page} de ${pages}</span>
+          ${page < pages ? html`<a class="btn ghost small" href="${link({ p: page + 1 })}">Más antiguos →</a>` : html`<span></span>`}
+        </nav>` : ""}`
+      : html`<p class="muted">No hay registros con ese filtro.</p>`}
+  </section>`);
 }
 
 /** Shown once to the treasurer after inviting: the link to send. */
