@@ -250,6 +250,11 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     return redirect(res, `/r/${token}/comprobante?m=enviado`);
   }
 
+  /** Keeps an encrypted copy of a house's personal link (MASTER_KEY) so the reminders can include it. Never throws: the link itself already exists. */
+  const keepLink = (ledger, houseId, token) => {
+    try { ledger.houses.setSealedLink(houseId, encryptSecret(token, config.masterKey)); } catch { /* the reminder just goes without the link */ }
+  };
+
   /** Writes one line in the conjunto's audit log. Never throws: a log failure must not undo what was just done. */
   const auditFor = (ledger, s) => (action, summary, target = {}) => {
     try { ledger.audit.record({ userId: s.user.id, userName: s.user.name, action, summary, targetType: target.type ?? null, targetId: target.id ?? null }); } catch { /* the action stands */ }
@@ -674,7 +679,13 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const ledger = store.forTenant(s.tenant.id);
     const csrf = csrfToken(s.token);
     const period = currentPeriod();
-    const houses = ledger.houses.list();
+    // The encrypted personal links become `house.link` here, once per request, so the WhatsApp reminders of every page can carry them.
+    const sealed = ledger.houses.sealedLinks();
+    const houses = ledger.houses.list().map((h) => {
+      let link = null;
+      try { if (sealed.has(h.id)) link = `${config.publicUrl}/r/${decryptSecret(sealed.get(h.id), config.masterKey)}`; } catch { /* unreadable (key changed): no link in the message */ }
+      return { ...h, link };
+    });
     // Who owes what, across months: the sidebar badge, "Por cobrar", the dashboard and the payment form all read this.
     const groups = groupDebts(ledger.dues.listPending(), houses, period, { dueDay: s.tenant.dueDay });
     const debts = { groups, totals: debtTotals(groups) };
@@ -1190,6 +1201,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         for (const row of rows) {
           try {
             const { house, accessToken } = ledger.houses.create({ code: row.code, residentName: row.residentName, phone: row.phone });
+            keepLink(ledger, house.id, accessToken);
             const url = `${config.publicUrl}/r/${accessToken}`;
             created.push({ house, url, whatsapp: whatsappLink(base.tenant, house, url) });
           } catch (e) {
@@ -1211,6 +1223,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           if (/UNIQUE/.test(e.message)) return redirect(res, "/panel/casas?m=dup");
           throw e;
         }
+        keepLink(ledger, created.house.id, created.accessToken);
         ledger.dues.generate(period);
         audit("casas", `Agregó la casa ${created.house.code} (${created.house.residentName})`, { type: "casa", id: created.house.id });
         return showLink(res, base, created.house, created.accessToken);
@@ -1221,6 +1234,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         const house = ledger.houses.get(link[1]);
         if (!house?.active) return redirect(res, "/panel/casas?m=err");
         const fresh = ledger.houses.rotateToken(house.id);
+        keepLink(ledger, house.id, fresh);
         audit("casas", `Generó un enlace personal nuevo para la casa ${house.code}`, { type: "casa", id: house.id });
         return showLink(res, base, house, fresh);
       }

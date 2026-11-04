@@ -564,3 +564,16 @@ test("recuperación: los códigos de respaldo y los enlaces de restablecimiento 
   assert.equal(B.recovery.status(ub).total, 1, "los del otro conjunto siguen");
   assert.throws(() => store.accessResets.use(token, { passwordHash: "otro" }), /ya no sirve/);
 });
+
+test("enlaces personales guardados: cada conjunto solo ve y guarda los de sus casas", () => {
+  const { A, B, a14, b01 } = twoConjuntos();
+  assert.throws(() => B.houses.setSealedLink(a14.house.id, "cifrado"), /no es de este conjunto|no existe/i);
+  A.houses.setSealedLink(a14.house.id, "cifrado-a");
+  B.houses.setSealedLink(b01.house.id, "cifrado-b");
+  assert.deepEqual([...A.houses.sealedLinks()], [[a14.house.id, "cifrado-a"]]);
+  assert.deepEqual([...B.houses.sealedLinks()], [[b01.house.id, "cifrado-b"]]);
+  assert.equal(A.houses.get(a14.house.id).hasLink, true);
+  assert.equal(B.houses.get(b01.house.id).hasLink, true);
+  A.houses.setActive(a14.house.id, false);
+  assert.equal(A.houses.sealedLinks().size, 0, "una casa dada de baja no entrega su enlace");
+});

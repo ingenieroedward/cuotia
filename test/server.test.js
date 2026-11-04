@@ -2788,3 +2788,54 @@ test("recuperación: un compañero crea un enlace de un solo uso (solo del mismo
   s.store.db.prepare("UPDATE access_resets SET expires_at = ? WHERE used_at IS NULL").run(new Date(Date.now() - 1000).toISOString());
   assert.equal((await fetch(`${s.base}/restablecer/${third}`)).status, 404);
 }));
+
+test("recordatorio de una casa: lleva su enlace personal si Cuotia lo tiene guardado (cifrado), y nunca el de otra casa ni el de otro conjunto", () => withServer(async (s) => {
+  const month = currentPeriod();
+  s.A.dues.generate(month); s.B.dues.generate(month);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/casas");
+  const waTexts = (html) => [...html.matchAll(/https:\/\/wa\.me\/\d*\?text=([^"&]*)/g)].map((m) => decodeURIComponent(m[1]));
+  const cobros = async () => (await (await fetch(`${s.base}/panel/cobros`, { headers: { cookie } })).text());
+
+  // Houses made before this existed have no stored link: the message is as before, with no link line and no blank hole.
+  const before = waTexts(await cobros()).find((t) => /casa 14/.test(t));
+  assert.ok(before);
+  assert.doesNotMatch(before, /enlace personal \(guárdalo/);
+  assert.doesNotMatch(before, /\n\n\n/);
+  assert.match(await (await fetch(`${s.base}/panel/casas/${s.a14.house.id}`, { headers: { cookie } })).text(), /no está guardado en Cuotia/);
+
+  // Generating the link again stores it encrypted and the reminder carries exactly that link.
+  const regen = await form(`${s.base}/panel/casas/${s.a14.house.id}/enlace`, { _csrf: csrf }, cookie);
+  assert.equal(regen.status, 200);
+  const fresh = /\/r\/([A-Za-z0-9_-]{20,})/.exec(await regen.text())[1];
+  const stored = s.store.db.prepare("SELECT access_enc FROM houses WHERE id = ?").get(s.a14.house.id).access_enc;
+  assert.ok(stored && !stored.includes(fresh), "se guarda cifrado, no en claro");
+  const withLink = waTexts(await cobros()).find((t) => /casa 14/.test(t));
+  assert.match(withLink, new RegExp(`Tu enlace personal \\(guárdalo, es solo tuyo\\): http://localhost:3000/r/${fresh}`));
+  assert.equal((await fetch(`${s.base}/r/${fresh}`)).status, 200, "y ese enlace abre la casa 14");
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel/casas/${s.a14.house.id}`, { headers: { cookie } })).text(), /no está guardado en Cuotia/);
+  // Casa 03 still has none, and its message never carries 14's link.
+  const other = waTexts(await cobros()).find((t) => /casa 03/.test(t));
+  assert.ok(other && !other.includes(fresh) && !/enlace personal \(guárdalo/.test(other));
+
+  // A new house made from the panel stores its link from the start.
+  const made = await form(`${s.base}/panel/casas`, { _csrf: csrf, code: "77", residente: "Vecino Nuevo" }, cookie);
+  const link77 = /\/r\/([A-Za-z0-9_-]{20,})/.exec(await made.text())[1];
+  s.A.dues.generate(month);
+  const t77 = waTexts(await cobros()).find((t) => /casa 77/.test(t));
+  assert.ok(t77?.includes(`/r/${link77}`));
+
+  // The other conjunto never sees any of these links; the old link of 14 died when it was regenerated.
+  const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const theirs = await (await fetch(`${s.base}/panel/cobros`, { headers: { cookie: luis.cookie } })).text();
+  assert.ok(!theirs.includes(fresh) && !decodeURIComponent(theirs).includes(link77));
+  assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}`)).status, 404);
+
+  // The editable text can place it, or leave it out.
+  await form(`${s.base}/panel/mensajes/recordatorio_casa`, { _csrf: csrf, texto: "Hola {nombre}, la casa {casa} debe {valor}. {tu_enlace}" }, cookie);
+  assert.match(waTexts(await cobros()).find((t) => /casa 14/.test(t)), new RegExp(`debe \\$30\\.000\\. Tu enlace personal \\(guárdalo, es solo tuyo\\): http://localhost:3000/r/${fresh}`));
+  // Dar de baja + borrar datos personales also removes the stored copy.
+  await form(`${s.base}/panel/casas/${s.a14.house.id}/desactivar`, { _csrf: csrf }, cookie);
+  await form(`${s.base}/panel/casas/${s.a14.house.id}/anonimizar`, { _csrf: csrf }, cookie);
+  assert.equal(s.store.db.prepare("SELECT access_enc FROM houses WHERE id = ?").get(s.a14.house.id).access_enc, null);
+}));
