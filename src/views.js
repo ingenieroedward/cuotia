@@ -478,6 +478,8 @@ function personalReminder(tenant, group) {
     nombre: group.house.residentName.trim().split(/\s+/)[0], casa: group.house.code, meses: when, valor: peso(group.totalCents),
     detalle: group.dues.map((d) => `• ${monthName(d.period)} · ${d.conceptName}: ${peso(d.amountCents)}`).join("\n"),
     plazo: deadlineText(tenant), como_pagar: paySummary(tenant, { asking: true }),
+    // Only when the app still has this house's link (kept encrypted since V22); otherwise the line is simply left out.
+    tu_enlace: group.house.link ? `Tu enlace personal (guárdalo, es solo tuyo): ${group.house.link}` : "",
   });
 }
 
@@ -1285,6 +1287,7 @@ export function casaPage(args) {
     <h2>Acciones</h2>
     ${house.active
       ? html`<form method="post" action="/panel/casas/${house.id}/enlace">${csrfField(csrf)}<button class="btn ghost" type="submit">Generar enlace personal nuevo</button></form>
+        ${house.hasLink ? "" : html`<p class="muted small">El enlace actual de esta casa no está guardado en Cuotia, por eso su recordatorio de WhatsApp va sin enlace. Si generas uno nuevo, el anterior deja de servir y desde ahí el recordatorio lo lleva.</p>`}
         <details class="undo">
           <summary>Dar de baja esta casa</summary>
           <p class="muted small">Úsalo cuando una familia se va o la casa deja de pagar cuota. Deja de recibir cuotas nuevas y su enlace personal deja de servir. Lo que debía sin pagar ya no cuenta como pendiente. Los pagos y el historial se conservan y la puedes reactivar.</p>

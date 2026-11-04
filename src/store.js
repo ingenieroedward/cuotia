@@ -345,6 +345,11 @@ const MIGRATIONS = [
     used_at TEXT
   );
   `,
+  /* V22: the personal link, kept encrypted (with MASTER_KEY) so the treasurer's WhatsApp reminder can carry it. Before this, only
+     the hash existed, so older houses have none until their link is generated again. NULL = not available. */
+  `
+  ALTER TABLE houses ADD COLUMN access_enc TEXT;
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -362,7 +367,7 @@ const tenantRow = (r) => !r ? null : {
   payMode: r.pay_mode ?? (r.pagoradar_secret ? "auto" : "manual"),
   openingCents: Number(r.opening_cents ?? 0), showAccounts: !!r.show_accounts, publicOn: !!r.public_token_hash,
 };
-const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active };
+const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active, hasLink: !!r.access_enc };
 const dueRow = (r) => ({
   id: r.id, houseId: r.house_id, conceptId: r.concept_id, period: r.period, amountCents: r.amount_cents,
   status: r.status, paymentId: r.payment_id, paidAt: r.paid_at,
@@ -682,7 +687,7 @@ export function openStore(path = ":memory:") {
         return tx(() => {
           const h = ownHouse(houseId);
           if (h.active) throw new Error("Primero da de baja la casa");
-          db.prepare("UPDATE houses SET resident_name = 'Residente anterior', phone = NULL WHERE id = ? AND tenant_id = ?").run(houseId, tenantId);
+          db.prepare("UPDATE houses SET resident_name = 'Residente anterior', phone = NULL, access_enc = NULL WHERE id = ? AND tenant_id = ?").run(houseId, tenantId);
           db.prepare("DELETE FROM aliases WHERE house_id = ? AND tenant_id = ?").run(houseId, tenantId);
           db.prepare("DELETE FROM proofs WHERE house_id = ? AND tenant_id = ?").run(houseId, tenantId);
           db.prepare("DELETE FROM house_push_subscriptions WHERE house_id = ? AND tenant_id = ?").run(houseId, tenantId);
@@ -693,7 +698,14 @@ export function openStore(path = ":memory:") {
         ownHouse(houseId);
         db.prepare("UPDATE houses SET active = ? WHERE id = ? AND tenant_id = ?").run(active ? 1 : 0, houseId, tenantId);
       },
-      /** The old personal link stops working; the new token is returned once (only its hash is stored). */
+      /** Keeps the encrypted personal link of a house (the caller encrypts: this module never sees the key). */
+      setSealedLink(houseId, encrypted) {
+        ownHouse(houseId);
+        db.prepare("UPDATE houses SET access_enc = ? WHERE id = ? AND tenant_id = ?").run(encrypted, houseId, tenantId);
+      },
+      /** houseId -> encrypted personal link, for the active houses of this conjunto that have one. */
+      sealedLinks: () => new Map(db.prepare("SELECT id, access_enc FROM houses WHERE tenant_id = ? AND active = 1 AND access_enc IS NOT NULL").all(tenantId).map((r) => [r.id, r.access_enc])),
+      /** The old personal link stops working; the new token is returned once (only its hash is stored; the app keeps an encrypted copy). */
       rotateToken(houseId) {
         ownHouse(houseId);
         const token = newToken(24);

@@ -15,6 +15,8 @@ export const MESSAGES = {
       "",
       "{plazo} {como_pagar}",
       "",
+      "{tu_enlace}",
+      "",
       "Cuando pagues, sube tu comprobante desde tu enlace personal o respóndeme este mensaje con la foto. ¡Gracias por estar al día!",
     ].join("\n"),
     vars: {
@@ -27,6 +29,7 @@ export const MESSAGES = {
       detalle: ["• Octubre · Vigilancia: $30.000\n• Noviembre · Vigilancia: $30.000", "Una línea por cuota: mes, cobro y valor"],
       plazo: [null, "El último día para pagar, si lo configuraste (si no, queda vacío)"],
       como_pagar: [null, "Tus medios de pago: llave Bre-B, Nequi, Daviplata, cuenta…"],
+      tu_enlace: ["Tu enlace personal (guárdalo, es solo tuyo): https://cuotia.example/r/abc123", "El enlace personal de esa casa, con una frase (queda vacío si aún no está guardado)"],
     },
     required: [],
   },

@@ -60,7 +60,9 @@ if (command === "crear-conjunto") {
   console.log(`Secreto de pagoradar guardado para ${tenant.name}.\n  URL del webhook: ${webhookUrl(tenant)}`);
 } else if (command === "agregar-casa") {
   if (!v.codigo || !v.residente) fail("Faltan --codigo y --residente");
-  const { house, accessToken } = store.forTenant(tenantOf().id).houses.create({ code: v.codigo, residentName: v.residente, phone: v.telefono ?? null });
+  const ledger = store.forTenant(tenantOf().id);
+  const { house, accessToken } = ledger.houses.create({ code: v.codigo, residentName: v.residente, phone: v.telefono ?? null });
+  if (process.env.MASTER_KEY) ledger.houses.setSealedLink(house.id, encryptSecret(accessToken, process.env.MASTER_KEY)); // so the WhatsApp reminders can carry it
   console.log(`Casa ${house.code} (${house.residentName}) creada.\n  Enlace personal: ${process.env.PUBLIC_URL ?? "http://localhost:3000"}/r/${accessToken}`);
 } else if (command === "generar-cuotas") {
   const period = v.periodo ?? currentPeriod();
