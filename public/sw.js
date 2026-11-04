@@ -1,11 +1,12 @@
 // Cuotia's service worker. It only does two harmless things: it makes the app installable and it keeps the look
 // (styles, fonts, icons) when the connection drops. It NEVER stores a page: pages carry payments, names and personal
 // links, so they always come from the server; with no connection a short "sin conexión" page is shown instead.
-const CACHE = "cuotia-static-v1";
+const CACHE = "cuotia-static-v2";
 const ASSETS = [
   "/offline",
   "/static/app.css",
   "/static/app.js",
+  "/static/theme.js",
   "/static/fonts/plus-jakarta-sans-latin.woff2",
   "/static/fonts/plus-jakarta-sans-latin-ext.woff2",
   "/static/icons/icon.svg",
