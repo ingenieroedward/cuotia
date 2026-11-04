@@ -250,6 +250,19 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     return redirect(res, `/r/${token}/comprobante?m=enviado`);
   }
 
+  /** Where an Ajustes message belongs: each flash key lives in the section whose card produced it (so the message shows where the person was). */
+  const AJUSTES_FLASH = {
+    cobros: ["cobro", "modo", "modobad", "fechas", "fechasbad", "pmok", "pmquit", "pmbad", "pmdup"],
+    pagoradar: ["sec", "secbad"],
+    equipo: ["eqyo", "eqbad", "eqcanc", "eqquit", "equltimo", "eqexiste"],
+    seguridad: ["clave", "clavemal", "clavebad", "clavelim", "pkquit", "pkbad"],
+    dispositivo: ["pushsin", "pushprobe"],
+  };
+  const ajustesUrl = (m, hash = "") => {
+    const section = Object.entries(AJUSTES_FLASH).find(([, keys]) => keys.includes(m))?.[0];
+    return `/panel/ajustes${section ? `/${section}` : ""}?m=${m}${hash}`;
+  };
+
   /** Keeps an encrypted copy of a house's personal link (MASTER_KEY) so the reminders can include it. Never throws: the link itself already exists. */
   const keepLink = (ledger, houseId, token) => {
     try { ledger.houses.setSealedLink(houseId, encryptSecret(token, config.masterKey)); } catch { /* the reminder just goes without the link */ }
@@ -798,8 +811,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
 
     if (method === "GET" && path === "/panel/casas/importar") return send(res, 200, importPage({ ...base }));
 
-    if (method === "GET" && path === "/panel/ajustes") {
-      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, recovery: ledger.recovery.status(s.user.id), pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), passkeys: ledger.passkeys.list(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
+    const ajustesAt = method === "GET" && path.match(/^\/panel\/ajustes(?:\/(cobros|pagoradar|equipo|seguridad|dispositivo|datos))?$/);
+    if (ajustesAt) {
+      return send(res, 200, ajustesPage({ ...base, section: ajustesAt[1] ?? null, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, recovery: ledger.recovery.status(s.user.id), pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), passkeys: ledger.passkeys.list(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
 
     if (method === "GET" && (path === "/panel/cuentas" || path === "/panel/cuentas.csv")) {
@@ -877,10 +891,10 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     try {
       if (path === "/panel/ajustes/pagoradar") {
         const secret = String(form.get("secret") ?? "").trim();
-        if (secret.length < 8 || secret.length > 200 || /\s/.test(secret)) return redirect(res, "/panel/ajustes?m=secbad");
+        if (secret.length < 8 || secret.length > 200 || /\s/.test(secret)) return redirect(res, ajustesUrl("secbad"));
         store.tenants.setPagoradarSecret(s.tenant.id, encryptSecret(secret, config.masterKey));
         audit("ajustes", "Guardó el secreto de pagoradar");
-        return redirect(res, "/panel/ajustes?m=sec");
+        return redirect(res, ajustesUrl("sec"));
       }
 
       if (path === "/panel/push/suscribir") {
@@ -896,9 +910,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         return send(res, 200, "ok", { "Content-Type": "text/plain; charset=utf-8" });
       }
       if (path === "/panel/push/probar") {
-        if (ledger.push.countForUser(s.user.id) === 0) return redirect(res, "/panel/ajustes?m=pushsin");
-        await notify(s.tenant.id, { title: "Cuotia", body: "Los avisos funcionan en este dispositivo.", url: "/panel/ajustes", tag: "prueba" }, { userId: s.user.id });
-        return redirect(res, "/panel/ajustes?m=pushprobe");
+        if (ledger.push.countForUser(s.user.id) === 0) return redirect(res, ajustesUrl("pushsin"));
+        await notify(s.tenant.id, { title: "Cuotia", body: "Los avisos funcionan en este dispositivo.", url: "/panel/ajustes/dispositivo", tag: "prueba" }, { userId: s.user.id });
+        return redirect(res, ajustesUrl("pushprobe"));
       }
 
       if (path === "/panel/equipo/invitar") {
@@ -907,7 +921,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           audit("equipo", `Invitó a ${email} al equipo`);
           return send(res, 200, inviteLinkPage({ ...base, url: `${config.publicUrl}/invitacion/${token}`, email, name: String(form.get("nombre") ?? "").trim().slice(0, 80) }));
         } catch (e) {
-          return redirect(res, `/panel/ajustes?m=${/ya tiene/.test(e.message) ? "eqexiste" : "eqbad"}`);
+          return redirect(res, ajustesUrl(/ya tiene/.test(e.message) ? "eqexiste" : "eqbad"));
         }
       }
       const cancelInvite = path.match(/^\/panel\/equipo\/invitaciones\/(inv_[a-f0-9]+)\/cancelar$/);
@@ -915,15 +929,15 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         const pending = ledger.team.invitations().find((i) => i.id === cancelInvite[1]);
         ledger.team.cancelInvitation(cancelInvite[1]);
         audit("equipo", `Canceló la invitación a ${pending?.email ?? "alguien"}`);
-        return redirect(res, "/panel/ajustes?m=eqcanc");
+        return redirect(res, ajustesUrl("eqcanc"));
       }
       const removeUser = path.match(/^\/panel\/equipo\/(usr_[a-f0-9]+)\/quitar$/);
       if (removeUser) {
-        if (removeUser[1] === s.user.id) return redirect(res, "/panel/ajustes?m=eqyo");
+        if (removeUser[1] === s.user.id) return redirect(res, ajustesUrl("eqyo"));
         const gone = ledger.team.list().find((u) => u.id === removeUser[1]);
-        try { ledger.team.remove(removeUser[1]); } catch { return redirect(res, "/panel/ajustes?m=equltimo"); }
+        try { ledger.team.remove(removeUser[1]); } catch { return redirect(res, ajustesUrl("equltimo")); }
         audit("equipo", `Quitó a ${gone?.name ?? "una persona"} (${gone?.email ?? ""}) del equipo`);
-        return redirect(res, "/panel/ajustes?m=eqquit");
+        return redirect(res, ajustesUrl("eqquit"));
       }
 
       if (path === "/panel/conceptos") {
@@ -1005,9 +1019,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       const removePasskey = path.match(/^\/panel\/passkeys\/(pk_[a-f0-9]+)\/quitar$/);
       if (removePasskey) {
         const mine = ledger.passkeys.list(s.user.id).find((p) => p.id === removePasskey[1]);
-        try { ledger.passkeys.remove(removePasskey[1], s.user.id); } catch { return redirect(res, "/panel/ajustes?m=pkbad"); }
+        try { ledger.passkeys.remove(removePasskey[1], s.user.id); } catch { return redirect(res, ajustesUrl("pkbad")); }
         audit("seguridad", `Quitó un passkey: ${mine?.name ?? ""}`.trim());
-        return redirect(res, "/panel/ajustes?m=pkquit");
+        return redirect(res, ajustesUrl("pkquit"));
       }
 
       const saveMessage = path.match(/^\/panel\/mensajes\/([a-z_]+)$/);
@@ -1063,10 +1077,10 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
 
       if (path === "/panel/ajustes/modo") {
         const mode = String(form.get("modo") ?? "");
-        if (mode !== "auto" && mode !== "manual") return redirect(res, "/panel/ajustes?m=modobad");
+        if (mode !== "auto" && mode !== "manual") return redirect(res, ajustesUrl("modobad"));
         store.tenants.setPayMode(s.tenant.id, mode);
         audit("ajustes", `Cambió cómo confirma los pagos: ${mode === "auto" ? "automático con pagoradar" : "manual"}`);
-        return redirect(res, "/panel/ajustes?m=modo");
+        return redirect(res, ajustesUrl("modo"));
       }
 
       if (path === "/panel/ajustes/fechas") {
@@ -1078,10 +1092,10 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         };
         const openDay = day("desde");
         const dueDay = day("hasta");
-        if (Number.isNaN(openDay) || Number.isNaN(dueDay) || (openDay != null && dueDay != null && dueDay < openDay)) return redirect(res, "/panel/ajustes?m=fechasbad");
+        if (Number.isNaN(openDay) || Number.isNaN(dueDay) || (openDay != null && dueDay != null && dueDay < openDay)) return redirect(res, ajustesUrl("fechasbad"));
         store.tenants.setDates(s.tenant.id, { openDay, dueDay });
         audit("ajustes", `Cambió las fechas de pago: del ${openDay ?? "—"} al ${dueDay ?? "—"}`);
-        return redirect(res, "/panel/ajustes?m=fechas");
+        return redirect(res, ajustesUrl("fechas"));
       }
 
       if (path === "/panel/ajustes/medios") {
@@ -1089,47 +1103,47 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         try {
           ledger.payMethods.add({ kind, label: form.get("nombre"), account: form.get("cuenta"), accountType: form.get("clase"), holder: form.get("titular"), note: form.get("nota") });
         } catch (e) {
-          return redirect(res, `/panel/ajustes?m=${/Ya agregaste/.test(e.message) ? "pmdup" : "pmbad"}`);
+          return redirect(res, ajustesUrl(/Ya agregaste/.test(e.message) ? "pmdup" : "pmbad"));
         }
         audit("ajustes", `Agregó un medio de pago: ${payMethodTitle({ kind, label: String(form.get("nombre") ?? "").trim(), accountType: kind === "bancolombia" ? String(form.get("clase") ?? "") : null })}`);
-        return redirect(res, "/panel/ajustes?m=pmok");
+        return redirect(res, ajustesUrl("pmok"));
       }
       const removeMethod = path.match(/^\/panel\/ajustes\/medios\/(pm_[a-f0-9]+)\/quitar$/);
       if (removeMethod) {
         const before = ledger.payMethods.list().find((m) => m.id === removeMethod[1]);
-        try { ledger.payMethods.remove(removeMethod[1]); } catch { return redirect(res, "/panel/ajustes?m=pmbad"); }
+        try { ledger.payMethods.remove(removeMethod[1]); } catch { return redirect(res, ajustesUrl("pmbad")); }
         audit("ajustes", `Quitó un medio de pago: ${before ? payMethodTitle(before) : ""}`.trim());
-        return redirect(res, "/panel/ajustes?m=pmquit");
+        return redirect(res, ajustesUrl("pmquit"));
       }
 
       if (path === "/panel/ajustes/cobro") {
         store.tenants.setPayment(s.tenant.id, { payKey: String(form.get("llave") ?? "").slice(0, 80), payHolder: String(form.get("titular") ?? "").slice(0, 80) });
         audit("ajustes", "Cambió la cuenta para cobrar (llave y titular)");
-        return redirect(res, "/panel/ajustes?m=cobro");
+        return redirect(res, ajustesUrl("cobro"));
       }
 
       if (path === "/panel/ajustes/clave") {
         const key = `clave|${s.user.id}`;
-        if (loginLimiter.blocked(key)) return redirect(res, "/panel/ajustes?m=clavelim");
+        if (loginLimiter.blocked(key)) return redirect(res, ajustesUrl("clavelim"));
         const user = store.users.byId(s.user.id);
         if (!(await verifyPassword(String(form.get("actual") ?? ""), user.passwordHash))) {
           loginLimiter.fail(key);
-          return redirect(res, "/panel/ajustes?m=clavemal");
+          return redirect(res, ajustesUrl("clavemal"));
         }
         const nueva = String(form.get("nueva") ?? "");
-        if (nueva.length < 10 || nueva.length > 200 || nueva !== String(form.get("nueva2") ?? "")) return redirect(res, "/panel/ajustes?m=clavebad");
+        if (nueva.length < 10 || nueva.length > 200 || nueva !== String(form.get("nueva2") ?? "")) return redirect(res, ajustesUrl("clavebad"));
         store.users.setPasswordHash(user.id, await hashPassword(nueva));
         store.sessions.deleteForUser(user.id, s.token); // every other device must sign in again with the new password
         loginLimiter.clear(key);
         audit("seguridad", "Cambió su contraseña");
-        return redirect(res, "/panel/ajustes?m=clave");
+        return redirect(res, ajustesUrl("clave"));
       }
 
       if (path === "/panel/respaldo/generar" || path === "/panel/celular/cambiar") {
         const key = `clave|${s.user.id}`; // same counter as the password change: re-typing the password is the guard
-        if (loginLimiter.blocked(key)) return redirect(res, "/panel/ajustes?m=clavelim#recuperacion");
+        if (loginLimiter.blocked(key)) return redirect(res, ajustesUrl("clavelim", "#recuperacion"));
         const user = store.users.byId(s.user.id);
-        if (!(await verifyPassword(String(form.get("actual") ?? ""), user.passwordHash))) { loginLimiter.fail(key); return redirect(res, "/panel/ajustes?m=clavemal#recuperacion"); }
+        if (!(await verifyPassword(String(form.get("actual") ?? ""), user.passwordHash))) { loginLimiter.fail(key); return redirect(res, ajustesUrl("clavemal", "#recuperacion")); }
         loginLimiter.clear(key);
         if (path === "/panel/respaldo/generar") {
           const codes = newRecoveryCodes(10);
@@ -1145,12 +1159,12 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
 
       const resetUser = path.match(/^\/panel\/equipo\/(usr_[a-f0-9]+)\/acceso$/);
       if (resetUser) {
-        if (resetUser[1] === s.user.id) return redirect(res, "/panel/ajustes?m=eqyo");
+        if (resetUser[1] === s.user.id) return redirect(res, ajustesUrl("eqyo"));
         try {
           const { token, email, name } = ledger.team.resetAccess(resetUser[1], s.user.id);
           audit("equipo", `Creó un enlace para restablecer el acceso de ${name} (${email})`);
           return send(res, 200, resetLinkPage({ ...base, url: `${config.publicUrl}/restablecer/${token}`, email, name }));
-        } catch { return redirect(res, "/panel/ajustes?m=eqbad"); }
+        } catch { return redirect(res, ajustesUrl("eqbad")); }
       }
 
       if (path === "/panel/cuotas/generar") {

@@ -699,3 +699,7 @@ li, dd, label { text-wrap: pretty; }
 .recovery-codes { list-style: none; margin: 1rem 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem .75rem; }
 .recovery-codes li { background: var(--ground); border: 1px solid var(--line); border-radius: 12px; padding: .65rem .75rem; font-size: 1.05rem; font-weight: 700; letter-spacing: .08em; text-align: center; font-variant-numeric: tabular-nums; }
 .backup-form { margin-top: 1rem; }
+
+.backlink { margin: 0; }
+.backlink a { display: inline-flex; align-items: center; min-height: 44px; text-decoration: none; font-weight: 600; }
+a.card.more-item .state { margin-top: .15rem; font-weight: 700; color: var(--link); }

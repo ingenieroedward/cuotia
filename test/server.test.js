@@ -59,6 +59,12 @@ async function signIn(base, email, password, { step = totpStep() } = {}) {
   return { res, cookie: cookieOf(res), secret: key };
 }
 
+/** Every page of Ajustes joined (the hub and its six sections), for tests that only care that something is there. */
+async function ajustesAll(base, cookie) {
+  const parts = [""].concat(["cobros", "pagoradar", "equipo", "seguridad", "dispositivo", "datos"].map((k) => `/${k}`));
+  return (await Promise.all(parts.map(async (k) => (await fetch(`${base}/panel/ajustes${k}`, { headers: { cookie } })).text()))).join("\n");
+}
+
 const csrfOf = async (base, cookie, path = "/panel") => (await (await fetch(`${base}${path}`, { headers: { cookie } })).text()).match(/name="_csrf" value="([^"]+)"/)?.[1];
 
 test("/health responde y las respuestas llevan cabeceras de seguridad", () => withServer(async (s) => {
@@ -136,7 +142,7 @@ test("un aviso firmado, aunque sea de prueba, marca la conexión como viva", () 
 
 test("Ajustes: el tesorero guarda el secreto de su conjunto sin tocar el de otro", () => withServer(async (s) => {
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const page = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  const page = await ajustesAll(s.base, cookie);
   assert.ok(page.includes(`${"http://localhost:3000"}/webhooks/pagoradar/${s.a.id}`), "muestra la URL propia del conjunto");
   assert.doesNotMatch(page, new RegExp(s.b.id), "no muestra la del otro");
   assert.doesNotMatch(page, new RegExp(SECRET_A), "nunca muestra el secreto guardado");
@@ -731,8 +737,8 @@ test("una casa nueva o reactivada recibe la cuota del mes al instante", () => wi
 test("Ajustes: la llave Bre-B se cambia y los residentes la ven; el otro conjunto no se entera", () => withServer(async (s) => {
   s.A.dues.generate(currentPeriod());
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
-  const page = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/seguridad");
+  const page = await ajustesAll(s.base, cookie);
   assert.match(page, /value="@ibiza"/, "muestra la llave actual para editarla");
 
   assert.equal((await form(`${s.base}/panel/ajustes/cobro`, { llave: "@x" }, cookie)).status, 403);
@@ -744,7 +750,7 @@ test("Ajustes: la llave Bre-B se cambia y los residentes la ven; el otro conjunt
 
 test("cambiar la contraseña: exige la actual, cierra las otras sesiones y la anterior deja de servir", () => withServer(async (s) => {
   const a = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, a.cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, a.cookie, "/panel/ajustes/seguridad");
   // A second device, signed in with the next code step.
   const second = await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta");
   const b = { cookie: cookieOf(await form(`${s.base}/2fa`, { code: totpCode(a.secret, totpStep() + 1) }, second.cookie)) };
@@ -767,7 +773,7 @@ test("cambiar la contraseña: exige la actual, cierra las otras sesiones y la an
 
 test("adivinar la contraseña actual desde Ajustes también tiene límite", () => withServer(async (s) => {
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/seguridad");
   let last;
   for (let i = 0; i < 7; i++) last = await form(`${s.base}/panel/ajustes/clave`, { _csrf: csrf, actual: `intento-${i}`, nueva: "una-clave-nueva-larga", nueva2: "una-clave-nueva-larga" }, cookie);
   assert.match(last.headers.get("location"), /m=clavelim/);
@@ -885,7 +891,7 @@ test("sin pagoradar todo funciona a mano: se registran los pagos y el residente 
   const pay = await (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text();
   assert.match(pay, /pagada<\/b> cuando el tesorero registre tu pago/);
   assert.doesNotMatch(pay, /cuando el banco lo confirme/);
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Es opcional\.<\/b> Sin pagoradar/);
+  assert.match(await ajustesAll(s.base, cookie), /Es opcional\.<\/b> Sin pagoradar/);
 
   const csrf = await csrfOf(s.base, cookie, "/panel/pagos/nuevo");
   const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
@@ -1396,7 +1402,7 @@ test("sin JavaScript la búsqueda del servidor también ignora acentos y acepta 
 
 test("fechas de pago: se guardan por conjunto, se validan y el residente las ve", () => withServer(async (s) => {
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/seguridad");
   const save = (fields) => form(`${s.base}/panel/ajustes/fechas`, { _csrf: csrf, ...fields }, cookie);
 
   assert.match((await save({ desde: "1", hasta: "10" })).headers.get("location"), /m=fechas$/);
@@ -1404,7 +1410,7 @@ test("fechas de pago: se guardan por conjunto, se validan y el residente las ve"
   assert.deepEqual([tenants.get(s.a.id).openDay, tenants.get(s.a.id).dueDay], [1, 10]);
   assert.deepEqual([tenants.get(s.b.id).openDay, tenants.get(s.b.id).dueDay], [null, null], "el otro conjunto no cambia");
 
-  const ajustes = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  const ajustes = await ajustesAll(s.base, cookie);
   assert.match(ajustes, /name="hasta"[^>]*value="10"/);
   s.A.dues.generate(currentPeriod());
   s.B.dues.generate(currentPeriod());
@@ -1472,7 +1478,7 @@ test("comprobante: el residente lo sube, el tesorero lo ve y lo confirma al regi
   // The other conjunto's treasurer can neither see nor reject it.
   const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
   assert.equal((await fetch(`${s.base}/panel/comprobantes/${pf.id}/archivo`, { headers: { cookie: other.cookie } })).status, 404);
-  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes");
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes/seguridad");
   const bad = await form(`${s.base}/panel/comprobantes/${pf.id}/rechazar`, { _csrf: otherCsrf }, other.cookie);
   assert.ok([302, 303, 404, 500].includes(bad.status));
   assert.equal(s.A.proofs.countPending(), 1, "no lo rechazó");
@@ -1508,8 +1514,8 @@ test("comprobante: el residente lo sube, el tesorero lo ve y lo confirma al regi
 
 test("equipo: el tesorero invita, la otra persona crea su cuenta con el enlace y entra con su propio 2FA", () => withServer(async (s) => {
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /<h2>Equipo<\/h2>/);
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/seguridad");
+  assert.match(await ajustesAll(s.base, cookie), /<h2>Equipo<\/h2>/);
 
   // Bad and taken emails are refused.
   assert.match((await form(`${s.base}/panel/equipo/invitar`, { _csrf: csrf, correo: "nada" }, cookie)).headers.get("location"), /m=eqbad/);
@@ -1533,7 +1539,7 @@ test("equipo: el tesorero invita, la otra persona crea su cuenta con el enlace y
 
   // He signs in like anyone: password, then he must enroll his own 2-step code; he lands in HIS conjunto only.
   const pedro = await signIn(s.base, "pedro@ejemplo.com", "clave-de-pedro-1");
-  const panelHtml = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: pedro.cookie } })).text();
+  const panelHtml = await ajustesAll(s.base, pedro.cookie);
   assert.match(panelHtml, /Jardines de Ibiza/);
   assert.doesNotMatch(panelHtml, /Los Robles/);
   assert.match(panelHtml, /Pedro Gómez/);
@@ -1541,7 +1547,7 @@ test("equipo: el tesorero invita, la otra persona crea su cuenta con el enlace y
   // Removing him signs him out and keeps the data; he can't remove himself; Luis (other conjunto) can't touch him.
   const pedroId = s.store.users.byEmail("pedro@ejemplo.com").id;
   const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
-  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes");
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes/seguridad");
   assert.match((await form(`${s.base}/panel/equipo/${pedroId}/quitar`, { _csrf: otherCsrf }, other.cookie)).headers.get("location"), /m=equltimo/);
   assert.ok(s.store.users.byEmail("pedro@ejemplo.com"), "Luis no pudo quitarlo");
   const own = s.store.users.byEmail("marta@ejemplo.com").id;
@@ -1555,7 +1561,7 @@ test("cómo se confirman los pagos: el tesorero elige manual o automático y el 
   // This conjunto HAS a pagoradar secret saved, yet the treasurer registers payments by hand.
   s.A.dues.generate(currentPeriod());
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/seguridad");
   const pay = async () => (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text();
 
   assert.equal(s.store.tenants.get(s.a.id).payMode, "auto", "sin elegir nada, un secreto guardado significa automático");
@@ -1566,7 +1572,7 @@ test("cómo se confirman los pagos: el tesorero elige manual o automático y el 
   assert.doesNotMatch(manual, /cuando el banco lo confirme|Esperando tu pago/);
   assert.match(manual, /Después de pagar/);
   assert.match(manual, /cuando el tesorero registre tu pago/);
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /value="manual" checked/);
+  assert.match(await ajustesAll(s.base, cookie), /value="manual" checked/);
   assert.equal(s.store.tenants.get(s.b.id).payMode, "auto", "el otro conjunto no cambió");
 
   assert.match((await form(`${s.base}/panel/ajustes/modo`, { _csrf: csrf, modo: "raro" }, cookie)).headers.get("location"), /m=modobad/);
@@ -1587,9 +1593,9 @@ test("avisos en el celular: se activan por persona, llegan solo al propio conjun
     s.A.dues.generate(currentPeriod());
     const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
     const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
-    const csrfM = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
-    const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
-    const ajustes = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text();
+    const csrfM = await csrfOf(s.base, marta.cookie, "/panel/ajustes/seguridad");
+    const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes/seguridad");
+    const ajustes = await ajustesAll(s.base, marta.cookie);
     assert.match(ajustes, /data-push data-key="[A-Za-z0-9_-]{80,90}"/);
     const wait = () => new Promise((r) => setTimeout(r, 30));
 
@@ -1845,7 +1851,7 @@ test("bitácora: queda anotado quién hizo qué, sin secretos, con filtros, aisl
   s.A.dues.generate(currentPeriod());
   const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/seguridad");
   const act = (path, fields) => form(`${s.base}${path}`, { _csrf: csrf, ...fields }, cookie);
   const rows = () => s.A.audit.list({ limit: 200 }).rows;
 
@@ -1891,7 +1897,7 @@ test("bitácora: queda anotado quién hizo qué, sin secretos, con filtros, aisl
   assert.match(onlyHouses, /Dio de baja la casa 03/);
   assert.doesNotMatch(onlyHouses, /Guardó el secreto de pagoradar/);
   assert.doesNotMatch(await (await fetch(`${s.base}/panel/bitacora?q=%25`, { headers: { cookie } })).text(), /Dio de baja/);
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Ver quién hizo qué/);
+  assert.match(await ajustesAll(s.base, cookie), /Ver quién hizo qué/);
   const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
   const luisPage = await (await fetch(`${s.base}/panel/bitacora`, { headers: { cookie: other.cookie } })).text();
   assert.doesNotMatch(luisPage, /Dio de baja la casa 03|Marta/);
@@ -2018,7 +2024,7 @@ test("privacidad: la política es pública, sale en el pie de las pantallas del 
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
   assert.doesNotMatch(await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text(), /class="legal/, "el panel no lleva el pie");
   assert.doesNotMatch(await (await fetch(`${s.base}/r/${s.a14.accessToken}/estado`)).text(), /class="legal/, "ni los documentos que se imprimen");
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /href="\/privacidad"/);
+  assert.match(await ajustesAll(s.base, cookie), /href="\/privacidad"/);
 }));
 
 test("borrar los datos personales de una casa dada de baja desde el panel, anotado en la bitácora", () => withServer(async (s) => {
@@ -2135,7 +2141,7 @@ test("operador: crea un conjunto con su tesorero invitado, valida los datos y no
   const done = await form(`${s.base}${link}`, { nombre: "Ana Gómez", clave: "clave-de-ana-12", clave2: "clave-de-ana-12" });
   assert.match(done.headers.get("location"), /\/login\?m=invitado/);
   const ana = await signIn(s.base, "ana@robles.co", "clave-de-ana-12");
-  const anaPanel = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: ana.cookie } })).text();
+  const anaPanel = await ajustesAll(s.base, ana.cookie);
   assert.match(anaPanel, /Los Robles/);
   assert.doesNotMatch(anaPanel, /Jardines de Ibiza/);
   assert.equal(s.store.users.byEmail("ana@robles.co").tenantId, created.id);
@@ -2231,7 +2237,7 @@ test("empezar de cero: pide contraseña y la palabra, guarda una copia antes, bo
       assert.equal((await fetch(`${s.base}/r/${s.a14.accessToken}`)).status, 404, "y el de una casa borrada ya no");
       assert.equal(readdirSync(dir).length, 2, "otra copia");
       assert.equal(s.B.houses.list().length, 1);
-      assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Empezar de cero/);
+      assert.match(await ajustesAll(s.base, cookie), /Empezar de cero/);
     }, { backupDir: dir });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -2293,11 +2299,11 @@ test("operador: ve el estado de los respaldos, respalda ahora y prueba la conexi
 test("medios de pago: el tesorero agrega Nequi, Daviplata y Bancolombia y el residente los ve todos con su botón de copiar", () => withServer(async (s) => {
   s.A.dues.generate(currentPeriod());
   const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/seguridad");
   const go = (fields) => form(`${s.base}/panel/ajustes/medios`, { _csrf: csrf, ...fields }, cookie);
   const pay = async () => (await fetch(`${s.base}/r/${s.a14.accessToken}/pagar`)).text();
 
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /Otros medios de pago/);
+  assert.match(await ajustesAll(s.base, cookie), /Otros medios de pago/);
   assert.doesNotMatch(await pay(), /Nequi/, "todavía solo la llave Bre-B");
   assert.equal((await form(`${s.base}/panel/ajustes/medios`, { tipo: "nequi", cuenta: "3001234567" }, cookie)).status, 403, "sin token no agrega");
 
@@ -2332,7 +2338,7 @@ test("medios de pago: el tesorero agrega Nequi, Daviplata y Bancolombia y el res
   // Removing one; another conjunto's treasurer can't.
   const nequi = s.A.payMethods.list().find((m) => m.kind === "nequi");
   const other = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
-  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes");
+  const otherCsrf = await csrfOf(s.base, other.cookie, "/panel/ajustes/seguridad");
   assert.match((await form(`${s.base}/panel/ajustes/medios/${nequi.id}/quitar`, { _csrf: otherCsrf }, other.cookie)).headers.get("location"), /m=pmbad/);
   assert.equal(s.A.payMethods.list().length, 3);
   assert.match((await form(`${s.base}/panel/ajustes/medios/${nequi.id}/quitar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=pmquit/);
@@ -2426,8 +2432,8 @@ test("passkeys: se registra uno desde Ajustes, se entra con él sin contraseña 
   const rp = { rpId: "localhost", origin: "http://localhost:3000" };
   const json = (path, body, cookie) => fetch(`${s.base}${path}`, { method: "POST", headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body), redirect: "manual" });
   const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text(), /data-passkey-add/);
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes/seguridad");
+  assert.match(await ajustesAll(s.base, marta.cookie), /data-passkey-add/);
   assert.match(await (await fetch(`${s.base}/login`)).text(), /data-passkey-login-box/);
 
   // ---- registering
@@ -2452,11 +2458,11 @@ test("passkeys: se registra uno desde Ajustes, se entra con él sin contraseña 
   assert.match((await dup.json()).error, /ya está registrado/);
   // A challenge issued to someone else's session can't be used to register on mine.
   const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
-  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes/seguridad");
   const luisOpts = await (await json("/panel/passkeys/opciones", { _csrf: csrfL }, luis.cookie)).json();
   assert.equal((await register(fakeAuthenticator(rp), luisOpts.challenge)).status, 400);
   assert.equal(s.A.passkeys.list(s.store.users.byEmail("marta@ejemplo.com").id).length, 1);
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text(), /iPhone de Marta/);
+  assert.match(await ajustesAll(s.base, marta.cookie), /iPhone de Marta/);
 
   // ---- signing in
   const options = async () => (await (await json("/login/passkey/opciones", {})).json());
@@ -2471,7 +2477,7 @@ test("passkeys: se registra uno desde Ajustes, se entra con él sin contraseña 
   const cookie = cookieOf(entered);
   assert.match(entered.headers.get("set-cookie"), /HttpOnly/);
   assert.equal((await fetch(`${s.base}/panel`, { headers: { cookie } })).status, 200, "entra al panel sin contraseña ni código");
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text(), /usado el/);
+  assert.match(await ajustesAll(s.base, cookie), /usado el/);
   assert.ok(s.A.audit.list({ q: "con passkey" }).rows.some((r) => r.summary === "Inició sesión con passkey"));
 
   // ---- attacks
@@ -2514,7 +2520,7 @@ test("passkeys: demasiados intentos fallidos desde un mismo lugar se frenan, y u
   const ok = await json("/login/passkey", { credential: dev.get({ challenge: await options() }) });
   assert.equal(ok.status, 200);
   const cookie = cookieOf(ok);
-  const panel = await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text();
+  const panel = await ajustesAll(s.base, cookie);
   assert.match(panel, /Los Robles/);
   assert.doesNotMatch(panel, /Jardines de Ibiza/);
 
@@ -2619,8 +2625,8 @@ test("transparencia pública: apagada por defecto, el tesorero la activa, no mue
 test("recuperación: códigos de respaldo (se generan con la contraseña, sirven una vez, entran sin celular) y cambiar de celular", () => withServer(async (s) => {
   const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
   const id = s.store.users.byEmail("marta@ejemplo.com").id;
-  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
-  const ajustes = async (cookie = marta.cookie) => (await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text());
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes/seguridad");
+  const ajustes = async (cookie = marta.cookie) => (await ajustesAll(s.base, cookie));
   assert.match(await ajustes(), /Sin códigos de respaldo/);
 
   // Generating needs the form token and the current password; a wrong one makes nothing.
@@ -2669,7 +2675,7 @@ test("recuperación: códigos de respaldo (se generan con la contraseña, sirven
   assert.equal((await form(`${s.base}/2fa/respaldo`, { codigo: fresh[0] }, await pending())).status, 401);
   const luisId = s.store.users.byEmail("luis@ejemplo.com").id;
   const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
-  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes/seguridad");
   const luisCodes = [...(await (await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrfL, actual: "clave-de-luis" }, luis.cookie)).text()).matchAll(/<li>([A-Z2-9]{5}-[A-Z2-9]{5})<\/li>/g)].map((m) => m[1]);
   assert.equal(luisCodes.length, 10);
   assert.equal((await form(`${s.base}/2fa/respaldo`, { codigo: luisCodes[0] }, await pending())).status, 401, "el código de Luis no abre la cuenta de Marta");
@@ -2680,7 +2686,7 @@ test("recuperación: códigos de respaldo (se generan con la contraseña, sirven
   assert.equal((await form(`${s.base}/2fa/respaldo`, { codigo: fresh[1] }, guesser)).status, 429, "frenado: ni el código bueno entra");
 
   // Change phone: needs the password, ends every session, and the next sign-in enrolls a new phone.
-  const csrfIn = await csrfOf(s.base, inside, "/panel/ajustes");
+  const csrfIn = await csrfOf(s.base, inside, "/panel/ajustes/seguridad");
   assert.match((await form(`${s.base}/panel/celular/cambiar`, { _csrf: csrfIn, actual: "mal" }, inside)).headers.get("location"), /m=clavemal/);
   assert.equal(s.store.users.byEmail("marta@ejemplo.com").totpEnabled, true, "con la clave mala no pasa nada");
   const changed = await form(`${s.base}/panel/celular/cambiar`, { _csrf: csrfIn, actual: "clave-de-marta" }, inside);
@@ -2693,7 +2699,7 @@ test("recuperación: códigos de respaldo (se generan con la contraseña, sirven
 
 test("recuperación: olvidé mi contraseña (con un código de respaldo) no revela qué correos existen y se frena", () => withServer(async (s) => {
   const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes/seguridad");
   const codes = [...(await (await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrf, actual: "clave-de-marta" }, marta.cookie)).text()).matchAll(/<li>([A-Z2-9]{5}-[A-Z2-9]{5})<\/li>/g)].map((m) => m[1]);
   assert.match(await (await fetch(`${s.base}/login`)).text(), /href="\/olvide"/);
   assert.equal((await fetch(`${s.base}/olvide`)).status, 200);
@@ -2732,17 +2738,17 @@ test("recuperación: olvidé mi contraseña (con un código de respaldo) no reve
 test("recuperación: un compañero crea un enlace de un solo uso (solo del mismo conjunto) y quien lo usa estrena contraseña y celular", () => withServer(async (s) => {
   const pedro = s.store.users.create({ tenantId: s.a.id, email: "pedro@ejemplo.com", passwordHash: await hashPassword("clave-de-pedro"), name: "Pedro Gómez" });
   const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
-  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes/seguridad");
   const pedroIn = await signIn(s.base, "pedro@ejemplo.com", "clave-de-pedro");
-  const csrfP = await csrfOf(s.base, pedroIn.cookie, "/panel/ajustes");
+  const csrfP = await csrfOf(s.base, pedroIn.cookie, "/panel/ajustes/seguridad");
   s.A.passkeys.add({ userId: pedro, credentialId: "cred-pedro", publicKey: "pk", alg: -7, name: "Celular viejo" });
   await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrfP, actual: "clave-de-pedro" }, pedroIn.cookie);
   assert.equal(s.A.recovery.status(pedro).remaining, 10);
-  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text(), /Restablecer acceso/);
+  assert.match(await ajustesAll(s.base, marta.cookie), /Restablecer acceso/);
 
   // Only a member of the same conjunto can ask for it, and never for themselves.
   const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
-  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes/seguridad");
   assert.match((await form(`${s.base}/panel/equipo/${pedro}/acceso`, { _csrf: csrfL }, luis.cookie)).headers.get("location"), /m=eqbad/, "Luis es de otro conjunto");
   assert.equal(s.store.db.prepare("SELECT COUNT(*) AS n FROM access_resets").get().n, 0);
   assert.match((await form(`${s.base}/panel/equipo/${s.store.users.byEmail("marta@ejemplo.com").id}/acceso`, { _csrf: csrf }, marta.cookie)).headers.get("location"), /m=eqyo/);
@@ -2838,4 +2844,53 @@ test("recordatorio de una casa: lleva su enlace personal si Cuotia lo tiene guar
   await form(`${s.base}/panel/casas/${s.a14.house.id}/desactivar`, { _csrf: csrf }, cookie);
   await form(`${s.base}/panel/casas/${s.a14.house.id}/anonimizar`, { _csrf: csrf }, cookie);
   assert.equal(s.store.db.prepare("SELECT access_enc FROM houses WHERE id = ?").get(s.a14.house.id).access_enc, null);
+}));
+
+test("Ajustes ordenado: un índice con seis secciones, cada tarjeta en su sección, y los mensajes caen donde estaba la persona", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const get = async (path) => (await fetch(`${s.base}${path}`, { headers: { cookie }, redirect: "manual" }));
+  const text = async (path) => (await get(path)).text();
+
+  // Needs a full session, like everything in the panel.
+  assert.equal((await fetch(`${s.base}/panel/ajustes/seguridad`, { redirect: "manual" })).status, 303);
+  assert.equal((await get("/panel/ajustes/inventada")).status, 404);
+
+  // The index lists the six sections with their state, and none of the forms.
+  const hub = await text("/panel/ajustes");
+  for (const [k, title] of [["cobros", "Cobros y pagos"], ["pagoradar", "Conexión con pagoradar"], ["equipo", "Equipo"], ["seguridad", "Mi acceso y seguridad"], ["dispositivo", "Este dispositivo"], ["datos", "Datos y privacidad"]]) {
+    assert.match(hub, new RegExp(`href="/panel/ajustes/${k}"[^>]*>[\\s\\S]*?<b>${title}</b>`), k);
+  }
+  assert.match(hub, /1 persona/);
+  assert.match(hub, /0 passkeys · sin códigos de respaldo/);
+  assert.match(hub, /Avisos sin activar/);
+  assert.doesNotMatch(hub, /action="\/panel\/(ajustes|equipo|respaldo|passkeys|celular|reiniciar)/, "el índice no tiene formularios de ajustes: solo lleva a cada sección");
+  assert.match(hub, /aria-current="page"/);
+
+  // Each card sits in exactly the section it belongs to.
+  const has = { cobros: ["¿Cómo confirmas los pagos?", "Cuenta para cobrar", "Otros medios de pago", "Fechas de pago"], pagoradar: ["Conexión con pagoradar"], equipo: ["<h2>Equipo</h2>"],
+    seguridad: ["Tu contraseña", "<h2>Passkeys</h2>", "Si pierdes el acceso"], dispositivo: ["Avisos en el celular", "Apariencia"], datos: ["Empezar de cero", "Bitácora", "Política de tratamiento"] };
+  const everything = Object.values(has).flat();
+  for (const [section, mine] of Object.entries(has)) {
+    const page = await text(`/panel/ajustes/${section}`);
+    assert.match(page, /← Ajustes/);
+    for (const t of mine) assert.ok(page.includes(t), `${section} lleva «${t}»`);
+    for (const t of everything.filter((x) => !mine.includes(x))) assert.ok(!page.includes(t), `${section} no debe llevar «${t}»`);
+  }
+
+  // A saved setting comes back to its own section with its message.
+  const csrf = await csrfOf(s.base, cookie, "/panel/ajustes/cobros");
+  assert.equal((await form(`${s.base}/panel/ajustes/fechas`, { _csrf: csrf, abre: "1", vence: "10" }, cookie)).headers.get("location"), "/panel/ajustes/cobros?m=fechas");
+  assert.match(await text("/panel/ajustes/cobros?m=fechas"), /class="flash ok"/);
+  assert.match((await form(`${s.base}/panel/ajustes/clave`, { _csrf: csrf, actual: "mal", nueva: "otra-clave-larga", nueva2: "otra-clave-larga" }, cookie)).headers.get("location"), /^\/panel\/ajustes\/seguridad\?m=clavemal$/);
+  assert.match((await form(`${s.base}/panel/ajustes/pagoradar`, { _csrf: csrf, secreto: "corto" }, cookie)).headers.get("location"), /^\/panel\/ajustes\/pagoradar\?m=secbad$/);
+  assert.match((await form(`${s.base}/panel/ajustes/modo`, { _csrf: csrf, modo: "manual" }, cookie)).headers.get("location"), /^\/panel\/ajustes\/cobros\?m=modo$/);
+  assert.match((await form(`${s.base}/panel/equipo/${s.store.users.byEmail("marta@ejemplo.com").id}/quitar`, { _csrf: csrf }, cookie)).headers.get("location"), /^\/panel\/ajustes\/equipo\?m=eqyo$/);
+
+  // The state shown in the index follows what was set.
+  s.store.tenants.setPagoradarSecret(s.a.id, null);
+  assert.match(await text("/panel/ajustes"), /Sin configurar \(opcional\)/);
+  s.store.tenants.setPagoradarSecret(s.a.id, "x");
+  assert.match(await text("/panel/ajustes"), /Guardado, esperando el primer aviso/);
+  s.store.tenants.touchPagoradar(s.a.id);
+  assert.match(await text("/panel/ajustes"), /Conectado/);
 }));
