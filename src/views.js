@@ -104,6 +104,7 @@ const FLASH = {
   gastogrande: () => ({ kind: "err", text: "El soporte pesa más de 5 MB." }),
   gastoanul: () => ({ kind: "ok", text: "Gasto anulado: sigue visible como anulado y ya no cuenta en el saldo." }),
   cuentasok: () => ({ kind: "ok", text: "Guardado." }),
+  respaldousado: (n) => ({ kind: "info", text: `Entraste con un código de respaldo. Te quedan ${n}. Si perdiste el celular, en Ajustes puedes activar uno nuevo; y genera códigos nuevos cuando se acaben.` }),
   trok: () => ({ kind: "ok", text: "La página de transparencia está activa. Copia el enlace y compártelo." }),
   trcambio: () => ({ kind: "ok", text: "Listo: el enlace cambió. El anterior ya no abre nada." }),
   trapagado: () => ({ kind: "ok", text: "La página de transparencia está apagada: el enlace ya no abre nada." }),
@@ -146,6 +147,7 @@ export function loginPage({ error, notice } = {}) {
     <label>Correo<input type="email" name="email" autocomplete="username" required autofocus></label>
     <label>Contraseña<input type="password" name="password" autocomplete="current-password" required></label>
     <button class="btn" type="submit">Continuar</button>
+    <p class="small center-text"><a href="/olvide">¿Olvidaste tu contraseña?</a></p>
     <div class="passkey-box" data-passkey-login-box hidden>
       <p class="muted small center-text">o</p>
       <button class="btn ghost" type="button" data-passkey-login>Entrar con passkey</button>
@@ -327,7 +329,7 @@ export function setupPage({ token, error, values = {} }) {
 }
 
 /** Second step. "setup" shows the key to add to an authenticator app; "pending" only asks for the code. */
-export function twoFaPage({ stage, error, secret, uri, email, action = "/2fa" }) {
+export function twoFaPage({ stage, error, secret, uri, email, action = "/2fa", backupAction = null }) {
   const grouped = secret ? secret.replace(/(.{4})/g, "$1 ").trim() : "";
   return layout("Código de verificación", html`
 <main class="center">
@@ -343,12 +345,20 @@ export function twoFaPage({ stage, error, secret, uri, email, action = "/2fa" })
         <p class="muted small">¿No puedes escanearlo? Escribe esta clave en la app:</p>
         <p class="key secret" translate="no">${grouped}</p>
         <p class="small"><a href="${uri}">Abrir directamente en mi app</a> <span class="muted">(si estás en el celular)</span></p>
-        <p class="muted small">Cuenta: ${email}. Guarda la clave en un lugar seguro: si pierdes el celular, un administrador tendrá que restablecerla.</p>`
+        <p class="muted small">Cuenta: ${email}. Después de entrar, en Ajustes genera tus códigos de respaldo: son tu salida si pierdes el celular.</p>`
       : html`<p class="muted">Escribe el código de 6 dígitos de tu app.</p>`}
     ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
     <label>Código<input class="code" type="text" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code" required autofocus></label>
     <button class="btn" type="submit">${stage === "setup" ? "Activar y entrar" : "Entrar"}</button>
   </form>
+  ${backupAction ? html`<form class="card login backup-form" method="post" action="${backupAction}" autocomplete="off">
+    <details class="undo"><summary>No tengo mi celular</summary>
+      <p class="muted small">Escribe uno de tus códigos de respaldo. Cada uno sirve una sola vez.</p>
+      <label>Código de respaldo<input type="text" name="codigo" maxlength="14" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="K7M2P-9XQ4T" required></label>
+      <button class="btn ghost" type="submit">Entrar con el código</button>
+      <p class="muted small">¿Tampoco tienes los códigos? Pídele a un compañero del equipo que te cree un enlace, o escríbele al operador de Cuotia.</p>
+    </details>
+  </form>` : ""}
 </main>`);
 }
 
@@ -888,7 +898,7 @@ export function pagoManualPage(args) {
 
 
 export function ajustesPage(args) {
-  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, passkeys = [] } = args;
+  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, passkeys = [], recovery = { total: 0, remaining: 0 } } = args;
   return panelLayout("Ajustes", { ...args, active: "ajustes" }, html`
   <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
   ${flashBox(flash)}
@@ -1023,6 +1033,10 @@ export function ajustesPage(args) {
     <p class="muted small">Quienes pueden entrar al panel de ${tenant.name}. Cada persona tiene su propia contraseña y su propio código de verificación. Todas pueden hacer lo mismo: invita solo a gente de confianza.</p>
     <ul class="list">${team.map((u) => html`<li class="member">
       <span><b>${u.name}${u.id === meId ? " (tú)" : ""}</b><small class="muted">${u.email}${u.totpEnabled ? "" : " · aún no activa su código"}</small></span>
+      ${u.id === meId ? "" : html`<details class="undo"><summary>Restablecer acceso</summary>
+        <p class="muted small">Si ${u.name} perdió su celular o su contraseña: crea un enlace de un solo uso para que elija una contraseña nueva y active un celular nuevo. Sus sesiones se cierran.</p>
+        <form method="post" action="/panel/equipo/${u.id}/acceso">${csrfField(csrf)}<button class="btn ghost small" type="submit">Crear el enlace</button></form>
+      </details>`}
       ${u.id === meId ? "" : html`<details class="undo"><summary>Quitar</summary>
         <p class="muted small">${u.name} ya no podrá entrar y se cerrarán sus sesiones. Lo que registró se conserva.</p>
         <form method="post" action="/panel/equipo/${u.id}/quitar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Sí, quitar</button></form>
@@ -1049,7 +1063,27 @@ export function ajustesPage(args) {
       <label>Repite la nueva<input type="password" name="nueva2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
       <button class="btn" type="submit">Cambiar contraseña</button>
     </form>
-    <p class="muted small">Al cambiarla, tus sesiones en otros dispositivos se cierran. Si pierdes el celular del código de verificación, pídele al operador que lo restablezca.</p>
+    <p class="muted small">Al cambiarla, tus sesiones en otros dispositivos se cierran.</p>
+  </section>
+
+  <section class="card" id="recuperacion">
+    <div class="row wrap"><h2>Si pierdes el acceso</h2>${recovery.remaining ? html`<span class="pill ok"><i></i>${recovery.remaining} código${recovery.remaining === 1 ? "" : "s"} de respaldo</span>` : html`<span class="pill warn"><i></i>Sin códigos de respaldo</span>`}</div>
+    <p class="muted small">Los <b>códigos de respaldo</b> son diez claves de un solo uso que guardas en papel. Con uno entras si pierdes el celular del código, o cambias la contraseña si la olvidas, sin pedirle nada a nadie. ${recovery.remaining ? `Te quedan ${recovery.remaining}.` : "Todavía no tienes: genéralos ahora."}</p>
+    <details class="undo"${recovery.remaining ? "" : raw(" open")}><summary>${recovery.remaining ? "Generar códigos nuevos" : "Generar mis códigos de respaldo"}</summary>
+      <p class="muted small">Se muestran una sola vez y los anteriores dejan de servir. Escribe tu contraseña para confirmar.</p>
+      <form class="stack-form" method="post" action="/panel/respaldo/generar" autocomplete="off">${csrfField(csrf)}
+        <label>Tu contraseña<input type="password" name="actual" required autocomplete="current-password"></label>
+        <button class="btn small" type="submit">Generar códigos</button>
+      </form>
+    </details>
+    <details class="undo"><summary>Cambiar mi celular de verificación</summary>
+      <p class="muted small">Úsalo si cambiaste de celular o perdiste el anterior. Se cierra tu sesión y, al volver a entrar, activas el celular nuevo.</p>
+      <form class="stack-form" method="post" action="/panel/celular/cambiar" autocomplete="off">${csrfField(csrf)}
+        <label>Tu contraseña<input type="password" name="actual" required autocomplete="current-password"></label>
+        <button class="btn ghost small" type="submit">Cambiar de celular</button>
+      </form>
+    </details>
+    <p class="muted small">Si perdiste la contraseña y los códigos, un compañero del equipo puede crearte un enlace (Equipo → Restablecer acceso). Es lo único que no se puede hacer solo: si eres la única persona del equipo, escríbele al operador de Cuotia.</p>
   </section>`);
 }
 
@@ -1670,6 +1704,76 @@ export function inviteLinkPage(args) {
 }
 
 /** The invited person chooses their name and password. Their email is fixed by the invitation. */
+/** Forgot the password: needs one backup code (made earlier in Ajustes). */
+export function olvidePage({ error, email = "" }) {
+  return layout("Recuperar contraseña", html`
+<main class="center">
+  <form class="card login" method="post" action="/olvide" autocomplete="off">
+    ${BRAND_MARK}
+    <h1>Recuperar mi contraseña</h1>
+    <p class="muted">Necesitas uno de tus <b>códigos de respaldo</b> (los generas en Ajustes y los guardas en papel). Si no los tienes, pídele a un compañero del equipo que te cree un enlace, o escríbele al operador.</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    <label>Correo<input type="email" name="email" value="${email}" autocomplete="username" required autofocus></label>
+    <label>Código de respaldo<input type="text" name="codigo" maxlength="14" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="K7M2P-9XQ4T" required></label>
+    <label>Contraseña nueva (mínimo 10 caracteres)<input type="password" name="nueva" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+    <label>Repite la contraseña<input type="password" name="nueva2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+    <button class="btn" type="submit">Cambiar contraseña</button>
+    <p class="small center-text"><a href="/login">Volver a entrar</a></p>
+  </form>
+</main>`);
+}
+
+/** The link a colleague made: new password now, new phone at the next sign-in. */
+export function restablecerPage({ r, token, error }) {
+  return layout("Restablecer mi acceso", html`
+<main class="center">
+  <form class="card setup" method="post" action="/restablecer/${token}">
+    ${BRAND_MARK}
+    <h1>Restablecer mi acceso</h1>
+    <p class="muted">Un compañero de ${r.tenant.name} te creó este enlace. Elige una contraseña nueva; al entrar te pediremos activar el código de verificación en tu celular. Tus códigos de respaldo y passkeys anteriores dejan de servir.</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    <label>Correo<input type="email" value="${r.email}" readonly></label>
+    <label>Contraseña nueva (mínimo 10 caracteres)<input type="password" name="clave" minlength="10" maxlength="200" required autocomplete="new-password" autofocus></label>
+    <label>Repite la contraseña<input type="password" name="clave2" minlength="10" maxlength="200" required autocomplete="new-password"></label>
+    <button class="btn" type="submit">Guardar y continuar</button>
+  </form>
+</main>`);
+}
+
+/** Shown once, right after generating: the ten codes. They are never stored in the clear and never shown again. */
+export function recoveryCodesPage(args) {
+  const { codes } = args;
+  const text = `Códigos de respaldo de Cuotia (${args.tenant.name})\n${codes.join("\n")}`;
+  return panelLayout("Códigos de respaldo", { ...args, active: "ajustes" }, html`
+  <div class="heading"><h1>Tus códigos de respaldo</h1><span class="muted">${args.user.email}</span></div>
+  <section class="card">
+    <p class="small"><b>Solo se muestran ahora.</b> Anótalos en papel o guárdalos en un lugar privado, fuera de este celular. Cada uno sirve <b>una sola vez</b> para entrar si pierdes el celular del código, o para cambiar tu contraseña si la olvidas. Los códigos anteriores ya no sirven.</p>
+    <ol class="recovery-codes" id="codigos-respaldo" translate="no">${codes.map((c) => html`<li>${c}</li>`)}</ol>
+    <div class="actions">
+      <button class="btn" type="button" data-copy="${text}" data-copy-target="#codigos-respaldo">Copiar</button>
+      <button class="btn ghost" type="button" data-print>Imprimir</button>
+      <a class="btn ghost" href="/panel/ajustes#recuperacion">Listo, ya los guardé</a>
+    </div>
+  </section>`);
+}
+
+/** A colleague's reset link, shown once to the person who created it. */
+export function resetLinkPage(args) {
+  const { url, email, name } = args;
+  const text = `Hola ${String(name).split(/\s+/)[0]}, aquí puedes crear tu contraseña nueva en Cuotia (el enlace vence en 24 horas y sirve una sola vez): ${url}`;
+  return panelLayout("Restablecer acceso", { ...args, active: "ajustes" }, html`
+  <div class="heading"><h1>Enlace listo</h1><span class="muted">${email}</span></div>
+  <section class="card">
+    <p class="small">Envíaselo a ${name}. <b>Solo se muestra ahora</b>; si lo pierdes, crea otro y este deja de servir. Al usarlo, ${name} elige una contraseña nueva y activa un celular nuevo: su contraseña, su celular, sus passkeys y sus códigos de respaldo anteriores dejan de servir y se cierran sus sesiones.</p>
+    <p class="key url" translate="no" id="enlace">${url}</p>
+    <div class="actions">
+      <button class="btn" type="button" data-copy="${url}" data-copy-target="#enlace">Copiar enlace</button>
+      <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(text)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
+      <a class="btn ghost" href="/panel/ajustes#equipo">Volver a Ajustes</a>
+    </div>
+  </section>`);
+}
+
 export function inviteAcceptPage({ inv, token, error, name }) {
   return layout("Crear mi cuenta", html`
 <main class="center">

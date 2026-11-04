@@ -323,6 +323,28 @@ const MIGRATIONS = [
   ALTER TABLE tenants ADD COLUMN public_token_enc TEXT;
   CREATE UNIQUE INDEX tenants_public_token ON tenants (public_token_hash) WHERE public_token_hash IS NOT NULL;
   `,
+  /* V21: access recovery. `recovery_codes` are single-use backup codes (keyed hash only). `access_resets` are one-use links a
+     colleague of the same conjunto creates for someone who lost their phone or password (only the token's hash is stored). */
+  `
+  CREATE TABLE recovery_codes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    used_at TEXT
+  );
+  CREATE INDEX recovery_by_user ON recovery_codes (user_id);
+  CREATE TABLE access_resets (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+  );
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -584,6 +606,36 @@ export function openStore(path = ":memory:") {
     /** Signs a person out everywhere (after a password change or reset), optionally keeping the session making the change. */
     deleteForUser: (userId, exceptToken = null) => void db.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?").run(userId, exceptToken ? sha256(exceptToken) : ""),
     purgeExpired: () => void db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(nowIso()),
+  };
+
+  /** Backup codes are looked up by person (global like `users`): a code only works for the account it was made for. */
+  const recoveryCodes = {
+    /** Burns one code of this person if it is valid and unused. */
+    consume: (userId, hash) => Number(db.prepare("UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL").run(nowIso(), userId, hash).changes) === 1,
+  };
+
+  /** A colleague's reset link: the unguessable token is the credential (global lookup, like invitations). */
+  const ACCESS_RESET_TTL_MS = 24 * 3600_000;
+  const accessResets = {
+    byToken(token) {
+      if (!token) return null;
+      const r = db.prepare("SELECT * FROM access_resets WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?").get(sha256(String(token)), nowIso());
+      const u = r ? users.byId(r.user_id) : null;
+      return r && u ? { id: r.id, tenantId: r.tenant_id, userId: u.id, email: u.email, name: u.name, tenant: tenants.get(r.tenant_id) } : null;
+    },
+    /** The person chooses a new password: the old password, 2-step phone, passkeys, backup codes and sessions are all discarded, and the link burns. */
+    use(token, { passwordHash }) {
+      return tx(() => {
+        const r = accessResets.byToken(token);
+        if (!r) throw new Error("Ese enlace ya no sirve");
+        db.prepare("UPDATE users SET password_hash = ?, totp_secret = NULL, totp_enabled = 0, totp_last_step = 0 WHERE id = ?").run(passwordHash, r.userId);
+        db.prepare("DELETE FROM passkeys WHERE user_id = ?").run(r.userId);
+        db.prepare("DELETE FROM recovery_codes WHERE user_id = ?").run(r.userId);
+        db.prepare("DELETE FROM sessions WHERE user_id = ?").run(r.userId);
+        db.prepare("UPDATE access_resets SET used_at = ? WHERE id = ?").run(nowIso(), r.id);
+        return r;
+      });
+    },
   };
 
   /** A resident opens their personal link: the unguessable token is the credential. Global lookup by design. */
@@ -1001,6 +1053,18 @@ export function openStore(path = ":memory:") {
         const r = db.prepare("DELETE FROM invitations WHERE id = ? AND tenant_id = ? AND used_at IS NULL").run(id, tenantId);
         if (Number(r.changes) !== 1) throw new Error("Esa invitación no existe en este conjunto");
       },
+      /** A link for a colleague of this conjunto who lost their phone or password (shown once, valid 24 h). One open link per person. */
+      resetAccess(userId, createdBy = null) {
+        return tx(() => {
+          const u = db.prepare("SELECT id, email, display_name FROM users WHERE id = ? AND tenant_id = ?").get(userId, tenantId);
+          if (!u) throw new Error("Esa persona no es de este conjunto");
+          db.prepare("DELETE FROM access_resets WHERE user_id = ? AND used_at IS NULL").run(userId);
+          const token = newToken(24);
+          db.prepare("INSERT INTO access_resets (id, tenant_id, user_id, token_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .run(newId("rst"), tenantId, userId, sha256(token), createdBy, nowIso(), new Date(Date.now() + ACCESS_RESET_TTL_MS).toISOString());
+          return { token, email: u.email, name: greetingName(u.display_name, u.email) };
+        });
+      },
       /** Takes someone off the conjunto and signs them out everywhere. Never the last person, so the conjunto can't lock itself. */
       remove(userId) {
         return tx(() => {
@@ -1009,6 +1073,22 @@ export function openStore(path = ":memory:") {
           if (Number(db.prepare("SELECT COUNT(*) AS n FROM users WHERE tenant_id = ?").get(tenantId).n) <= 1) throw new Error("Debe quedar al menos una persona con acceso");
           db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
           db.prepare("DELETE FROM users WHERE id = ? AND tenant_id = ?").run(userId, tenantId);
+        });
+      },
+    };
+
+    /** Backup codes of the people of this conjunto: how many are left, and replacing them all at once. The codes themselves are never stored. */
+    const recovery = {
+      status(userId) {
+        if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND tenant_id = ?").get(userId, tenantId)) throw new Error("Esa persona no es de este conjunto");
+        const r = db.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN used_at IS NULL THEN 1 ELSE 0 END) AS left, MAX(created_at) AS at FROM recovery_codes WHERE user_id = ?").get(userId);
+        return { total: Number(r.total), remaining: Number(r.left ?? 0), createdAt: r.at ?? null };
+      },
+      replace(userId, hashes) {
+        return tx(() => {
+          if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND tenant_id = ?").get(userId, tenantId)) throw new Error("Esa persona no es de este conjunto");
+          db.prepare("DELETE FROM recovery_codes WHERE user_id = ?").run(userId);
+          for (const h of hashes) db.prepare("INSERT INTO recovery_codes (id, user_id, code_hash, created_at) VALUES (?, ?, ?, ?)").run(newId("rc"), userId, h, nowIso());
         });
       },
     };
@@ -1292,8 +1372,8 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, push, housePush, reminders, certificates, audit, payMethods, templates, passkeys: passkeysOf, expenses, books, reset, resetPreview, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, recovery, push, housePush, reminders, certificates, audit, payMethods, templates, passkeys: passkeysOf, expenses, books, reset, resetPreview, matchHouse, summary };
   }
 
-  return { db, tenants, users, invitations, certificates, passkeys, webauthnChallenges, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };
+  return { db, tenants, users, recoveryCodes, accessResets, invitations, certificates, passkeys, webauthnChallenges, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };
 }
