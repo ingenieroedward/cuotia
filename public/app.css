@@ -72,19 +72,27 @@ body {
   background: var(--ground);
   color: var(--text);
   font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.45;
+  font-size: 1rem;
+  line-height: 1.55;
+  /* Plus Jakarta's word gaps are short: a touch more air reads better, and digits line up in columns. */
+  word-spacing: .06em;
+  font-variant-numeric: tabular-nums;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   -webkit-text-size-adjust: 100%;
 }
-h1, h2 { margin: 0; letter-spacing: -0.025em; font-weight: 800; }
-h1 { font-size: clamp(1.5rem, 4vw, 1.9rem); }
-h2 { font-size: 1.15rem; }
-p { margin: 0 0 .75rem; }
+h1, h2, h3 { margin: 0; letter-spacing: -0.02em; font-weight: 700; line-height: 1.2; text-wrap: balance; }
+h1 { font-size: clamp(1.6rem, 4.2vw, 2rem); letter-spacing: -0.025em; }
+h2 { font-size: 1.2rem; }
+p { margin: 0 0 .75rem; text-wrap: pretty; }
 a { color: var(--link); }
 .muted { color: var(--muted); }
-.small { font-size: .875rem; }
-small { display: block; font-size: .8125rem; }
+.small { font-size: .875rem; line-height: 1.5; }
+small { display: block; font-size: .8125rem; line-height: 1.45; }
 
-.brand { display: inline-flex; align-items: center; gap: .5rem; font-weight: 800; font-size: 1.3rem; letter-spacing: -0.03em; }
+.brand { display: inline-flex; align-items: center; gap: .5rem; font-weight: 700; font-size: 1.3rem; letter-spacing: -0.03em; word-spacing: 0; }
 .brand-mark { width: 28px; height: 28px; border-radius: 9px; background: var(--ink); color: var(--accent); display: grid; place-items: center; }
 
 .chip { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: .4rem .8rem; font-weight: 700; font-size: .85rem; }
@@ -108,15 +116,15 @@ input:focus-visible, .btn:focus-visible, a:focus-visible { outline: 3px solid va
 
 .btn {
   min-height: 48px; padding: 0 1.25rem; border: 0; border-radius: 14px; cursor: pointer;
-  background: var(--ink); color: #fff; font: 700 .95rem/1 inherit; font-family: inherit;
+  background: var(--ink); color: #fff; font-family: inherit; font-size: .95rem; font-weight: 600; line-height: 1; letter-spacing: .005em;
 }
 .btn.alt { background: transparent; color: var(--text); border: 1.5px solid var(--ink); }
 .btn.ghost { background: transparent; color: var(--text); border: 1.5px solid var(--line); min-height: 44px; }
 .alert { background: var(--warn-bg); color: var(--warn-fg); border-radius: 12px; padding: .7rem .9rem; font-weight: 600; margin: 0; }
 
 .hero { background: var(--hero-bg); color: var(--hero-fg); border-radius: 28px; padding: 1.5rem; display: flex; flex-direction: column; gap: .5rem; }
-.eyebrow { font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--on-ink-muted); }
-.hero-number { font-size: clamp(2.4rem, 11vw, 4rem); line-height: 1; font-weight: 800; letter-spacing: -0.04em; color: var(--hero-num); }
+.eyebrow { font-size: .72rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--on-ink-muted); }
+.hero-number { font-size: clamp(2.4rem, 11vw, 4rem); line-height: 1; font-weight: 700; letter-spacing: -0.035em; color: var(--hero-num); }
 .hero-sub { color: var(--on-ink-muted); font-size: .95rem; }
 .hero-stats { display: flex; gap: 2rem; margin-top: .5rem; }
 .hero-stats div { display: flex; flex-direction: column; }
@@ -137,7 +145,7 @@ progress.bar::-moz-progress-bar { background: var(--link); border-radius: 7px; }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 480px; }
-th { text-align: left; font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: .5rem .5rem; }
+th { text-align: left; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: .5rem .5rem; }
 td { padding: .8rem .5rem; border-top: 1px solid var(--line); font-size: .9rem; }
 .num { text-align: right; }
 
@@ -268,7 +276,7 @@ li.pay > a.small { align-self: flex-start; min-height: 44px; display: inline-fle
 .top .hero { flex: 2 1 460px; min-width: 0; }
 .stats { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 1rem; }
 .stat { gap: .35rem; }
-.stat-number { font-size: 2.1rem; line-height: 1.1; font-weight: 800; letter-spacing: -0.03em; }
+.stat-number { font-size: 2.1rem; line-height: 1.1; font-weight: 700; letter-spacing: -0.03em; }
 .eyebrow.dim { color: var(--muted); }
 .info-card { background: var(--info-bg); color: var(--info-fg); border-radius: var(--radius); padding: 1.25rem; display: flex; flex-direction: column; gap: .35rem; }
 .info-card .eyebrow { color: var(--info-fg); }
@@ -325,7 +333,7 @@ body.receipt-page { background: var(--chrome); }
 .receipt-lead { color: var(--on-ink-muted); text-align: center; margin: 0; }
 .rcard { width: 100%; background: #fff; color: #2a211a; border-radius: 24px; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; margin-top: .75rem; }
 .rcard .eyebrow { color: #7d7166; display: block; }
-.rtotal { display: block; font-size: 2.5rem; line-height: 1.1; font-weight: 800; letter-spacing: -0.04em; }
+.rtotal { display: block; font-size: 2.5rem; line-height: 1.1; font-weight: 700; letter-spacing: -0.035em; }
 .rcard hr { border: 0; border-top: 2px dashed #e8e1d6; margin: 0; width: 100%; }
 .rcard dl { margin: 0; display: flex; flex-direction: column; gap: .75rem; }
 .rcard dl div { display: flex; justify-content: space-between; gap: 1rem; font-size: .9rem; }
@@ -676,3 +684,8 @@ pre.wa-preview { margin: .35rem 0 0; padding: .9rem 1rem; background: #dcf8c6; c
 
 .theme-choice { display: flex; gap: .5rem; flex-wrap: wrap; }
 .theme-choice .btn[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: transparent; }
+
+/* Reading comfort: longer text gets a measure that fits the eye; headings and short labels keep their own rhythm. */
+.card p, .doc-lead, .note, .share-text { max-width: 68ch; }
+li, dd, label { text-wrap: pretty; }
+.btn, .tab, .nav-link, .pill, .chip, .chip-filter, .eyebrow, th { word-spacing: 0; }
