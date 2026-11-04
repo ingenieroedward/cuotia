@@ -495,7 +495,7 @@ function debtRow(group, { tenant, period }) {
     </div>
     <div class="debt-total"><b>${peso(group.totalCents)}</b><small class="muted">${group.dues.length} cuota${group.dues.length === 1 ? "" : "s"}</small></div>
     <div class="debt-actions">
-      <a class="btn small" href="/panel/pagos/nuevo?casa=${house.id}">Registrar pago</a>
+      <a class="btn alt small" href="/panel/pagos/nuevo?casa=${house.id}">Registrar pago</a>
       <a class="btn ghost small" href="${waLink(house.phone, personalReminder(tenant, group))}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
     </div>
   </li>`;
@@ -789,7 +789,7 @@ export function casasPage(args) {
             <span class="house-main"><b>${h.residentName}</b><small class="muted">${h.phone ?? "Sin celular"}</small></span>
             <span class="house-state">${houseStatus(g, current)}${g ? html`<small class="muted">${peso(g.totalCents)}</small>` : ""}</span>
             <span class="actions">
-              ${g ? html`<a class="btn small" href="/panel/pagos/nuevo?casa=${h.id}">Registrar pago</a>` : ""}
+              ${g ? html`<a class="btn alt small" href="/panel/pagos/nuevo?casa=${h.id}">Registrar pago</a>` : ""}
               <a class="btn ghost small" href="/panel/casas/${h.id}">Editar</a>
               <form method="post" action="/panel/casas/${h.id}/enlace">${csrfField(csrf)}<button class="btn ghost small" type="submit">Enlace</button></form>
             </span>
