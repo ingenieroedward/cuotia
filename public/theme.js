@@ -9,7 +9,7 @@
     var dark = pref === "dark" || (pref === "auto" && !!mql && mql.matches);
     root.setAttribute("data-theme", dark ? "dark" : "light");
     var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", dark ? "#0b1613" : "#0B4A3A");
+    if (meta) meta.setAttribute("content", dark ? "#151210" : "#3B3028");
   }
   apply();
   if (mql && mql.addEventListener) mql.addEventListener("change", apply);

@@ -29,7 +29,7 @@ export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0B4A3A">
+<meta name="theme-color" content="#3B3028">
 <meta name="color-scheme" content="light dark">
 <script src="/static/theme.js"></script>
 <meta name="application-name" content="Cuotia">
