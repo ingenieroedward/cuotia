@@ -535,3 +535,32 @@ test("transparencia: el enlace público de un conjunto no abre otro y apagarlo n
   assert.equal(store.tenants.get(a.id).publicOn, false);
   assert.equal(store.tenants.byPublicToken(""), null);
 });
+
+test("recuperación: los códigos de respaldo y los enlaces de restablecimiento no cruzan de conjunto", () => {
+  const { store, A, B, a, b } = twoConjuntos();
+  const ua = store.users.create({ tenantId: a.id, email: "marta@ejemplo.com", passwordHash: "x" });
+  const ub = store.users.create({ tenantId: b.id, email: "luis@ejemplo.com", passwordHash: "x" });
+  assert.throws(() => B.recovery.status(ua), /no es de este conjunto/);
+  assert.throws(() => B.recovery.replace(ua, ["h1"]), /no es de este conjunto/);
+  A.recovery.replace(ua, ["h1", "h2"]);
+  B.recovery.replace(ub, ["h3"]);
+  assert.deepEqual(A.recovery.status(ua), { total: 2, remaining: 2, createdAt: A.recovery.status(ua).createdAt });
+  // Codes only work for the account they belong to.
+  assert.equal(store.recoveryCodes.consume(ub, "h1"), false);
+  assert.equal(store.recoveryCodes.consume(ua, "h1"), true);
+  assert.equal(store.recoveryCodes.consume(ua, "h1"), false, "una sola vez");
+  assert.equal(A.recovery.status(ua).remaining, 1);
+  assert.equal(B.recovery.status(ub).remaining, 1, "el otro conjunto no se tocó");
+  // Reset links: a conjunto can only make one for its own people.
+  assert.throws(() => B.team.resetAccess(ua), /no es de este conjunto/);
+  assert.throws(() => A.team.resetAccess("usr_inexistente"), /no es de este conjunto/);
+  const { token } = A.team.resetAccess(ua);
+  assert.equal(store.accessResets.byToken(token).userId, ua);
+  assert.equal(store.accessResets.byToken(token).tenantId, a.id);
+  assert.equal(store.accessResets.byToken("otro-token"), null);
+  store.accessResets.use(token, { passwordHash: "nuevo" });
+  assert.equal(store.accessResets.byToken(token), null);
+  assert.equal(A.recovery.status(ua).total, 0, "al restablecer se borran sus códigos");
+  assert.equal(B.recovery.status(ub).total, 1, "los del otro conjunto siguen");
+  assert.throws(() => store.accessResets.use(token, { passwordHash: "otro" }), /ya no sirve/);
+});

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseCookies, readBody, readBuffer, redirect, sameOrigin, send, sendJson } from "./http.js";
 import {
-  AttemptLimiter, newToken, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, hashPassword, matchTotp, newTotpSecret, safeEqual,
+  AttemptLimiter, newRecoveryCodes, newToken, normalizeRecoveryCode, recoveryHash, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, hashPassword, matchTotp, newTotpSecret, safeEqual,
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
@@ -19,7 +19,7 @@ import { AUDIT_ACTIONS } from "./audit.js";
 import { MESSAGES, MESSAGE_KEYS, validateTemplate } from "./messages.js";
 import { ALLOWED_ALGS, b64u, fromB64u, verifyAssertion, verifyRegistration } from "./webauthn.js";
 import { message } from "./messages.js";
-import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, transparenciaPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, transparenciaPage, olvidePage, restablecerPage, recoveryCodesPage, resetLinkPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -63,6 +63,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   const proofLimiter = new AttemptLimiter({ max: 12, windowMs: 60 * 60_000 });
   const verifyLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const publicLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
+  const forgotLimiter = new AttemptLimiter({ max: 6, windowMs: 15 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
 
@@ -123,6 +124,14 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       verifyLimiter.fail(ip);
       return send(res, 200, verificarPage({ code, searched: true, found: store.certificates.byCode(code) }));
     }
+    // Access recovery: forgot the password (with a backup code), and the one-use link a colleague creates.
+    if (path === "/olvide") {
+      if (method === "GET") return send(res, 200, olvidePage({}));
+      if (method === "POST") return forgotPassword(req, res);
+    }
+    const reset = (method === "GET" || method === "POST") && path.match(/^\/restablecer\/([A-Za-z0-9_-]{20,})$/);
+    if (reset) return accessReset(req, res, reset[1], method);
+    if (method === "POST" && path === "/2fa/respaldo") return backupCodeLogin(req, res);
     const invite = (method === "GET" || method === "POST") && path.match(/^\/invitacion\/([A-Za-z0-9_-]{20,})$/);
     if (invite) return invitation(req, res, invite[1], method);
 
@@ -134,7 +143,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       if (method === "GET") {
         const s = sessionOf(req);
         if (s) return redirect(res, s.stage === "full" ? "/panel" : "/2fa");
-        return send(res, 200, loginPage({ notice: { creado: "Conjunto creado. Entra con tu correo y tu contraseña.", invitado: "Tu cuenta está lista. Entra con tu correo y tu contraseña." }[url.searchParams.get("m")] }));
+        return send(res, 200, loginPage({ notice: { creado: "Conjunto creado. Entra con tu correo y tu contraseña.", invitado: "Tu cuenta está lista. Entra con tu correo y tu contraseña.", clavenueva: "Listo: ya tienes contraseña nueva. Entra con ella.", accesonuevo: "Listo: tu contraseña cambió. Al entrar te pediremos activar el código de verificación en tu celular.", celular: "Listo. Entra de nuevo y activaremos el celular nuevo." }[url.searchParams.get("m")] }));
       }
       if (method === "POST") return login(req, res);
     }
@@ -519,6 +528,72 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     return redirect(res, "/login?m=invitado");
   }
 
+  // ---------- access recovery ----------
+
+  /** Forgot the password: email + one backup code + the new password. Always the same answer when something is wrong, so it never says which emails exist. */
+  async function forgotPassword(req, res) {
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const form = new URLSearchParams(await readBody(req, 8 * 1024));
+    const email = String(form.get("email") ?? "").trim().toLowerCase().slice(0, 120);
+    const ipKey = `ip|${req.socket.remoteAddress}`, mailKey = `mail|${email}`;
+    if (forgotLimiter.blocked(ipKey) || forgotLimiter.blocked(mailKey)) return send(res, 429, olvidePage({ email, error: "Demasiados intentos. Espera unos minutos." }));
+    const nueva = String(form.get("nueva") ?? "");
+    if (nueva.length < 10 || nueva.length > 200) return send(res, 400, olvidePage({ email, error: "La contraseña nueva debe tener al menos 10 caracteres." }));
+    if (nueva !== String(form.get("nueva2") ?? "")) return send(res, 400, olvidePage({ email, error: "Las contraseñas no coinciden." }));
+    const hash = await hashPassword(nueva); // same work whether or not the email exists
+    const user = store.users.byEmail(email);
+    const code = normalizeRecoveryCode(form.get("codigo"));
+    if (!user || !code || !store.recoveryCodes.consume(user.id, recoveryHash(code, config.masterKey))) {
+      forgotLimiter.fail(ipKey); forgotLimiter.fail(mailKey);
+      return send(res, 400, olvidePage({ email, error: "El correo o el código de respaldo no son correctos." }));
+    }
+    store.users.setPasswordHash(user.id, hash);
+    store.sessions.deleteForUser(user.id); // anyone who had the old password is out
+    forgotLimiter.clear(ipKey); forgotLimiter.clear(mailKey);
+    try { store.forTenant(user.tenantId).audit.record({ userId: user.id, userName: user.name, action: "seguridad", summary: "Cambió su contraseña con un código de respaldo" }); } catch { /* the change stands */ }
+    return redirect(res, "/login?m=clavenueva");
+  }
+
+  /** A colleague's link: choose a new password; the old phone, passkeys, backup codes and sessions are discarded and the next sign-in enrolls a new phone. */
+  async function accessReset(req, res, token, method) {
+    const ip = req.socket.remoteAddress;
+    if (inviteLimiter.blocked(ip)) return send(res, 429, "Demasiados intentos. Espera unos minutos.");
+    const r = store.accessResets.byToken(token);
+    if (!r) { inviteLimiter.fail(ip); return send(res, 404, notFoundPage()); }
+    if (method === "GET") return send(res, 200, restablecerPage({ r, token }));
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const form = new URLSearchParams(await readBody(req, 8 * 1024));
+    const clave = String(form.get("clave") ?? "");
+    const again = (error) => send(res, 400, restablecerPage({ r, token, error }));
+    if (clave.length < 10 || clave.length > 200) return again("La contraseña debe tener al menos 10 caracteres.");
+    if (clave !== String(form.get("clave2") ?? "")) return again("Las contraseñas no coinciden.");
+    const passwordHash = await hashPassword(clave);
+    let used;
+    try { used = store.accessResets.use(token, { passwordHash }); } catch { inviteLimiter.fail(ip); return send(res, 404, notFoundPage()); }
+    try { store.forTenant(used.tenantId).audit.record({ userId: used.userId, userName: used.name, action: "seguridad", summary: "Restableció su acceso con un enlace de un compañero" }); } catch { /* the reset stands */ }
+    return redirect(res, "/login?m=accesonuevo");
+  }
+
+  /** Lost phone: a backup code opens the second step once. */
+  async function backupCodeLogin(req, res) {
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const s = sessionOf(req);
+    if (!s) return redirect(res, "/login");
+    if (s.stage !== "pending") return redirect(res, s.stage === "full" ? "/panel" : "/2fa");
+    const form = new URLSearchParams(await readBody(req, 4 * 1024));
+    if (codeLimiter.blocked(s.user.id)) return send(res, 429, twoFaPage({ stage: s.stage, backupAction: "/2fa/respaldo", error: "Demasiados intentos. Vuelve a entrar en unos minutos." }));
+    const code = normalizeRecoveryCode(form.get("codigo"));
+    if (!code || !store.recoveryCodes.consume(s.user.id, recoveryHash(code, config.masterKey))) {
+      codeLimiter.fail(s.user.id);
+      return send(res, 401, twoFaPage({ stage: s.stage, backupAction: "/2fa/respaldo", error: "Ese código de respaldo no sirve. Revisa que lo escribiste igual que en tu hoja, o que no lo hayas usado ya." }));
+    }
+    codeLimiter.clear(s.user.id);
+    const ledger = store.forTenant(s.user.tenantId);
+    try { ledger.audit.record({ userId: s.user.id, userName: s.user.name, action: "sesion", summary: "Inició sesión con un código de respaldo" }); } catch { /* the sign-in stands */ }
+    const full = store.sessions.promote(s.token, FULL_TTL_S * 1000);
+    return redirect(res, `/panel?m=respaldousado&n=${ledger.recovery.status(s.user.id).remaining}`, setCookie(full, FULL_TTL_S));
+  }
+
   // ---------- login ----------
 
   async function login(req, res) {
@@ -555,7 +630,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const s = sessionOf(req);
     if (!s) return redirect(res, "/login");
     if (s.stage === "full") return redirect(res, "/panel");
-    const view = { stage: s.stage, error };
+    const view = { stage: s.stage, error, backupAction: s.stage === "pending" ? "/2fa/respaldo" : null };
     if (s.stage === "setup") {
       const user = store.users.byId(s.user.id);
       view.secret = enrollmentSecret(user);
@@ -571,7 +646,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (!s) return redirect(res, "/login");
     if (s.stage === "full") return redirect(res, "/panel");
     const form = new URLSearchParams(await readBody(req, 4 * 1024));
-    if (codeLimiter.blocked(s.user.id)) return send(res, 429, twoFaPage({ stage: s.stage, error: "Demasiados intentos. Vuelve a entrar en unos minutos." }));
+    if (codeLimiter.blocked(s.user.id)) return send(res, 429, twoFaPage({ stage: s.stage, backupAction: s.stage === "pending" ? "/2fa/respaldo" : null, error: "Demasiados intentos. Vuelve a entrar en unos minutos." }));
 
     const user = store.users.byId(s.user.id);
     if (!user.totpSecret) return redirect(res, "/2fa"); // setup: the key is created when the page is first opened
@@ -713,7 +788,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (method === "GET" && path === "/panel/casas/importar") return send(res, 200, importPage({ ...base }));
 
     if (method === "GET" && path === "/panel/ajustes") {
-      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), passkeys: ledger.passkeys.list(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
+      return send(res, 200, ajustesPage({ ...base, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, recovery: ledger.recovery.status(s.user.id), pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), passkeys: ledger.passkeys.list(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
 
     if (method === "GET" && (path === "/panel/cuentas" || path === "/panel/cuentas.csv")) {
@@ -1037,6 +1112,34 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         loginLimiter.clear(key);
         audit("seguridad", "Cambió su contraseña");
         return redirect(res, "/panel/ajustes?m=clave");
+      }
+
+      if (path === "/panel/respaldo/generar" || path === "/panel/celular/cambiar") {
+        const key = `clave|${s.user.id}`; // same counter as the password change: re-typing the password is the guard
+        if (loginLimiter.blocked(key)) return redirect(res, "/panel/ajustes?m=clavelim#recuperacion");
+        const user = store.users.byId(s.user.id);
+        if (!(await verifyPassword(String(form.get("actual") ?? ""), user.passwordHash))) { loginLimiter.fail(key); return redirect(res, "/panel/ajustes?m=clavemal#recuperacion"); }
+        loginLimiter.clear(key);
+        if (path === "/panel/respaldo/generar") {
+          const codes = newRecoveryCodes(10);
+          ledger.recovery.replace(s.user.id, codes.map((c) => recoveryHash(normalizeRecoveryCode(c), config.masterKey)));
+          audit("seguridad", "Generó códigos de respaldo nuevos");
+          return send(res, 200, recoveryCodesPage({ ...base, codes }));
+        }
+        audit("seguridad", "Cambió el celular de verificación (se pedirá activar uno nuevo)");
+        store.users.resetTotp(user.id);
+        store.sessions.deleteForUser(user.id); // including this one: the next sign-in enrolls the new phone
+        return redirect(res, "/login?m=celular", setCookie("", 0));
+      }
+
+      const resetUser = path.match(/^\/panel\/equipo\/(usr_[a-f0-9]+)\/acceso$/);
+      if (resetUser) {
+        if (resetUser[1] === s.user.id) return redirect(res, "/panel/ajustes?m=eqyo");
+        try {
+          const { token, email, name } = ledger.team.resetAccess(resetUser[1], s.user.id);
+          audit("equipo", `Creó un enlace para restablecer el acceso de ${name} (${email})`);
+          return send(res, 200, resetLinkPage({ ...base, url: `${config.publicUrl}/restablecer/${token}`, email, name }));
+        } catch { return redirect(res, "/panel/ajustes?m=eqbad"); }
       }
 
       if (path === "/panel/cuotas/generar") {

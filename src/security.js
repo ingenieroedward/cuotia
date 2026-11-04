@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCb);
@@ -153,3 +153,18 @@ export function csrfValid(sessionToken, given) {
   const b = Buffer.from(String(given));
   return a.length === b.length && timingSafeEqual(a, b);
 }
+
+// ---- Recovery codes: ten single-use codes the person keeps on paper. Only a keyed hash is stored. ----
+const RECOVERY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L: they get misread when copied by hand
+/** `count` codes like "K7M2P-9XQ4T" (10 characters, about 49 bits each). */
+export function newRecoveryCodes(count = 10) {
+  const one = () => [5, 5].map((n) => Array.from({ length: n }, () => RECOVERY_ALPHABET[randomInt(RECOVERY_ALPHABET.length)]).join("")).join("-");
+  return Array.from({ length: count }, one);
+}
+/** What a person typed, reduced to the 10 characters (case, spaces and dashes don't matter). Null when it can't be a code. */
+export function normalizeRecoveryCode(input) {
+  const clean = String(input ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return clean.length === 10 && [...clean].every((c) => RECOVERY_ALPHABET.includes(c)) ? clean : null;
+}
+/** Keyed with MASTER_KEY, so a copy of the database alone can't be used to test guesses. */
+export const recoveryHash = (code, masterKeyHex) => createHmac("sha256", Buffer.from(masterKeyHex, "hex")).update(`cuotia-recovery:${code}`).digest("hex");

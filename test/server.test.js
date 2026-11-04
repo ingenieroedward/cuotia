@@ -2615,3 +2615,176 @@ test("transparencia pública: apagada por defecto, el tesorero la activa, no mue
   for (let i = 0; i < 30; i++) await fetch(`${s.base}/t/${String(i).padStart(24, "x")}`);
   assert.equal((await fetch(`${s.base}/t/${"z".repeat(24)}`)).status, 429);
 }));
+
+test("recuperación: códigos de respaldo (se generan con la contraseña, sirven una vez, entran sin celular) y cambiar de celular", () => withServer(async (s) => {
+  const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const id = s.store.users.byEmail("marta@ejemplo.com").id;
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
+  const ajustes = async (cookie = marta.cookie) => (await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie } })).text());
+  assert.match(await ajustes(), /Sin códigos de respaldo/);
+
+  // Generating needs the form token and the current password; a wrong one makes nothing.
+  assert.equal((await form(`${s.base}/panel/respaldo/generar`, { actual: "clave-de-marta" }, marta.cookie)).status, 403);
+  assert.match((await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrf, actual: "otra clave" }, marta.cookie)).headers.get("location"), /m=clavemal/);
+  assert.equal(s.A.recovery.status(id).total, 0);
+  const made = await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrf, actual: "clave-de-marta" }, marta.cookie);
+  assert.equal(made.status, 200);
+  assert.match(made.headers.get("cache-control"), /no-store/);
+  const codes = [...(await made.text()).matchAll(/<li>([A-Z2-9]{5}-[A-Z2-9]{5})<\/li>/g)].map((m) => m[1]);
+  assert.equal(codes.length, 10);
+  assert.equal(new Set(codes).size, 10);
+  assert.deepEqual(s.A.recovery.status(id).remaining, 10);
+  assert.match(await ajustes(), /10 códigos de respaldo/);
+
+  // Only a keyed hash is stored, and the log never carries a code.
+  const stored = s.store.db.prepare("SELECT code_hash FROM recovery_codes WHERE user_id = ?").all(id).map((r) => r.code_hash);
+  assert.equal(stored.length, 10);
+  for (const c of codes) assert.ok(!stored.some((h) => h.includes(c.replace("-", "")) || h === c));
+  assert.ok(s.A.audit.list({ limit: 50 }).rows.every((r) => !codes.some((c) => r.summary.includes(c.slice(0, 5)))));
+  assert.ok(s.A.audit.list({ limit: 50 }).rows.some((r) => r.summary === "Generó códigos de respaldo nuevos"));
+
+  // Regenerating replaces them all.
+  const again = await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrf, actual: "clave-de-marta" }, marta.cookie);
+  const fresh = [...(await again.text()).matchAll(/<li>([A-Z2-9]{5}-[A-Z2-9]{5})<\/li>/g)].map((m) => m[1]);
+  assert.equal(fresh.length, 10);
+  assert.ok(!fresh.some((c) => codes.includes(c)));
+
+  // Lost phone: the second step accepts a code, once. Case, spaces and the dash don't matter.
+  const pending = async () => (await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta")).cookie;
+  assert.match(await (await fetch(`${s.base}/2fa`, { headers: { cookie: await pending() } })).text(), /No tengo mi celular/);
+  let c1 = await pending();
+  const old = await form(`${s.base}/2fa/respaldo`, { codigo: codes[0] }, c1);
+  assert.equal(old.status, 401, "un código de la tanda anterior ya no sirve");
+  const typed = fresh[0].toLowerCase().replace("-", " ");
+  const ok = await form(`${s.base}/2fa/respaldo`, { codigo: typed }, c1);
+  assert.equal(ok.status, 303);
+  assert.match(ok.headers.get("location"), /^\/panel\?m=respaldousado&n=9$/);
+  const inside = cookieOf(ok);
+  assert.notEqual(inside, c1, "la cookie cambia al subir de privilegio");
+  const home = await (await fetch(`${s.base}/panel?m=respaldousado&n=9`, { headers: { cookie: inside } })).text();
+  assert.match(home, /Entraste con un código de respaldo\. Te quedan 9/);
+  assert.equal((await fetch(`${s.base}/panel`, { redirect: "manual", headers: { cookie: c1 } })).status, 303, "la sesión corta ya no abre el panel");
+  assert.ok(s.A.audit.list({ limit: 50 }).rows.some((r) => r.summary === "Inició sesión con un código de respaldo"));
+  // The same code never works again; a code of someone else's account doesn't either.
+  assert.equal((await form(`${s.base}/2fa/respaldo`, { codigo: fresh[0] }, await pending())).status, 401);
+  const luisId = s.store.users.byEmail("luis@ejemplo.com").id;
+  const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
+  const luisCodes = [...(await (await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrfL, actual: "clave-de-luis" }, luis.cookie)).text()).matchAll(/<li>([A-Z2-9]{5}-[A-Z2-9]{5})<\/li>/g)].map((m) => m[1]);
+  assert.equal(luisCodes.length, 10);
+  assert.equal((await form(`${s.base}/2fa/respaldo`, { codigo: luisCodes[0] }, await pending())).status, 401, "el código de Luis no abre la cuenta de Marta");
+  assert.equal(s.B.recovery.status(luisId).remaining, 10, "y no se gastó");
+  // Guessing is limited (5 wrong per person).
+  const guesser = await pending();
+  for (let i = 0; i < 3; i++) await form(`${s.base}/2fa/respaldo`, { codigo: "AAAAA-AAAAA" }, guesser);
+  assert.equal((await form(`${s.base}/2fa/respaldo`, { codigo: fresh[1] }, guesser)).status, 429, "frenado: ni el código bueno entra");
+
+  // Change phone: needs the password, ends every session, and the next sign-in enrolls a new phone.
+  const csrfIn = await csrfOf(s.base, inside, "/panel/ajustes");
+  assert.match((await form(`${s.base}/panel/celular/cambiar`, { _csrf: csrfIn, actual: "mal" }, inside)).headers.get("location"), /m=clavemal/);
+  assert.equal(s.store.users.byEmail("marta@ejemplo.com").totpEnabled, true, "con la clave mala no pasa nada");
+  const changed = await form(`${s.base}/panel/celular/cambiar`, { _csrf: csrfIn, actual: "clave-de-marta" }, inside);
+  assert.match(changed.headers.get("location"), /^\/login\?m=celular$/);
+  assert.equal(s.store.users.byEmail("marta@ejemplo.com").totpEnabled, false);
+  assert.equal((await fetch(`${s.base}/panel`, { redirect: "manual", headers: { cookie: inside } })).status, 303);
+  const next = await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta");
+  assert.match(await (await fetch(`${s.base}/2fa`, { headers: { cookie: next.cookie } })).text(), /Protege tu cuenta/);
+}));
+
+test("recuperación: olvidé mi contraseña (con un código de respaldo) no revela qué correos existen y se frena", () => withServer(async (s) => {
+  const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
+  const codes = [...(await (await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrf, actual: "clave-de-marta" }, marta.cookie)).text()).matchAll(/<li>([A-Z2-9]{5}-[A-Z2-9]{5})<\/li>/g)].map((m) => m[1]);
+  assert.match(await (await fetch(`${s.base}/login`)).text(), /href="\/olvide"/);
+  assert.equal((await fetch(`${s.base}/olvide`)).status, 200);
+  const send = (fields, ip) => form(`${s.base}/olvide`, { nueva: "clave-nueva-123", nueva2: "clave-nueva-123", ...fields });
+
+  const unknown = await send({ email: "nadie@ejemplo.com", codigo: codes[0] });
+  const wrong = await send({ email: "marta@ejemplo.com", codigo: "AAAAA-AAAAA" });
+  assert.equal(unknown.status, 400);
+  assert.equal(wrong.status, 400);
+  const msg = (t) => /<p class="alert"[^>]*>([^<]+)</.exec(t)[1];
+  assert.equal(msg(await unknown.text()), msg(await wrong.text()), "el mismo mensaje con un correo que no existe y con un código malo");
+  assert.equal((await send({ email: "marta@ejemplo.com", codigo: codes[0], nueva2: "otra-distinta-12" })).status, 400, "las contraseñas deben coincidir");
+  assert.equal((await send({ email: "marta@ejemplo.com", codigo: codes[0], nueva: "corta", nueva2: "corta" })).status, 400);
+  assert.equal(s.A.recovery.status(s.store.users.byEmail("marta@ejemplo.com").id).remaining, 10, "ningún intento fallido gastó un código");
+  const luisCodeForMarta = "AAAAA-AAAAA";
+  assert.equal((await send({ email: "marta@ejemplo.com", codigo: luisCodeForMarta })).status, 400);
+  assert.equal((await fetch(`${s.base}/olvide`, { method: "POST", headers: { ...FORM, origin: "https://malo.example" }, body: "x=1" })).status, 403);
+
+  const done = await send({ email: "MARTA@ejemplo.com ", codigo: codes[3].toLowerCase() });
+  assert.equal(done.status, 303);
+  assert.equal(done.headers.get("location"), "/login?m=clavenueva");
+  assert.match(await (await fetch(`${s.base}/login?m=clavenueva`)).text(), /contraseña nueva/);
+  assert.equal((await fetch(`${s.base}/panel`, { redirect: "manual", headers: { cookie: marta.cookie } })).status, 303, "las sesiones abiertas se cerraron");
+  assert.equal((await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta")).res.status, 401, "la clave vieja ya no sirve");
+  assert.equal((await passwordStep(s.base, "marta@ejemplo.com", "clave-nueva-123")).res.status, 303);
+  assert.equal(s.A.recovery.status(s.store.users.byEmail("marta@ejemplo.com").id).remaining, 9, "el código usado se gastó");
+  assert.equal((await send({ email: "marta@ejemplo.com", codigo: codes[3] })).status, 400, "y no se puede repetir");
+  assert.ok(s.A.audit.list({ limit: 50 }).rows.some((r) => r.summary === "Cambió su contraseña con un código de respaldo"));
+  assert.ok(!JSON.stringify(s.A.audit.list({ limit: 50 }).rows).includes("clave-nueva"));
+
+  // Many failures stop everything for that email (even a good code), so the code can't be brute-forced.
+  for (let i = 0; i < 6; i++) await send({ email: "marta@ejemplo.com", codigo: "BBBBB-BBBBB" });
+  assert.equal((await send({ email: "marta@ejemplo.com", codigo: codes[4] })).status, 429);
+}));
+
+test("recuperación: un compañero crea un enlace de un solo uso (solo del mismo conjunto) y quien lo usa estrena contraseña y celular", () => withServer(async (s) => {
+  const pedro = s.store.users.create({ tenantId: s.a.id, email: "pedro@ejemplo.com", passwordHash: await hashPassword("clave-de-pedro"), name: "Pedro Gómez" });
+  const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes");
+  const pedroIn = await signIn(s.base, "pedro@ejemplo.com", "clave-de-pedro");
+  const csrfP = await csrfOf(s.base, pedroIn.cookie, "/panel/ajustes");
+  s.A.passkeys.add({ userId: pedro, credentialId: "cred-pedro", publicKey: "pk", alg: -7, name: "Celular viejo" });
+  await form(`${s.base}/panel/respaldo/generar`, { _csrf: csrfP, actual: "clave-de-pedro" }, pedroIn.cookie);
+  assert.equal(s.A.recovery.status(pedro).remaining, 10);
+  assert.match(await (await fetch(`${s.base}/panel/ajustes`, { headers: { cookie: marta.cookie } })).text(), /Restablecer acceso/);
+
+  // Only a member of the same conjunto can ask for it, and never for themselves.
+  const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/ajustes");
+  assert.match((await form(`${s.base}/panel/equipo/${pedro}/acceso`, { _csrf: csrfL }, luis.cookie)).headers.get("location"), /m=eqbad/, "Luis es de otro conjunto");
+  assert.equal(s.store.db.prepare("SELECT COUNT(*) AS n FROM access_resets").get().n, 0);
+  assert.match((await form(`${s.base}/panel/equipo/${s.store.users.byEmail("marta@ejemplo.com").id}/acceso`, { _csrf: csrf }, marta.cookie)).headers.get("location"), /m=eqyo/);
+  assert.equal((await form(`${s.base}/panel/equipo/${pedro}/acceso`, {}, marta.cookie)).status, 403, "sin token del formulario");
+
+  const made = await form(`${s.base}/panel/equipo/${pedro}/acceso`, { _csrf: csrf }, marta.cookie);
+  assert.equal(made.status, 200);
+  const link = /id="enlace">([^<]+)</.exec(await made.text())[1];
+  assert.match(link, /^http:\/\/localhost:3000\/restablecer\/[A-Za-z0-9_-]{20,}$/);
+  const token = link.split("/restablecer/")[1];
+  const row = s.store.db.prepare("SELECT token_hash FROM access_resets").get();
+  assert.ok(!row.token_hash.includes(token), "solo se guarda el hash");
+  assert.match(JSON.stringify(s.A.audit.list({ limit: 50 }).rows), /Creó un enlace para restablecer el acceso de Pedro/);
+  assert.ok(!JSON.stringify(s.A.audit.list({ limit: 50 }).rows).includes(token));
+
+  // A second link replaces the first.
+  const second = /id="enlace">([^<]+)</.exec(await (await form(`${s.base}/panel/equipo/${pedro}/acceso`, { _csrf: csrf }, marta.cookie)).text())[1].split("/restablecer/")[1];
+  assert.equal((await fetch(`${s.base}/restablecer/${token}`)).status, 404);
+  const page = await (await fetch(`${s.base}/restablecer/${second}`)).text();
+  assert.match(page, /pedro@ejemplo\.com/);
+  assert.match(page, /Jardines de Ibiza/);
+
+  const use = (fields) => form(`${s.base}/restablecer/${second}`, fields);
+  assert.equal((await use({ clave: "corta", clave2: "corta" })).status, 400);
+  assert.equal((await use({ clave: "clave-nueva-pedro", clave2: "no-coincide-123" })).status, 400);
+  const done = await use({ clave: "clave-nueva-pedro", clave2: "clave-nueva-pedro" });
+  assert.equal(done.headers.get("location"), "/login?m=accesonuevo");
+  assert.equal((await fetch(`${s.base}/restablecer/${second}`)).status, 404, "un solo uso");
+  assert.equal((await use({ clave: "otra-clave-12345", clave2: "otra-clave-12345" })).status, 404);
+
+  // Everything of the old access is gone; the new password starts a new phone enrollment.
+  assert.equal((await fetch(`${s.base}/panel`, { redirect: "manual", headers: { cookie: pedroIn.cookie } })).status, 303, "su sesión se cerró");
+  assert.deepEqual(s.A.passkeys.list(pedro), []);
+  assert.equal(s.A.recovery.status(pedro).total, 0);
+  assert.equal(s.store.users.byEmail("pedro@ejemplo.com").totpEnabled, false);
+  assert.equal((await passwordStep(s.base, "pedro@ejemplo.com", "clave-de-pedro")).res.status, 401);
+  const again = await passwordStep(s.base, "pedro@ejemplo.com", "clave-nueva-pedro");
+  assert.match(await (await fetch(`${s.base}/2fa`, { headers: { cookie: again.cookie } })).text(), /Protege tu cuenta/);
+  assert.match(JSON.stringify(s.A.audit.list({ limit: 50 }).rows), /Restableció su acceso con un enlace de un compañero/);
+
+  // An expired link is as good as none.
+  const third = /id="enlace">([^<]+)</.exec(await (await form(`${s.base}/panel/equipo/${pedro}/acceso`, { _csrf: csrf }, marta.cookie)).text())[1].split("/restablecer/")[1];
+  s.store.db.prepare("UPDATE access_resets SET expires_at = ? WHERE used_at IS NULL").run(new Date(Date.now() - 1000).toISOString());
+  assert.equal((await fetch(`${s.base}/restablecer/${third}`)).status, 404);
+}));
