@@ -394,7 +394,7 @@ test("el panel nuevo: saludo con el nombre, menú lateral, barra inferior y tarj
   assert.match(page, /class="badge"[^>]*>1</, "un pago por asignar en el menú");
   assert.match(page, /Faltan por pagar/);
   assert.match(page, /Recordar a todos por WhatsApp/);
-  assert.match(decodeURIComponent(/https:\/\/wa\.me\/\?text=([^"]*)/.exec(page)[1]), /Casas con cuota pendiente: 03/, "el recordatorio ya lleva las casas pendientes");
+  assert.match(decodeURIComponent(/https:\/\/wa\.me\/\?text=([^"]*)/.exec(page)[1]), /Casas con cuota pendiente:\n03/, "el recordatorio ya lleva las casas pendientes");
   assert.match(page, /Últimos pagos/);
   assert.match(page, /Pagó el/);
   assert.doesNotMatch(page, /style="/, "sin estilos en línea");
@@ -2366,7 +2366,7 @@ test("mensajes de WhatsApp: los botones usan el texto del conjunto, se edita con
   assert.doesNotMatch(casaMsg, /\n{3,}/);
   const general = waText(cobros);
   assert.match(general, /Hola vecinos de Jardines de Ibiza/);
-  assert.match(general, /Casas con cuota pendiente: 03 \(.+\); 14 \(.+\)\./);
+  assert.match(general, /Casas con cuota pendiente:\n03 \(.+\)\n14 \(.+\)\n/);
 
   // The editor.
   const page = await get("/panel/mensajes");
@@ -2387,9 +2387,10 @@ test("mensajes de WhatsApp: los botones usan el texto del conjunto, se edita con
   assert.equal((await save("enlace_casa", "Hola {nombre}, aquí no va el enlace de la casa")).status, 400);
   assert.match((await save("secreto", "Hola {nombre}, esto no existe de verdad")).headers.get("location"), /m=msbad/, "una clave inventada no hace nada");
 
-  assert.match((await save("recordatorio_casa", "Buenas {nombre} 👋 La casa {casa} debe {valor} {meses}.\n\n{como_pagar}")).headers.get("location"), /m=msok/);
+  assert.equal((await save("recordatorio_casa", "Buenas {nombre} 👋 La casa {casa} debe {valor} {meses}.\n\n{como_pagar}")).status, 400, "los emojis no se guardan");
+  assert.match((await save("recordatorio_casa", "Buenas {nombre}, la casa {casa} debe {valor} {meses}.\n\n{como_pagar}")).headers.get("location"), /m=msok/);
   const after = waText((await get("/panel/cobros")).split("debt-actions")[1]);
-  assert.match(after, /^Buenas (Diana|Sandra) 👋 La casa (03|14) debe \$60\.000 de /);
+  assert.match(after, /^Buenas (Diana|Sandra), la casa (03|14) debe \$60\.000 de /);
   assert.doesNotMatch(after, /te escribe/, "ya no es el original");
   assert.equal(s.B.templates.all().recordatorio_casa, undefined, "el otro conjunto no cambió");
   assert.match(await get("/panel/mensajes"), /Personalizado/);
@@ -2520,3 +2521,12 @@ test("passkeys: demasiados intentos fallidos desde un mismo lugar se frenan, y u
   for (let i = 0; i < 5; i++) assert.equal((await json("/login/passkey", { credential: { id: "nada", response: {} } })).status, 401);
   assert.equal((await json("/login/passkey/opciones", {})).status, 429, "el intento número seis se frena");
 }));
+
+test("mensajes: ninguno lleva emojis (se verían como signos de interrogación) y uno viejo se limpia al enviarlo", async () => {
+  const { MESSAGES, message, hasEmoji, stripEmoji } = await import("../src/messages.js");
+  for (const [key, spec] of Object.entries(MESSAGES)) assert.equal(hasEmoji(spec.default), false, key);
+  assert.equal(hasEmoji("Hola, ¿cómo estás? Cuota: $30.000 · 01 (nov); ñandú"), false, "tildes y puntuación no son emojis");
+  assert.equal(stripEmoji("Hola \u{1F44B}\u{1F3FD} vecinos \u2705\uFE0F"), "Hola  vecinos ");
+  const old = { name: "Ibiza", templates: { recordatorio_casa: "Buenas {nombre} \u{1F44B} la casa {casa} debe {valor}." } };
+  assert.equal(message(old, "recordatorio_casa", { nombre: "Ana", casa: "03", valor: "$30.000" }), "Buenas Ana la casa 03 debe $30.000.");
+});
