@@ -316,6 +316,13 @@ const MIGRATIONS = [
     expires_at TEXT NOT NULL
   );
   `,
+  /* V20: public transparency page. The conjunto may publish its month totals and expenses at /t/<token>. Only the token's hash is
+     used to look it up; the token itself is kept encrypted so the treasurer can copy the link again. NULL = not published. */
+  `
+  ALTER TABLE tenants ADD COLUMN public_token_hash TEXT;
+  ALTER TABLE tenants ADD COLUMN public_token_enc TEXT;
+  CREATE UNIQUE INDEX tenants_public_token ON tenants (public_token_hash) WHERE public_token_hash IS NOT NULL;
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -331,7 +338,7 @@ const tenantRow = (r) => !r ? null : {
   openDay: r.open_day ?? null, dueDay: r.due_day ?? null,
   // What residents are told: payments confirmed by the bank, or registered by the treasurer.
   payMode: r.pay_mode ?? (r.pagoradar_secret ? "auto" : "manual"),
-  openingCents: Number(r.opening_cents ?? 0), showAccounts: !!r.show_accounts,
+  openingCents: Number(r.opening_cents ?? 0), showAccounts: !!r.show_accounts, publicOn: !!r.public_token_hash,
 };
 const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active };
 const dueRow = (r) => ({
@@ -400,6 +407,12 @@ export function openStore(path = ":memory:") {
     /** The encrypted pagoradar webhook secret of this conjunto (or null). Decrypt with `decryptSecret` only to verify a signature. */
     pagoradarSecret: (id) => db.prepare("SELECT pagoradar_secret FROM tenants WHERE id = ?").get(id)?.pagoradar_secret ?? null,
     setPagoradarSecret: (id, encrypted) => void db.prepare("UPDATE tenants SET pagoradar_secret = ? WHERE id = ?").run(encrypted, id),
+    /** Global lookup for the public transparency page: the unguessable token is the credential. */
+    byPublicToken: (token) => tenantRow(db.prepare("SELECT * FROM tenants WHERE public_token_hash = ?").get(sha256(String(token)))),
+    /** The encrypted token (to show the link again), or null when the page is not published. */
+    publicTokenEnc: (id) => db.prepare("SELECT public_token_enc FROM tenants WHERE id = ? AND public_token_hash IS NOT NULL").get(id)?.public_token_enc ?? null,
+    setPublicToken: (id, token, encrypted) => void db.prepare("UPDATE tenants SET public_token_hash = ?, public_token_enc = ? WHERE id = ?").run(sha256(String(token)), encrypted, id),
+    clearPublicToken: (id) => void db.prepare("UPDATE tenants SET public_token_hash = NULL, public_token_enc = NULL WHERE id = ?").run(id),
     /** The Bre-B key and holder residents see. Empty means "not set". */
     setAccounts: (id, { openingCents, showAccounts }) => void db.prepare("UPDATE tenants SET opening_cents = ?, show_accounts = ? WHERE id = ?").run(openingCents, showAccounts ? 1 : 0, id),
     setPayMode: (id, mode) => void db.prepare("UPDATE tenants SET pay_mode = ? WHERE id = ?").run(mode === "auto" || mode === "manual" ? mode : null, id),

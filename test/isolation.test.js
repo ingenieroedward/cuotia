@@ -519,3 +519,19 @@ test("passkeys: cada conjunto solo lista, agrega y quita los de su gente", async
   A.passkeys.remove(mine.id, a.id);
   assert.deepEqual(A.passkeys.list(a.id), []);
 });
+
+test("transparencia: el enlace público de un conjunto no abre otro y apagarlo no toca al vecino", () => {
+  const { store, a, b } = twoConjuntos();
+  store.tenants.setPublicToken(a.id, "token-de-ibiza-0000000000", "cifrado-a");
+  store.tenants.setPublicToken(b.id, "token-de-robles-000000000", "cifrado-b");
+  assert.equal(store.tenants.byPublicToken("token-de-ibiza-0000000000").id, a.id);
+  assert.equal(store.tenants.byPublicToken("token-de-robles-000000000").id, b.id);
+  assert.equal(store.tenants.publicTokenEnc(a.id), "cifrado-a");
+  store.tenants.clearPublicToken(a.id);
+  assert.equal(store.tenants.byPublicToken("token-de-ibiza-0000000000"), null);
+  assert.equal(store.tenants.publicTokenEnc(a.id), null);
+  assert.equal(store.tenants.byPublicToken("token-de-robles-000000000").id, b.id, "el otro sigue publicado");
+  assert.equal(store.tenants.get(b.id).publicOn, true);
+  assert.equal(store.tenants.get(a.id).publicOn, false);
+  assert.equal(store.tenants.byPublicToken(""), null);
+});
