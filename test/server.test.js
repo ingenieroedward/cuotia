@@ -649,12 +649,30 @@ test("al activar el doble factor se muestra el QR de la misma clave que se escri
   assert.doesNotMatch(later, /class="qr"|class="key secret"/);
 }));
 
-test("siempre claro, como el diseño: sin modo oscuro automático", () => withServer(async (s) => {
+test("claro por defecto, como el diseño aprobado; el oscuro es una opción que se elige en Ajustes", () => withServer(async (s) => {
   const css = await (await fetch(`${s.base}/static/app.css`)).text();
-  assert.doesNotMatch(css, /prefers-color-scheme/, "un navegador en modo oscuro debe ver el mismo diseño aprobado");
-  assert.match(css, /color-scheme:\s*light only/);
+  assert.doesNotMatch(css, /prefers-color-scheme/, "el CSS nunca cambia solo según el teléfono: eso lo decide theme.js si la persona eligió Automático");
+  assert.match(css, /:root\[data-theme="dark"\]/);
   const page = await (await fetch(`${s.base}/login`)).text();
-  assert.match(page, /<meta name="color-scheme" content="light">/);
+  assert.match(page, /<script src="\/static\/theme\.js"><\/script>/, "sincrónico en el head, para no parpadear");
+  // theme.js: light unless the person chose otherwise on this device.
+  const js = await (await fetch(`${s.base}/static/theme.js`)).text();
+  const run = (stored, dark) => {
+    const attrs = {}; const store = stored === undefined ? {} : { "cuotia-theme": stored };
+    const meta = { content: "", setAttribute(k, v) { this.content = v; } };
+    vm.runInNewContext(js, {
+      document: { documentElement: { setAttribute: (k, v) => { attrs[k] = v; } }, querySelector: () => meta },
+      window: { matchMedia: () => ({ matches: dark, addEventListener() {} }) }, localStorage: { getItem: (k) => store[k] ?? null },
+    });
+    return `${attrs["data-theme"]} ${meta.content}`;
+  };
+  assert.equal(run(undefined, true), "light #0B4A3A", "sin elección: claro aunque el teléfono sea oscuro");
+  assert.equal(run("dark", false), "dark #0b1613");
+  assert.equal(run("auto", true), "dark #0b1613");
+  assert.equal(run("auto", false), "light #0B4A3A");
+  assert.equal(run("cualquier cosa", true), "light #0B4A3A");
+  const sw = await (await fetch(`${s.base}/sw.js`)).text();
+  assert.match(sw, /\/static\/theme\.js/);
   // iPhone zooms into any field under 16px: every text field is 16px on touch screens (a pinch zoom is still allowed).
   assert.match(css, /select,\s*textarea \{ font-size: 16px !important; \}/);
   assert.doesNotMatch(await (await fetch(`${s.base}/login`)).text(), /maximum-scale|user-scalable=no/);
@@ -989,7 +1007,7 @@ function loadWorker() {
   const caches = {
     open: async () => ({ addAll: async (urls) => { log.added.push(...urls); }, put: async (req) => { log.put.push(req.url); saved.set(req.url, { fromCache: true }); } }),
     match: async (req) => saved.get(typeof req === "string" ? `https://cuotia.test${req}` : req.url),
-    keys: async () => ["cuotia-static-v0", "cuotia-static-v1", "cuotia-static-v2", "ajeno"],
+    keys: async () => ["cuotia-static-v0", "cuotia-static-v1", "cuotia-static-v2", "cuotia-static-v3", "ajeno"],
     delete: async (key) => { log.deleted.push(key); return true; },
   };
   const net = { online: true };
@@ -1051,7 +1069,7 @@ test("service worker: al instalar guarda lo justo y al activarse borra versiones
   let activated;
   w.listeners.activate({ waitUntil: (p) => { activated = p; } });
   await activated;
-  assert.deepEqual(w.log.deleted.sort(), ["cuotia-static-v0", "cuotia-static-v2"], "borra las versiones viejas de Cuotia y respeta el resto");
+  assert.deepEqual(w.log.deleted.sort(), ["cuotia-static-v0", "cuotia-static-v1", "cuotia-static-v3"], "borra las versiones viejas de Cuotia y respeta el resto");
   assert.equal(w.log.claimed, true);
 });
 

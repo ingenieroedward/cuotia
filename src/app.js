@@ -27,6 +27,7 @@ const DAY = 86400;
 const STATIC = {
   "/static/app.css": ["app.css", "text/css; charset=utf-8", 300],
   "/static/app.js": ["app.js", "text/javascript; charset=utf-8", 300],
+  "/static/theme.js": ["theme.js", "text/javascript; charset=utf-8", 300],
   "/static/fonts/plus-jakarta-sans-latin.woff2": ["fonts/plus-jakarta-sans-latin-wght-normal.woff2", "font/woff2", 7 * DAY],
   "/static/fonts/plus-jakarta-sans-latin-ext.woff2": ["fonts/plus-jakarta-sans-latin-ext-wght-normal.woff2", "font/woff2", 7 * DAY],
   // Icons, favicon and the installable app (PWA). The service worker must live at the root to control every page, and

@@ -254,3 +254,17 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     });
   }
 })();
+
+// Apariencia (Ajustes): claro / oscuro / automático. Only this device; theme.js applies it before paint.
+(() => {
+  const card = document.querySelector("[data-theme-card]");
+  if (!card || !globalThis.cuotiaTheme) return;
+  card.hidden = false;
+  const buttons = [...card.querySelectorAll("[data-theme-set]")];
+  const mark = () => { const now = globalThis.cuotiaTheme.saved(); for (const b of buttons) b.setAttribute("aria-pressed", String(b.dataset.themeSet === now)); };
+  for (const b of buttons) b.addEventListener("click", () => {
+    try { localStorage.setItem("cuotia-theme", b.dataset.themeSet); } catch { /* private mode: the choice lasts until reload */ }
+    globalThis.cuotiaTheme.apply(); mark();
+  });
+  mark();
+})();

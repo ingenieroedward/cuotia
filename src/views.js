@@ -30,7 +30,8 @@ export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0B4A3A">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
+<script src="/static/theme.js"></script>
 <meta name="application-name" content="Cuotia">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -964,6 +965,16 @@ export function ajustesPage(args) {
       <label>Titular de la cuenta<input type="text" name="titular" maxlength="80" value="${tenant.payHolder ?? ""}" placeholder="Quien recibe el dinero"></label>
       <button class="btn" type="submit">Guardar</button>
     </form>
+  </section>
+
+  <section class="card" id="apariencia" data-theme-card hidden>
+    <h2>Apariencia</h2>
+    <p class="muted small">Se guarda solo en este dispositivo. "Automático" sigue el modo claro u oscuro del teléfono.</p>
+    <div class="theme-choice">
+      <button class="btn ghost" type="button" data-theme-set="light" aria-pressed="false">Claro</button>
+      <button class="btn ghost" type="button" data-theme-set="dark" aria-pressed="false">Oscuro</button>
+      <button class="btn ghost" type="button" data-theme-set="auto" aria-pressed="false">Automático</button>
+    </div>
   </section>
 
   <section class="card" id="passkeys" data-passkeys data-csrf="${csrf}">
