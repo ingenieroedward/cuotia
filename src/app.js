@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseCookies, readBody, readBuffer, redirect, sameOrigin, send, sendJson } from "./http.js";
 import {
-  AttemptLimiter, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, hashPassword, matchTotp, newTotpSecret, safeEqual,
+  AttemptLimiter, newToken, csrfToken, csrfValid, decryptSecret, encryptSecret, fakeVerify, hashPassword, matchTotp, newTotpSecret, safeEqual,
   verifyPagoradarSignature, verifyPassword,
 } from "./security.js";
 import { ingestEvent } from "./pagoradar.js";
@@ -19,7 +19,7 @@ import { AUDIT_ACTIONS } from "./audit.js";
 import { MESSAGES, MESSAGE_KEYS, validateTemplate } from "./messages.js";
 import { ALLOWED_ALGS, b64u, fromB64u, verifyAssertion, verifyRegistration } from "./webauthn.js";
 import { message } from "./messages.js";
-import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, transparenciaPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -62,6 +62,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   const inviteLimiter = new AttemptLimiter({ max: 15, windowMs: 15 * 60_000 });
   const proofLimiter = new AttemptLimiter({ max: 12, windowMs: 60 * 60_000 });
   const verifyLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
+  const publicLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
 
@@ -97,6 +98,23 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (path === "/setup" && (method === "GET" || method === "POST")) return setup(req, res, url, method);
     if (method === "GET" && path === "/privacidad") return send(res, 200, privacidadPage({ contact: config.privacyContact }));
 
+    // Public transparency page: the unguessable token in the link is the credential; the treasurer can switch it off or change it.
+    const pub = method === "GET" && path.match(/^\/t\/([A-Za-z0-9_-]{20,})$/);
+    if (pub) {
+      const ip = req.socket.remoteAddress;
+      if (publicLimiter.blocked(ip)) return send(res, 429, "Demasiados intentos. Espera unos minutos.");
+      const tenant = store.tenants.byPublicToken(pub[1]);
+      if (!tenant) { publicLimiter.fail(ip); return send(res, 404, notFoundPage()); }
+      const ledger = store.forTenant(tenant.id);
+      const asked = url.searchParams.get("mes");
+      const month = validPastPeriod(asked) ? asked : currentPeriod();
+      // Only totals and the expenses' text: never a resident, a house or a receipt file (those stay behind the personal links).
+      return send(res, 200, transparenciaPage({
+        tenant, token: pub[1], period: month, current: currentPeriod(), books: ledger.books(month), summary: ledger.summary(month),
+        expenses: ledger.expenses.list({ period: month }).filter((e) => !e.voided),
+        prev: validPastPeriod(shiftPeriod(month, -1)) ? shiftPeriod(month, -1) : null, next: month < currentPeriod() ? shiftPeriod(month, 1) : null,
+      }), { "X-Robots-Tag": "noindex, nofollow, noarchive" });
+    }
     if (method === "GET" && path === "/verificar") {
       const ip = req.socket.remoteAddress;
       const code = String(url.searchParams.get("codigo") ?? "").trim().toUpperCase().slice(0, 12);
@@ -709,8 +727,10 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="gastos-${month}.csv"`,
         });
       }
+      let publicLink = null;
+      try { const enc = store.tenants.publicTokenEnc(s.tenant.id); if (enc) publicLink = `${config.publicUrl}/t/${decryptSecret(enc, config.masterKey)}`; } catch { /* unreadable: shown as off */ }
       return send(res, 200, cuentasPage({
-        ...base, flash: flashOf(url.searchParams), period: month, current: period, books: ledger.books(month), expenses: list,
+        ...base, publicLink, flash: flashOf(url.searchParams), period: month, current: period, books: ledger.books(month), expenses: list,
         categories: EXPENSE_CATEGORIES, today: bogotaDateTime(new Date().toISOString()).slice(0, 10),
         prev: validPastPeriod(shiftPeriod(month, -1)) ? shiftPeriod(month, -1) : null, next: month < period ? shiftPeriod(month, 1) : null,
       }));
@@ -928,6 +948,23 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         ledger.expenses.void(voidExpense[1]);
         audit("gastos", `Anuló el gasto de ${peso(e?.amountCents ?? 0)}: ${e?.description ?? ""}`, { type: "gasto", id: voidExpense[1] });
         return redirect(res, `/panel/cuentas?${e && e.period !== period ? `mes=${e.period}&` : ""}m=gastoanul`);
+      }
+
+      if (path === "/panel/transparencia") {
+        const act = form.get("accion");
+        if (act === "activar" || act === "cambiar") {
+          if (act === "activar" && store.tenants.publicTokenEnc(s.tenant.id)) return redirect(res, "/panel/cuentas?m=trok#transparencia");
+          const token = newToken(24);
+          store.tenants.setPublicToken(s.tenant.id, token, encryptSecret(token, config.masterKey));
+          audit("ajustes", act === "activar" ? "Activó la página pública de transparencia" : "Cambió el enlace de la página pública de transparencia");
+          return redirect(res, `/panel/cuentas?m=${act === "activar" ? "trok" : "trcambio"}#transparencia`);
+        }
+        if (act === "apagar") {
+          store.tenants.clearPublicToken(s.tenant.id);
+          audit("ajustes", "Apagó la página pública de transparencia");
+          return redirect(res, "/panel/cuentas?m=trapagado#transparencia");
+        }
+        return redirect(res, "/panel/cuentas#transparencia");
       }
 
       if (path === "/panel/ajustes/cuentas") {

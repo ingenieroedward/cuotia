@@ -689,3 +689,9 @@ pre.wa-preview { margin: .35rem 0 0; padding: .9rem 1rem; background: #dcf8c6; c
 .card p, .doc-lead, .note, .share-text { max-width: 68ch; }
 li, dd, label { text-wrap: pretty; }
 .btn, .tab, .nav-link, .pill, .chip, .chip-filter, .eyebrow, th { word-spacing: 0; }
+
+.public-head { display: flex; flex-direction: column; gap: .25rem; padding-top: 1.25rem; }
+.public-head .brand-line { margin-bottom: .75rem; }
+.public-head p { margin: 0; }
+.card progress.bar { background: var(--line); }
+.card progress.bar::-webkit-progress-bar { background: var(--line); }

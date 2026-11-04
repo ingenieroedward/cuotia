@@ -23,7 +23,7 @@ const icon = (name, size = 20, width = 2) => html`<svg width="${size}" height="$
 
 const BRAND_MARK = html`<span class="brand"><span class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>cuotia</span>`;
 
-export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/manifest.webmanifest", legal = true } = {}) {
+export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/manifest.webmanifest", legal = true, noindex = false } = {}) {
   return html`<!doctype html>
 <html lang="es">
 <head>
@@ -41,7 +41,8 @@ export function layout(title, body, { refresh = 0, bodyClass = "", manifest = "/
 <link rel="icon" href="/static/icons/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="icon" href="/static/icons/favicon-48.png" type="image/png" sizes="48x48">
 <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-<link rel="manifest" href="${manifest}">
+${manifest ? html`<link rel="manifest" href="${manifest}">` : ""}
+${noindex ? raw('<meta name="robots" content="noindex,nofollow,noarchive">') : ""}
 <title>${title} · Cuotia</title>
 ${refresh ? raw(`<meta http-equiv="refresh" content="${Number(refresh)}">`) : ""}
 <link rel="preload" href="/static/fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -103,6 +104,9 @@ const FLASH = {
   gastogrande: () => ({ kind: "err", text: "El soporte pesa más de 5 MB." }),
   gastoanul: () => ({ kind: "ok", text: "Gasto anulado: sigue visible como anulado y ya no cuenta en el saldo." }),
   cuentasok: () => ({ kind: "ok", text: "Guardado." }),
+  trok: () => ({ kind: "ok", text: "La página de transparencia está activa. Copia el enlace y compártelo." }),
+  trcambio: () => ({ kind: "ok", text: "Listo: el enlace cambió. El anterior ya no abre nada." }),
+  trapagado: () => ({ kind: "ok", text: "La página de transparencia está apagada: el enlace ya no abre nada." }),
   saldobad: () => ({ kind: "err", text: "El saldo inicial debe ser un valor en pesos, por ejemplo 250.000." }),
   eqbad: () => ({ kind: "err", text: "Escribe un correo válido para la invitación." }),
   eqexiste: () => ({ kind: "err", text: "Ese correo ya tiene una cuenta en Cuotia." }),
@@ -1312,7 +1316,7 @@ const categoryBars = (books) => books.byCategory.length
 
 /** The treasurer's accounts: what came in, what went out, with the receipts, and who may see it. */
 export function cuentasPage(args) {
-  const { tenant, csrf, flash, period, current, books, expenses, categories, today, prev, next } = args;
+  const { tenant, csrf, flash, period, current, books, expenses, categories, today, prev, next, publicLink } = args;
   const text = accountsText(tenant, period, books);
   return panelLayout("Cuentas", { ...args, active: "cuentas" }, html`
   <div class="head">
@@ -1369,6 +1373,28 @@ export function cuentasPage(args) {
     </form>
   </section>
 
+
+  <section class="card" id="transparencia">
+    <div class="row wrap"><h2>Página pública de transparencia</h2>${publicLink ? html`<span class="pill ok"><i></i>Activa</span>` : html`<span class="pill"><i></i>Apagada</span>`}</div>
+    <p class="muted small">Un enlace que cualquiera puede abrir, sin entrar: muestra lo recaudado, lo gastado y el saldo de cada mes, y los gastos con su descripción. No muestra nombres de residentes, casas ni los archivos de soporte. Revisa que la descripción de tus gastos no lleve datos personales.</p>
+    ${publicLink ? html`
+      <div class="key url" id="enlace-publico">${publicLink}</div>
+      <div class="actions">
+        <button class="btn" type="button" data-copy="${publicLink}" data-copy-target="#enlace-publico">Copiar enlace</button>
+        <a class="btn ghost" href="${publicLink}" target="_blank" rel="noopener">Ver la página</a>
+        <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(`Así van las cuentas de ${tenant.name}: ${publicLink}`)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
+      </div>
+      <details class="undo"><summary>Cambiar el enlace</summary>
+        <p class="muted small">Crea un enlace nuevo y el anterior deja de funcionar. Úsalo si el enlace llegó a quien no debía.</p>
+        <form method="post" action="/panel/transparencia">${csrfField(csrf)}<input type="hidden" name="accion" value="cambiar"><button class="btn ghost small" type="submit">Sí, cambiar el enlace</button></form>
+      </details>
+      <details class="undo"><summary>Apagar la página</summary>
+        <p class="muted small">El enlace deja de abrir algo. Puedes volver a activarla cuando quieras, con un enlace nuevo.</p>
+        <form method="post" action="/panel/transparencia">${csrfField(csrf)}<input type="hidden" name="accion" value="apagar"><button class="btn ghost small" type="submit">Sí, apagarla</button></form>
+      </details>`
+    : html`<form method="post" action="/panel/transparencia">${csrfField(csrf)}<input type="hidden" name="accion" value="activar"><button class="btn" type="submit">Activar la página pública</button></form>`}
+  </section>
+
   <section class="card" id="ajustes">
     <h2>Saldo inicial y quién lo ve</h2>
     <form class="stack-form" method="post" action="/panel/ajustes/cuentas">
@@ -1401,6 +1427,34 @@ export function residentCuentasPage({ tenant, token, period, current, books, exp
   </section>
   <p class="muted small center-text">${period === current ? "Estas cuentas se actualizan cada vez que el tesorero registra un pago o un gasto." : ""}</p>
 </main>`, { manifest: `/r/${token}/manifest.webmanifest` });
+}
+
+
+/** The public transparency page: totals and expenses of a month. No resident, no house, no receipt file, nothing to sign in to. */
+export function transparenciaPage({ tenant, token, period, current, books, summary, expenses, prev, next }) {
+  const base = `/t/${token}`;
+  const houses = summary.paidCount + summary.pendingCount;
+  return layout(`Transparencia · ${tenant.name}`, html`
+<main class="narrow res">
+  <header class="public-head"><span class="brand-line">${BRAND_MARK}</span><h1>Transparencia</h1><p class="muted">${tenant.name}</p></header>
+  <div class="row wrap">${monthNav(base, period, prev, next)}</div>
+  ${booksHero(books, period)}
+  ${houses ? html`<section class="card">
+    <h2>Cuotas de ${periodLabel(period)}</h2>
+    <p><b>${summary.paidCount} de ${houses}</b> casas están al día · se ha recaudado ${peso(summary.collectedCents)} de ${peso(summary.expectedCents)}.</p>
+    <progress class="bar" max="${summary.expectedCents || 1}" value="${summary.collectedCents}" aria-label="Recaudado"></progress>
+  </section>` : ""}
+  <section class="card">
+    <h2>En qué se gastó</h2>
+    ${categoryBars(books)}
+    ${expenses.length
+      ? html`<ul class="list stack">${expenses.map((e) => html`<li class="expense">
+          <div class="row"><span><b>${e.description}</b><small class="muted">${shortDate(`${e.spentOn}T17:00:00.000Z`)} · ${e.category}</small></span><b class="amount">${peso(e.amountCents)}</b></div>
+        </li>`)}</ul>`
+      : html`<p class="muted">Aún no hay gastos registrados en ${periodLabel(period)}.</p>`}
+  </section>
+  <p class="muted small center-text">${period === current ? "Se actualiza cada vez que el tesorero registra un pago o un gasto. " : ""}Esta página no muestra nombres de residentes ni de casas.</p>
+</main>`, { manifest: null, noindex: true });
 }
 
 /** What the conjunto charges: monthly concepts, and one-off charges (cuota extraordinaria, multa) for all houses or one. */

@@ -2530,3 +2530,88 @@ test("mensajes: ninguno lleva emojis (se verían como signos de interrogación) 
   const old = { name: "Ibiza", templates: { recordatorio_casa: "Buenas {nombre} \u{1F44B} la casa {casa} debe {valor}." } };
   assert.equal(message(old, "recordatorio_casa", { nombre: "Ana", casa: "03", valor: "$30.000" }), "Buenas Ana la casa 03 debe $30.000.");
 });
+
+test("transparencia pública: apagada por defecto, el tesorero la activa, no muestra residentes ni casas ni soportes, y se puede cambiar o apagar el enlace", () => withServer(async (s) => {
+  const month = currentPeriod();
+  const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/cuentas");
+  const panel = async () => (await (await fetch(`${s.base}/panel/cuentas`, { headers: { cookie: marta.cookie } })).text());
+  const linkOf = (html) => /id="enlace-publico">([^<]+)</.exec(html)?.[1];
+
+  assert.equal((await fetch(`${s.base}/t/${"a".repeat(24)}`)).status, 404, "un enlace inventado no abre nada");
+  assert.doesNotMatch(await panel(), /id="enlace-publico"/);
+  assert.match(await panel(), /Activar la página pública/);
+
+  // Data that must never reach the public page.
+  s.A.dues.generate(month);
+  s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: [s.A.dues.listForHouse(s.a14.house.id)[0].id], method: "cash" });
+  const keep = s.A.expenses.create({ spentOn: `${month}-01`, amountCents: 1_200_000, category: "Vigilancia", description: "Pago del vigilante" });
+  const gone = s.A.expenses.create({ spentOn: `${month}-02`, amountCents: 777_000, category: "Otros", description: "Gasto anulado de prueba", proof: { mime: "image/png", data: Buffer.from([137, 80, 78, 71]) } });
+  s.A.expenses.void(gone.id ?? gone);
+  s.B.expenses.create({ spentOn: `${month}-01`, amountCents: 999_000, category: "Otros", description: "Gasto del otro conjunto" });
+
+  // Activate (needs the form token), and only once.
+  assert.equal((await form(`${s.base}/panel/transparencia`, { accion: "activar" }, marta.cookie)).status, 403, "sin token del formulario");
+  assert.match((await form(`${s.base}/panel/transparencia`, { accion: "activar", _csrf: csrf }, marta.cookie)).headers.get("location"), /m=trok/);
+  const first = linkOf(await panel());
+  assert.match(first, /^http:\/\/localhost:3000\/t\/[A-Za-z0-9_-]{20,}$/);
+  assert.match(await panel(), /Activa/);
+  await form(`${s.base}/panel/transparencia`, { accion: "activar", _csrf: csrf }, marta.cookie);
+  assert.equal(linkOf(await panel()), first, "activar otra vez no cambia el enlace");
+  const token = first.split("/t/")[1];
+
+  // The token is never stored in the clear.
+  const row = s.store.db.prepare("SELECT public_token_hash AS h, public_token_enc AS e FROM tenants WHERE id = ?").get(s.a.id);
+  assert.ok(row.h && row.e && !row.h.includes(token) && !row.e.includes(token));
+
+  // What anyone with the link sees: no sign-in, no cookies.
+  const res = await fetch(`${s.base}/t/${token}`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("x-robots-tag"), /noindex/);
+  assert.match(res.headers.get("cache-control"), /no-store/);
+  const page = await res.text();
+  assert.match(page, /<meta name="robots" content="noindex/);
+  assert.doesNotMatch(page, /rel="manifest"/);
+  assert.match(page, /Jardines de Ibiza/);
+  assert.match(page, /Pago del vigilante/);
+  assert.match(page, /\$12\.000/ , "el gasto con su valor");
+  assert.doesNotMatch(page, /Sandra|Diana|Duque|Pérez/, "ningún residente");
+  assert.doesNotMatch(page, /Casa 14|Casa 03|>14<|>03</, "ninguna casa");
+  assert.doesNotMatch(page, /anulado de prueba/, "lo anulado no se muestra");
+  assert.doesNotMatch(page, /soporte/i, "ni enlaces a soportes");
+  assert.doesNotMatch(page, /Gasto del otro conjunto|Los Robles/, "nada de otro conjunto");
+  assert.doesNotMatch(page, new RegExp(keep.id ?? "gt_zzzz"), "ni identificadores internos");
+  assert.match(page, /1 de \d+<\/b> casas están al día/);
+  assert.equal((await fetch(`${s.base}/t/${token}?mes=2099-01`)).status, 200, "un mes futuro cae al mes actual");
+  assert.equal((await fetch(`${s.base}/t/${token}/soporte`)).status, 404);
+
+  // The other conjunto's treasurer does not affect this page, and their own page is separate.
+  const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/cuentas");
+  assert.doesNotMatch(await (await fetch(`${s.base}/panel/cuentas`, { headers: { cookie: luis.cookie } })).text(), /id="enlace-publico"/, "Luis no ve el enlace de Marta");
+  await form(`${s.base}/panel/transparencia`, { accion: "apagar", _csrf: csrfL }, luis.cookie);
+  assert.equal((await fetch(`${s.base}/t/${token}`)).status, 200, "apagar la de Luis no apaga la de Marta");
+  await form(`${s.base}/panel/transparencia`, { accion: "activar", _csrf: csrfL }, luis.cookie);
+  const tokenB = linkOf(await (await fetch(`${s.base}/panel/cuentas`, { headers: { cookie: luis.cookie } })).text()).split("/t/")[1];
+  const pageB = await (await fetch(`${s.base}/t/${tokenB}`)).text();
+  assert.match(pageB, /Los Robles/);
+  assert.match(pageB, /Gasto del otro conjunto/);
+  assert.doesNotMatch(pageB, /Pago del vigilante|Jardines de Ibiza/);
+
+  // Changing the link kills the old one; turning it off kills everything; both are in the log.
+  await form(`${s.base}/panel/transparencia`, { accion: "cambiar", _csrf: csrf }, marta.cookie);
+  assert.equal((await fetch(`${s.base}/t/${token}`)).status, 404, "el enlace viejo ya no abre");
+  const second = linkOf(await panel()).split("/t/")[1];
+  assert.notEqual(second, token);
+  assert.equal((await fetch(`${s.base}/t/${second}`)).status, 200);
+  assert.match((await form(`${s.base}/panel/transparencia`, { accion: "apagar", _csrf: csrf }, marta.cookie)).headers.get("location"), /m=trapagado/);
+  assert.equal((await fetch(`${s.base}/t/${second}`)).status, 404);
+  assert.match(await panel(), /Activar la página pública/);
+  const log = s.A.audit.list({ limit: 50 }).rows.map((r) => r.summary);
+  for (const line of ["Activó la página pública de transparencia", "Cambió el enlace de la página pública de transparencia", "Apagó la página pública de transparencia"]) assert.ok(log.includes(line), line);
+  assert.ok(!log.join(" ").includes(second) && !log.join(" ").includes(token), "la bitácora nunca lleva el enlace");
+
+  // Guessing is rate limited.
+  for (let i = 0; i < 30; i++) await fetch(`${s.base}/t/${String(i).padStart(24, "x")}`);
+  assert.equal((await fetch(`${s.base}/t/${"z".repeat(24)}`)).status, 429);
+}));
