@@ -666,18 +666,18 @@ test("claro por defecto, como el diseño aprobado; el oscuro es una opción que 
     });
     return `${attrs["data-theme"]} ${meta.content}`;
   };
-  assert.equal(run(undefined, true), "light #0B4A3A", "sin elección: claro aunque el teléfono sea oscuro");
-  assert.equal(run("dark", false), "dark #0b1613");
-  assert.equal(run("auto", true), "dark #0b1613");
-  assert.equal(run("auto", false), "light #0B4A3A");
-  assert.equal(run("cualquier cosa", true), "light #0B4A3A");
+  assert.equal(run(undefined, true), "light #3B3028", "sin elección: claro aunque el teléfono sea oscuro");
+  assert.equal(run("dark", false), "dark #151210");
+  assert.equal(run("auto", true), "dark #151210");
+  assert.equal(run("auto", false), "light #3B3028");
+  assert.equal(run("cualquier cosa", true), "light #3B3028");
   const sw = await (await fetch(`${s.base}/sw.js`)).text();
   assert.match(sw, /\/static\/theme\.js/);
   // iPhone zooms into any field under 16px: every text field is 16px on touch screens (a pinch zoom is still allowed).
   assert.match(css, /select,\s*textarea \{ font-size: 16px !important; \}/);
   assert.doesNotMatch(await (await fetch(`${s.base}/login`)).text(), /maximum-scale|user-scalable=no/);
   // The approved palette (taken from the mockups) is what the tokens say.
-  for (const [name, hex] of [["ink", "#0b4a3a"], ["accent", "#c9efdc"], ["hero-bg", "#c9efdc"], ["ground", "#f3f8f6"], ["surface", "#ffffff"], ["muted", "#56756b"], ["line", "#d9e7e1"]]) {
+  for (const [name, hex] of [["ink", "#3b3028"], ["accent", "#ece3d6"], ["hero-bg", "#f1ebe1"], ["ground", "#faf8f5"], ["surface", "#ffffff"], ["muted", "#7d7166"], ["line", "#e8e1d6"]]) {
     assert.match(css, new RegExp(`--${name}:\\s*${hex}`), name);
   }
 }));
@@ -930,8 +930,8 @@ test("manifiesto del tesorero: instalable, con íconos que existen y accesos dir
   assert.match(res.headers.get("content-type"), /application\/manifest\+json/);
   const m = await res.json();
   assert.deepEqual([m.name, m.short_name, m.display, m.start_url, m.scope], ["Cuotia", "Cuotia", "standalone", "/panel", "/"]);
-  assert.equal(m.theme_color, "#0b4a3a");
-  assert.equal(m.background_color, "#f3f8f6");
+  assert.equal(m.theme_color, "#3b3028");
+  assert.equal(m.background_color, "#faf8f5");
   const pngs = m.icons.filter((i) => i.type === "image/png");
   assert.ok(pngs.some((i) => i.sizes === "192x192" && i.purpose === "any"), "ícono de 192 para instalar");
   assert.ok(pngs.some((i) => i.sizes === "512x512" && i.purpose === "any"), "ícono de 512 para la pantalla de inicio");
@@ -960,7 +960,7 @@ test("las páginas enlazan el ícono, el manifiesto y los datos para instalar en
     assert.match(html, /<link rel="apple-touch-icon" href="\/static\/icons\/apple-touch-icon\.png">/);
     assert.match(html, /<meta name="apple-mobile-web-app-capable" content="yes">/);
     assert.match(html, /<meta name="apple-mobile-web-app-title" content="Cuotia">/);
-    assert.match(html, /<meta name="theme-color" content="#0B4A3A">/);
+    assert.match(html, /<meta name="theme-color" content="#3B3028">/);
   }
 }));
 
