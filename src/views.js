@@ -536,7 +536,7 @@ export function panelPage(args) {
 
   const essentials = [
     { done: houses.length > 0, title: "Agrega las casas", text: "Pega la lista desde Excel y Cuotia crea cada casa y su enlace.", href: "/panel/casas/importar", cta: "Importar casas" },
-    { done: Boolean(tenant.payKey) || (tenant.payMethods ?? []).length > 0, title: "Agrega cómo pagar", text: "Tu llave Bre-B, Nequi, Daviplata o cuenta: la ven los vecinos cuando van a pagar.", href: "/panel/ajustes", cta: "Ir a Ajustes" },
+    { done: Boolean(tenant.payKey) || (tenant.payMethods ?? []).length > 0, title: "Agrega cómo pagar", text: "Tu llave Bre-B, Nequi, Daviplata o cuenta: la ven los vecinos cuando van a pagar.", href: "/panel/ajustes/cobros", cta: "Ir a Ajustes" },
     { done: recent.length > 0, title: "Registra el primer pago", text: "A mano, o déjalo para cuando conectes pagoradar.", href: "/panel/pagos/nuevo", cta: "Registrar pago" },
   ];
   const showSteps = essentials.some((s) => !s.done);
@@ -899,12 +899,20 @@ export function pagoManualPage(args) {
 }
 
 
-export function ajustesPage(args) {
-  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, passkeys = [], recovery = { total: 0, remaining: 0 } } = args;
-  return panelLayout("Ajustes", { ...args, active: "ajustes" }, html`
-  <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
-  ${flashBox(flash)}
+export const AJUSTES_SECCIONES = [
+  { key: "cobros", icon: "cobrar", title: "Cobros y pagos", text: "Cómo confirmas los pagos, cuenta para cobrar, otros medios y fechas", cards: ["confirmar", "cuenta", "medios", "fechas"] },
+  { key: "pagoradar", icon: "pagos", title: "Conexión con pagoradar", text: "El enlace y el secreto para que los pagos del banco lleguen solos", cards: ["pagoradar"] },
+  { key: "equipo", icon: "casas", title: "Equipo", text: "Quién entra al panel, invitaciones y accesos", cards: ["equipo"] },
+  { key: "seguridad", icon: "ajustes", title: "Mi acceso y seguridad", text: "Contraseña, passkeys y códigos de respaldo", cards: ["clave", "passkeys", "recuperacion"] },
+  { key: "dispositivo", icon: "home", title: "Este dispositivo", text: "Avisos en el celular y apariencia (claro u oscuro)", cards: ["avisos", "apariencia"] },
+  { key: "datos", icon: "bitacora", title: "Datos y privacidad", text: "Bitácora, política de datos y empezar de cero", cards: ["datos", "reiniciar"] },
+];
 
+/** Every card of Ajustes, by name. The page below groups them by section so nothing is one long scroll. */
+function ajustesCards(args) {
+  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, passkeys = [], recovery = { total: 0, remaining: 0 } } = args;
+  return {
+  confirmar: html`
   <section class="card">
     <h2>¿Cómo confirmas los pagos?</h2>
     <p class="muted small">Es lo que el residente lee en su pantalla de pago. Elige <b>manual</b> si tú registras cada pago (con o sin comprobante).</p>
@@ -915,7 +923,8 @@ export function ajustesPage(args) {
       <button class="btn" type="submit">Guardar</button>
     </form>
   </section>
-
+`,
+  pagoradar: html`
   <section class="card">
     <div class="row wrap">
       <h2>Conexión con pagoradar</h2>
@@ -935,7 +944,8 @@ export function ajustesPage(args) {
       <button class="btn" type="submit">Guardar secreto</button>
     </form>
   </section>
-
+`,
+  fechas: html`
   <section class="card">
     <h2>Fechas de pago</h2>
     <p class="muted small">Del 1 al 28. Los residentes ven “Paga del 1 al 10”. Pasado el último día, la cuota del mes se marca como <b>vencida</b> en Por cobrar y en el Resumen. Aun así, los pagos se reciben y se asignan en cualquier día. Déjalos vacíos si no quieres fechas.</p>
@@ -946,7 +956,8 @@ export function ajustesPage(args) {
       <button class="btn" type="submit">Guardar fechas</button>
     </form>
   </section>
-
+`,
+  medios: html`
   <section class="card" id="medios">
     <h2>Otros medios de pago</h2>
     <p class="muted small">Además de la llave Bre-B. Los residentes los ven todos en su pantalla de pagar, con un botón para copiar el número. Los pagos que lleguen por aquí los registras tú (o el residente sube su comprobante): pagoradar solo lee los de la cuenta Bre-B.</p>
@@ -971,7 +982,8 @@ export function ajustesPage(args) {
       <button class="btn" type="submit">Agregar medio de pago</button>
     </form>
   </section>
-
+`,
+  cuenta: html`
   <section class="card">
     <h2>Cuenta para cobrar</h2>
     <p class="muted small">Es la llave Bre-B que ven los residentes cuando van a pagar. Debe ser la de la cuenta cuyos avisos recibe pagoradar.</p>
@@ -982,7 +994,8 @@ export function ajustesPage(args) {
       <button class="btn" type="submit">Guardar</button>
     </form>
   </section>
-
+`,
+  apariencia: html`
   <section class="card" id="apariencia" data-theme-card hidden>
     <h2>Apariencia</h2>
     <p class="muted small">Se guarda solo en este dispositivo. "Automático" sigue el modo claro u oscuro del teléfono.</p>
@@ -992,7 +1005,8 @@ export function ajustesPage(args) {
       <button class="btn ghost" type="button" data-theme-set="auto" aria-pressed="false">Automático</button>
     </div>
   </section>
-
+`,
+  passkeys: html`
   <section class="card" id="passkeys" data-passkeys data-csrf="${csrf}">
     <div class="row wrap"><h2>Passkeys</h2>${passkeys.length ? html`<span class="pill ok"><i></i>${passkeys.length} activo${passkeys.length === 1 ? "" : "s"}</span>` : html`<span class="pill warn"><i></i>Sin passkeys</span>`}</div>
     <p class="muted small">Entra con la huella, el rostro o el PIN de tu celular o computador, sin escribir contraseña ni código. Es más seguro que la contraseña: no se puede robar con un enlace falso. Tu contraseña y tu código siguen sirviendo si cambias de teléfono.</p>
@@ -1008,7 +1022,8 @@ export function ajustesPage(args) {
       <button class="btn" type="button" data-passkey-add hidden>Agregar passkey en este dispositivo</button>
     </div>
   </section>
-
+`,
+  avisos: html`
   <section class="card" id="avisos" data-push data-key="${pushKey}" data-csrf="${csrf}">
     <div class="row wrap"><h2>Avisos en el celular</h2>${pushDevices ? html`<span class="pill ok"><i></i>Activos en ${pushDevices} dispositivo${pushDevices === 1 ? "" : "s"}</span>` : html`<span class="pill warn"><i></i>Sin activar</span>`}</div>
     <p class="muted small">Te avisamos cuando un residente sube un comprobante o entra un pago por pagoradar. Cada persona del equipo los activa en su propio teléfono. En iPhone primero instala la app: Compartir, <b>Añadir a pantalla de inicio</b>, y ábrela desde ahí.</p>
@@ -1018,18 +1033,21 @@ export function ajustesPage(args) {
       ${pushDevices ? html`<form method="post" action="/panel/push/probar">${csrfField(csrf)}<button class="btn ghost" type="submit">Enviarme un aviso de prueba</button></form>` : ""}
     </div>
   </section>
-
+`,
+  reiniciar: html`
   <section class="card">
     <div class="row wrap"><h2>Empezar de cero</h2><a class="btn ghost small" href="/panel/reiniciar">Limpiar los datos</a></div>
     <p class="muted small">Para borrar lo que hiciste de prueba y arrancar limpio. Pide tu contraseña y guarda una copia antes de borrar.</p>
   </section>
-
+`,
+  datos: html`
   <section class="card">
     <p class="small"><a href="/privacidad" target="_blank" rel="noopener">Política de tratamiento de datos personales</a><br><span class="muted">La ven los residentes en el pie de sus pantallas. Revisa con un abogado que sirva para tu conjunto.</span></p>
     <div class="row wrap"><h2>Bitácora</h2><a class="btn ghost small" href="/panel/bitacora">Ver quién hizo qué</a></div>
     <p class="muted small">Cada pago, cambio de casa, gasto y ajuste queda anotado con la persona y la hora.</p>
   </section>
-
+`,
+  equipo: html`
   <section class="card" id="equipo">
     <h2>Equipo</h2>
     <p class="muted small">Quienes pueden entrar al panel de ${tenant.name}. Cada persona tiene su propia contraseña y su propio código de verificación. Todas pueden hacer lo mismo: invita solo a gente de confianza.</p>
@@ -1055,7 +1073,8 @@ export function ajustesPage(args) {
       <button class="btn" type="submit">Invitar</button>
     </form>
   </section>
-
+`,
+  clave: html`
   <section class="card">
     <h2>Tu contraseña</h2>
     <form class="grid-form" method="post" action="/panel/ajustes/clave" autocomplete="off">
@@ -1067,7 +1086,8 @@ export function ajustesPage(args) {
     </form>
     <p class="muted small">Al cambiarla, tus sesiones en otros dispositivos se cierran.</p>
   </section>
-
+`,
+  recuperacion: html`
   <section class="card" id="recuperacion">
     <div class="row wrap"><h2>Si pierdes el acceso</h2>${recovery.remaining ? html`<span class="pill ok"><i></i>${recovery.remaining} código${recovery.remaining === 1 ? "" : "s"} de respaldo</span>` : html`<span class="pill warn"><i></i>Sin códigos de respaldo</span>`}</div>
     <p class="muted small">Los <b>códigos de respaldo</b> son diez claves de un solo uso que guardas en papel. Con uno entras si pierdes el celular del código, o cambias la contraseña si la olvidas, sin pedirle nada a nadie. ${recovery.remaining ? `Te quedan ${recovery.remaining}.` : "Todavía no tienes: genéralos ahora."}</p>
@@ -1086,7 +1106,34 @@ export function ajustesPage(args) {
       </form>
     </details>
     <p class="muted small">Si perdiste la contraseña y los códigos, un compañero del equipo puede crearte un enlace (Equipo → Restablecer acceso). Es lo único que no se puede hacer solo: si eres la única persona del equipo, escríbele al operador de Cuotia.</p>
-  </section>`);
+  </section>
+`,
+  };
+}
+
+export function ajustesPage(args) {
+  const { tenant, flash, section = null, team = [], passkeys = [], recovery = { remaining: 0 }, pushDevices = 0 } = args;
+  const cards = ajustesCards(args);
+  if (section) {
+    const spec = AJUSTES_SECCIONES.find((s) => s.key === section);
+    return panelLayout(spec.title, { ...args, active: "ajustes" }, html`
+  <p class="backlink"><a href="/panel/ajustes">← Ajustes</a></p>
+  <div class="heading"><h1>${spec.title}</h1><span class="muted">${tenant.name}</span></div>
+  ${flashBox(flash)}
+  ${spec.cards.map((c) => cards[c])}`);
+  }
+  // What each entry says about its current state, so the index already answers "is this set up?".
+  const status = {
+    cobros: tenant.payMode === "auto" ? "Los confirma el banco (pagoradar)" : "Los registras tú",
+    pagoradar: tenant.pagoradarConfigured ? (tenant.pagoradarLastAt ? "Conectado" : "Guardado, esperando el primer aviso") : "Sin configurar (opcional)",
+    equipo: `${team.length} persona${team.length === 1 ? "" : "s"}`,
+    seguridad: `${passkeys.length} passkey${passkeys.length === 1 ? "" : "s"} · ${recovery.remaining ? `${recovery.remaining} códigos de respaldo` : "sin códigos de respaldo"}`,
+    dispositivo: pushDevices ? `Avisos activos en ${pushDevices} dispositivo${pushDevices === 1 ? "" : "s"}` : "Avisos sin activar",
+  };
+  return panelLayout("Ajustes", { ...args, active: "ajustes" }, html`
+  <div class="heading"><h1>Ajustes</h1><span class="muted">${tenant.name}</span></div>
+  ${flashBox(flash)}
+  ${AJUSTES_SECCIONES.map((s) => html`<a class="card more-item" href="/panel/ajustes/${s.key}">${icon(s.icon, 24)}<span><b>${s.title}</b><small class="muted">${s.text}</small>${status[s.key] ? html`<small class="state">${status[s.key]}</small>` : ""}</span>${icon("next", 20, 2.4)}</a>`)}`);
 }
 
 export function importPage(args) {
@@ -1567,7 +1614,7 @@ export function reiniciarPage(args) {
   const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
   return panelLayout("Empezar de cero", { ...args, active: "ajustes" }, html`
   <div class="heading"><h1>Empezar de cero</h1><span class="muted">${tenant.name}</span></div>
-  <p><a href="/panel/ajustes">← Volver a Ajustes</a></p>
+  <p class="backlink"><a href="/panel/ajustes/datos">← Volver a Ajustes</a></p>
   ${flashBox(flash)}
   <section class="card danger-zone">
     <h2>Esto borra datos y no se puede deshacer</h2>
@@ -1649,7 +1696,7 @@ export function masPage(args) {
   ${item("/panel/cuentas", "cuentas", "Cuentas claras", "Gastos, saldo en caja y resumen para los vecinos")}
   ${item("/panel/conceptos", "cobrar", "Qué cobras", "Vigilancia, administración, cuotas extraordinarias y multas")}
   ${item("/panel/mensajes", "cuentas", "Mensajes de WhatsApp", "Cambia lo que dicen los recordatorios y el envío del enlace")}
-  ${item("/panel/ajustes", "ajustes", "Ajustes", "Cuenta para cobrar, fechas, equipo y avisos")}
+  ${item("/panel/ajustes", "ajustes", "Ajustes", "Cobros, equipo, seguridad y avisos")}
   ${item("/panel/bitacora", "bitacora", "Bitácora", "Quién hizo qué en el panel")}`);
 }
 
@@ -1663,7 +1710,7 @@ export function bitacoraPage(args) {
   };
   return panelLayout("Bitácora", { ...args, active: "ajustes" }, html`
   <div class="heading"><h1>Bitácora</h1><span class="muted">${tenant.name} · ${result.total} registro${result.total === 1 ? "" : "s"}</span></div>
-  <p><a href="/panel/ajustes">← Volver a Ajustes</a></p>
+  <p class="backlink"><a href="/panel/ajustes/datos">← Volver a Ajustes</a></p>
   <section class="card">
     <p class="muted small">Quién hizo qué en el panel. No se puede editar ni borrar. Nunca guarda contraseñas ni secretos, solo la frase de lo que se hizo.</p>
     <form class="filters" method="get" action="/panel/bitacora">
@@ -1701,7 +1748,7 @@ export function inviteLinkPage(args) {
     <div class="actions">
       <button class="btn" type="button" data-copy="${url}" data-copy-target="#enlace">Copiar enlace</button>
       <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(text)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
-      <a class="btn ghost" href="/panel/ajustes#equipo">Volver a Ajustes</a>
+      <a class="btn ghost" href="/panel/ajustes/equipo">Volver a Ajustes</a>
     </div>
   </section>`);
 }
@@ -1755,7 +1802,7 @@ export function recoveryCodesPage(args) {
     <div class="actions">
       <button class="btn" type="button" data-copy="${text}" data-copy-target="#codigos-respaldo">Copiar</button>
       <button class="btn ghost" type="button" data-print>Imprimir</button>
-      <a class="btn ghost" href="/panel/ajustes#recuperacion">Listo, ya los guardé</a>
+      <a class="btn ghost" href="/panel/ajustes/seguridad#recuperacion">Listo, ya los guardé</a>
     </div>
   </section>`);
 }
@@ -1772,7 +1819,7 @@ export function resetLinkPage(args) {
     <div class="actions">
       <button class="btn" type="button" data-copy="${url}" data-copy-target="#enlace">Copiar enlace</button>
       <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(text)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
-      <a class="btn ghost" href="/panel/ajustes#equipo">Volver a Ajustes</a>
+      <a class="btn ghost" href="/panel/ajustes/equipo">Volver a Ajustes</a>
     </div>
   </section>`);
 }
