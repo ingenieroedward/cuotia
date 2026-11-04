@@ -26,7 +26,7 @@
   --link: #8a4b1f;
   --ok-bg: #ddf6e7; --ok-fg: #0b6b43;
   --warn-bg: #fff1d6; --warn-fg: #8a5200;
-  --info-bg: #e4ebff; --info-fg: #2342a8;
+  --info-bg: #ece5da; --info-fg: #4a3b2e;
   --bad-bg: #fde8e8; --bad-fg: #9b1c1c;
   --bar-track: #ffffff;
   --chrome: #3b3028;
@@ -55,7 +55,7 @@
   --link: #e0a878;
   --ok-bg: #12382a; --ok-fg: #7fe0b0;
   --warn-bg: #3d2d0c; --warn-fg: #f2c46d;
-  --info-bg: #1a2750; --info-fg: #a9bdff;
+  --info-bg: #2b2420; --info-fg: #dccab4;
   --bad-bg: #431a1a; --bad-fg: #ff9d9d;
   --bar-track: rgba(255,255,255,.14);
   --chrome: #0f0c0a;
