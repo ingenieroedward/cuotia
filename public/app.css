@@ -453,6 +453,8 @@ details.addmonth-all { margin-bottom: .75rem; }
 details.add-house { padding: 0 1.25rem; }
 details.add-house summary { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: .75rem; cursor: pointer; list-style: none; }
 details.add-house summary::-webkit-details-marker { display: none; }
+details.add-house summary .btn { height: 44px; min-height: 44px; margin: 0; }
+details.add-house summary span.btn { display: inline-flex; align-items: center; justify-content: center; }
 details.add-house[open] { padding-bottom: 1.25rem; }
 details.add-house[open] summary { margin-bottom: .5rem; }
 
@@ -498,7 +500,6 @@ li.member > span { display: grid; min-width: 0; }
 }
 
 @media (max-width: 480px) {
-  details.add-house summary span.btn { display: inline-flex; align-items: center; justify-content: center; }
   .filters select { font-size: .875rem; padding-left: .6rem; padding-right: 1.6rem; text-overflow: ellipsis; }
   .list li.house-row .actions form .btn { min-height: 42px; height: 100%; }
 }
