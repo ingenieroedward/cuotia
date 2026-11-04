@@ -431,7 +431,7 @@ const payMethod = paymentMedium;
 function reminderLink({ tenant, dues, period }) {
   const owing = dues.filter((d) => d.status === "pending");
   if (owing.length === 0) return null;
-  return `https://wa.me/?text=${encodeURIComponent(generalReminder(tenant, owing.map((d) => d.houseCode).join(", "), period, tenant.monthlyCents || owing[0].amountCents))}`;
+  return `https://wa.me/?text=${encodeURIComponent(generalReminder(tenant, owing.map((d) => d.houseCode).join("\n"), period, tenant.monthlyCents || owing[0].amountCents))}`;
 }
 
 /** "Hasta el 10 de noviembre puedes pagar." when the conjunto set a last day; "" otherwise. */
@@ -710,7 +710,7 @@ export function cobrosPage(args) {
   ];
   const href = (f) => `/panel/cobros${f || q ? `?${new URLSearchParams({ ...(f ? { f } : {}), ...(q ? { q } : {}) })}` : ""}`;
   const everyone = groups.length
-    ? `https://wa.me/?text=${encodeURIComponent(generalReminder(tenant, groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("; "), current, tenant.monthlyCents || groups[0].dues[0].amountCents))}`
+    ? `https://wa.me/?text=${encodeURIComponent(generalReminder(tenant, groups.map((g) => `${g.house.code} (${g.months.map(monthShort).join(", ")})`).join("\n"), current, tenant.monthlyCents || groups[0].dues[0].amountCents))}`
     : null;
   return panelLayout("Por cobrar", { ...args, active: "cobros" }, html`
   <header class="head">
