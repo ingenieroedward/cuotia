@@ -3166,3 +3166,21 @@ test("tu nombre: cada persona cambia el suyo (saludo, firma de WhatsApp y bitác
   assert.throws(() => s.A.team.rename(luisId, "Intruso Total"), /no es de este conjunto/);
   assert.equal(s.store.users.byEmail("luis@ejemplo.com").name, "Luis");
 }));
+
+test("instalar la app: la guía para Android y iPhone está en la página del residente y en Ajustes, y los avisos ya no mandan solo a iPhone", () => withServer(async (s) => {
+  const home = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
+  assert.match(home, /data-install/);
+  assert.match(home, /data-install-steps="android"[\s\S]*Instalar aplicación/);
+  assert.match(home, /data-install-steps="ios"[\s\S]*Safari[\s\S]*Añadir a pantalla de inicio/);
+  assert.match(home, /data-install-button[^>]*hidden/, "el botón de instalar solo aparece si el navegador lo ofrece");
+  assert.doesNotMatch(home, /primero instala la app: Compartir/, "la tarjeta de avisos ya no es la única guía, y solo de iPhone");
+  assert.match(home, /En iPhone los avisos solo funcionan con la app instalada/);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const dispositivo = await (await fetch(`${s.base}/panel/ajustes/dispositivo`, { headers: { cookie } })).text();
+  assert.match(dispositivo, /data-install-steps="android"/);
+  assert.match(dispositivo, /data-install-steps="ios"/);
+  assert.doesNotMatch(await (await fetch(`${s.base}/login`)).text(), /data-install/);
+  const js = await (await fetch(`${s.base}/static/app.js`)).text();
+  assert.match(js, /beforeinstallprompt/);
+  assert.match(js, /display-mode: standalone/);
+}));
