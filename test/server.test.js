@@ -3167,6 +3167,105 @@ test("tu nombre: cada persona cambia el suyo (saludo, firma de WhatsApp y bitác
   assert.equal(s.store.users.byEmail("luis@ejemplo.com").name, "Luis");
 }));
 
+test("avisos a mano: el tesorero ve qué casas tienen avisos activos y les envía un recordatorio (solo a las que deben, con pausa de 6 h, y solo en su conjunto)", async () => {
+  const sent = [];
+  let reply = { ok: true, gone: false };
+  const pushSend = async (sub, message) => { sent.push({ endpoint: sub.endpoint, message }); return reply; };
+  await withServer(async (s) => {
+    const month = currentPeriod();
+    s.A.dues.generate(month); s.B.dues.generate(month);
+    const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+    const csrf = await csrfOf(s.base, cookie, "/panel/cobros");
+    const get = async (path, c = cookie) => (await (await fetch(`${s.base}${path}`, { headers: { cookie: c } })).text());
+    const subscribe = (ledger, house, endpoint) => ledger.housePush.add({ houseId: house.id, endpoint, p256dh: "k", auth: "a" });
+    const send = (path, fields = {}, c = cookie) => form(`${s.base}${path}`, { _csrf: csrf, volver: "cobros", ...fields }, c);
+
+    // Nobody has notifications on yet: no "Avisar" buttons, and the page says so.
+    let cobros = await get("/panel/cobros");
+    assert.doesNotMatch(cobros, /action="\/panel\/avisos\/casa\//);
+    assert.match(cobros, /Ninguna casa que debe ha activado los avisos/);
+    assert.doesNotMatch(await get("/panel/casas"), /Avisos activos/);
+
+    // The 14 turns them on (two phones) and the other conjunto's house too. (Opening a resident page first, as a real phone does,
+    // is what creates the notification keys; creating them wipes any earlier subscription.)
+    await fetch(`${s.base}/r/${s.a14.accessToken}`);
+    subscribe(s.A, s.a14.house, "https://fcm.googleapis.com/fcm/send/a1");
+    subscribe(s.A, s.a14.house, "https://fcm.googleapis.com/fcm/send/a2");
+    subscribe(s.B, s.b01.house, "https://fcm.googleapis.com/fcm/send/b1");
+    cobros = await get("/panel/cobros");
+    assert.match(cobros, new RegExp(`action="/panel/avisos/casa/${s.a14.house.id}"`), "solo la 14 tiene el botón");
+    assert.doesNotMatch(cobros, new RegExp(`action="/panel/avisos/casa/${s.a03.house.id}"`));
+    assert.match(cobros, /1 de 2 casas que deben tienen avisos activos/);
+    assert.match(cobros, /Enviar aviso al celular de 1 casa/);
+    const casas = await get("/panel/casas");
+    assert.match(casas, /Avisos activos/);
+    assert.match(casas, /1 con avisos/);
+    assert.match(await get(`/panel/casas/${s.a14.house.id}`), /Activos en 2 dispositivos/);
+    assert.match(await get(`/panel/casas/${s.a03.house.id}`), /Todavía no los activó/);
+
+    // Sending needs the form token. It reaches the phones of that house only, with the amount, and no personal data.
+    assert.equal((await form(`${s.base}/panel/avisos/casa/${s.a14.house.id}`, { volver: "cobros" }, cookie)).status, 403);
+    const one = await send(`/panel/avisos/casa/${s.a14.house.id}`);
+    assert.match(one.headers.get("location"), /^\/panel\/cobros\?m=avisoenv$/);
+    assert.deepEqual(sent.map((x) => x.endpoint).sort(), ["https://fcm.googleapis.com/fcm/send/a1", "https://fcm.googleapis.com/fcm/send/a2"], "a los dos celulares de esa casa y a nadie más");
+    assert.equal(sent[0].message.title, "Recordatorio de tu cuota");
+    assert.match(sent[0].message.body, /Tienes pendiente \$30\.000 de [a-záéíóú]+\. Toca para ver cómo pagar\./);
+    assert.equal(sent[0].message.url, "@resident/pagar");
+    assert.doesNotMatch(JSON.stringify(sent[0].message), /Sandra|Duque|\/r\//, "ni el nombre ni el enlace personal viajan en el aviso");
+    assert.ok(s.A.houses.get(s.a14.house.id).lastPushAt);
+    assert.match(await get("/panel/cobros?m=avisoenv"), /Aviso enviado al celular de esa casa/);
+
+    // Not again right away.
+    sent.length = 0;
+    assert.match((await send(`/panel/avisos/casa/${s.a14.house.id}`)).headers.get("location"), /m=avisoreciente/);
+    assert.equal(sent.length, 0);
+    assert.match(await get(`/panel/casas/${s.a14.house.id}`), /el último fue/);
+
+    // A house without notifications, or that owes nothing, gets nothing.
+    assert.match((await send(`/panel/avisos/casa/${s.a03.house.id}`)).headers.get("location"), /m=avisonoact/);
+    s.A.payments.recordManual({ houseId: s.a14.house.id, dueIds: s.A.dues.listForHouse(s.a14.house.id).filter((d) => d.status === "pending").map((d) => d.id), method: "cash" });
+    s.A.houses.markPushed(s.a14.house.id); // (the pause is not what this step is about)
+    assert.match((await send(`/panel/avisos/casa/${s.a14.house.id}`)).headers.get("location"), /m=avisonodebe/);
+    assert.equal(sent.length, 0);
+
+    // The other conjunto's treasurer can't send to Marta's houses; and a fake id does nothing.
+    const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+    const csrfL = await csrfOf(s.base, luis.cookie, "/panel/cobros");
+    assert.match((await form(`${s.base}/panel/avisos/casa/${s.a03.house.id}`, { _csrf: csrfL, volver: "cobros" }, luis.cookie)).headers.get("location"), /m=err/);
+    assert.match((await form(`${s.base}/panel/avisos/casa/hs_0000000000000000`, { _csrf: csrf, volver: "cobros" }, cookie)).headers.get("location"), /m=err/);
+    assert.equal(sent.length, 0);
+
+    // Everyone who owes and has notifications: one tap. Houses already pinged are skipped.
+    subscribe(s.A, s.a03.house, "https://updates.push.services.mozilla.com/wpush/v2/c1");
+    s.A.houses.markPushed(s.a14.house.id);
+    const all = await send("/panel/avisos/todas");
+    assert.match(all.headers.get("location"), /^\/panel\/cobros\?m=avisostodos&n=1$/);
+    assert.deepEqual(sent.map((x) => x.endpoint), ["https://updates.push.services.mozilla.com/wpush/v2/c1"]);
+    assert.match(await get("/panel/cobros?m=avisostodos&n=1"), /Aviso enviado al celular de 1 casa que deben/);
+    assert.match((await send("/panel/avisos/todas")).headers.get("location"), /m=avisostodos&n=0/, "la segunda vez nadie nuevo");
+
+    // A phone that no longer exists is cleaned up and the treasurer is told.
+    sent.length = 0;
+    s.A.houses.setActive(s.a03.house.id, true);
+    s.store.db.prepare("UPDATE houses SET last_push_at = NULL WHERE id = ?").run(s.a03.house.id);
+    reply = { ok: false, gone: true };
+    assert.match((await send(`/panel/avisos/casa/${s.a03.house.id}`)).headers.get("location"), /m=avisofallo/);
+    assert.equal(s.A.housePush.count(s.a03.house.id), 0, "se borró el registro muerto");
+
+    // From the house page it comes back to the house page.
+    reply = { ok: true, gone: false };
+    subscribe(s.A, s.a03.house, "https://fcm.googleapis.com/fcm/send/c2");
+    assert.match((await form(`${s.base}/panel/avisos/casa/${s.a03.house.id}`, { _csrf: csrf, volver: "casa" }, cookie)).headers.get("location"), new RegExp(`^/panel/casas/${s.a03.house.id}\\?m=avisoenv$`));
+
+    // The log has it, without endpoints.
+    const log = s.A.audit.list({ limit: 50 }).rows.map((r) => r.summary).join("\n");
+    assert.match(log, /Envió un aviso al celular de la casa 14/);
+    assert.match(log, /Envió un aviso al celular de 1 casa que deben/);
+    assert.doesNotMatch(log, /fcm|mozilla/);
+    assert.equal(s.B.audit.list({ limit: 50 }).rows.filter((r) => /aviso/i.test(r.summary)).length, 0);
+  }, { pushSend });
+});
+
 test("instalar la app: la guía para Android y iPhone está en la página del residente y en Ajustes, y los avisos ya no mandan solo a iPhone", () => withServer(async (s) => {
   const home = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
   assert.match(home, /data-install/);

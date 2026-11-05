@@ -732,10 +732,11 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const period = currentPeriod();
     // The encrypted personal links become `house.link` here, once per request, so the WhatsApp reminders of every page can carry them.
     const sealed = ledger.houses.sealedLinks();
+    const pushCounts = ledger.housePush.counts();
     const houses = ledger.houses.list().map((h) => {
       let link = null;
       try { if (sealed.has(h.id)) link = `${config.publicUrl}/r/${decryptSecret(sealed.get(h.id), config.masterKey)}`; } catch { /* unreadable (key changed): no link in the message */ }
-      return { ...h, link };
+      return { ...h, link, pushDevices: pushCounts.get(h.id) ?? 0 };
     });
     // Who owes what, across months: the sidebar badge, "Por cobrar", the dashboard and the payment form all read this.
     const groups = groupDebts(ledger.dues.listPending(), houses, period, { dueDay: s.tenant.dueDay });
@@ -807,6 +808,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         aliases: ledger.aliases.list(house.id),
         dues: ledger.dues.listForHouse(house.id),
         payments: ledger.payments.list({ houseId: house.id, limit: 20 }).rows,
+        pushDevices: ledger.housePush.count(house.id),
       }));
     }
 
@@ -1279,6 +1281,40 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         }
         if (created.length) { ledger.dues.generate(period); audit("casas", `Importó ${created.length} casa${created.length === 1 ? "" : "s"}`); }
         return send(res, 200, importResultPage({ ...base, created, problems: [...errors, ...skipped].sort((a, b) => a.line - b.line) }));
+      }
+
+      // Push reminders sent by hand to the phones of neighbours who turned notifications on.
+      const pushOne = path.match(/^\/panel\/avisos\/casa\/(hs_[a-f0-9]+)$/);
+      if (pushOne || path === "/panel/avisos/todas") {
+        const back = { cobros: "/panel/cobros", casas: "/panel/casas", casa: pushOne ? `/panel/casas/${pushOne[1]}` : "/panel/cobros" }[String(form.get("volver") ?? "")] ?? "/panel/cobros";
+        const at = (m, n) => redirect(res, `${back}${back.includes("?") ? "&" : "?"}m=${m}${n === undefined ? "" : `&n=${n}`}`);
+        const owingBy = new Map(debts.groups.map((g) => [g.house.id, g]));
+        const monthsText = (months) => { const w = months.map((m) => periodLabel(m).split(" ")[0].toLowerCase()); return w.length === 1 ? w[0] : `${w.slice(0, -1).join(", ")} y ${w.at(-1)}`; };
+        const COOLDOWN_MS = 6 * 3600_000;
+        /** "sent" | "nodebt" | "off" | "recent" | "failed" */
+        const remind = async (house) => {
+          const group = owingBy.get(house.id);
+          if (!group) return "nodebt";
+          if (!house.pushDevices) return "off";
+          if (house.lastPushAt && Date.now() - Date.parse(house.lastPushAt) < COOLDOWN_MS) return "recent";
+          const delivered = await notifier.house(s.tenant.id, house.id, {
+            title: "Recordatorio de tu cuota", body: `Tienes pendiente ${peso(group.totalCents)} de ${monthsText(group.months)}. Toca para ver cómo pagar.`, url: "@resident/pagar", tag: "recordatorio",
+          });
+          if (!delivered) return "failed";
+          ledger.houses.markPushed(house.id);
+          return "sent";
+        };
+        if (pushOne) {
+          const house = houses.find((h) => h.id === pushOne[1]);
+          if (!house) return at("err");
+          const result = await remind(house);
+          if (result === "sent") audit("avisos", `Envió un aviso al celular de la casa ${house.code}`, { type: "casa", id: house.id });
+          return at({ sent: "avisoenv", nodebt: "avisonodebe", off: "avisonoact", recent: "avisoreciente", failed: "avisofallo" }[result]);
+        }
+        let sent = 0;
+        for (const group of debts.groups) if (await remind(houses.find((h) => h.id === group.house.id)) === "sent") sent += 1;
+        if (sent) audit("avisos", `Envió un aviso al celular de ${sent} casa${sent === 1 ? "" : "s"} que deben`);
+        return at("avisostodos", sent);
       }
 
       if (path === "/panel/casas/registro/enlace") {

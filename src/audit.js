@@ -6,6 +6,7 @@ export const AUDIT_ACTIONS = {
   cobros: "Cobros",
   comprobantes: "Comprobantes",
   gastos: "Gastos",
+  avisos: "Avisos",
   ajustes: "Ajustes",
   equipo: "Equipo",
   seguridad: "Seguridad",

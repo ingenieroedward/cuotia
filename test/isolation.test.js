@@ -628,3 +628,18 @@ test("renombrar: solo a personas del propio conjunto, con límites", () => {
   assert.throws(() => A.team.rename(ua, "x"), /entre 2 y 80/);
   assert.throws(() => A.team.rename(ua, "z".repeat(81)), /entre 2 y 80/);
 });
+
+test("avisos a mano: el conteo de celulares y la marca de último aviso son de cada conjunto", () => {
+  const { A, B, a14, b01 } = twoConjuntos();
+  A.housePush.add({ houseId: a14.house.id, endpoint: "https://fcm.googleapis.com/x1", p256dh: "k", auth: "a" });
+  A.housePush.add({ houseId: a14.house.id, endpoint: "https://fcm.googleapis.com/x2", p256dh: "k", auth: "a" });
+  assert.equal(A.housePush.counts().get(a14.house.id), 2);
+  assert.equal(B.housePush.counts().size, 0, "el otro conjunto no ve esos celulares");
+  assert.throws(() => B.houses.markPushed(a14.house.id), /no es de este conjunto|no existe/i);
+  assert.equal(A.houses.get(a14.house.id).lastPushAt, null);
+  A.houses.markPushed(a14.house.id);
+  assert.ok(A.houses.get(a14.house.id).lastPushAt);
+  assert.equal(B.houses.get(b01.house.id).lastPushAt, null);
+  A.houses.setActive(a14.house.id, false);
+  assert.equal(A.housePush.counts().size, 0, "una casa dada de baja ya no cuenta");
+});
