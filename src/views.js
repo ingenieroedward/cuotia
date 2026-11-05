@@ -463,6 +463,25 @@ export function panelLayout(title, ctx, content) {
 </div>`, { legal: false });
 }
 
+/**
+ * "Instala Cuotia en tu celular": steps for Android and iPhone. Without JavaScript both lists show; with it, only the one for
+ * this phone (and an "Instalar ahora" button where the browser offers it); once the app is installed the card hides itself.
+ */
+const installCard = () => html`<section class="card" data-install>
+    <h2>Instala Cuotia en tu celular</h2>
+    <p class="muted small">Queda como una app en tu pantalla de inicio, abre más rápido y, en iPhone, es necesaria para recibir avisos.</p>
+    <button class="btn" type="button" data-install-button hidden>Instalar ahora</button>
+    <div class="install-steps" data-install-steps="android">
+      <b>En Android (Chrome)</b>
+      <ol class="steps small"><li>Toca el menú de los tres puntos, arriba a la derecha.</li><li>Elige <b>Instalar aplicación</b> o <b>Añadir a pantalla de inicio</b>.</li><li>Confirma con <b>Instalar</b>.</li></ol>
+    </div>
+    <div class="install-steps" data-install-steps="ios">
+      <b>En iPhone (Safari)</b>
+      <ol class="steps small"><li>Abre esta página en <b>Safari</b>.</li><li>Toca el botón <b>Compartir</b>, el cuadro con una flecha hacia arriba.</li><li>Baja y elige <b>Añadir a pantalla de inicio</b>, y toca <b>Añadir</b>.</li></ol>
+    </div>
+    <p class="muted small">Después ábrela siempre desde el ícono nuevo.</p>
+  </section>`;
+
 const STATUS = {
   paid: html`<span class="pill ok"><i></i>Pagado</span>`,
   pending: html`<span class="pill warn"><i></i>Pendiente</span>`,
@@ -1079,9 +1098,10 @@ function ajustesCards(args) {
   </section>
 `,
   avisos: html`
+  ${installCard()}
   <section class="card" id="avisos" data-push data-key="${pushKey}" data-csrf="${csrf}">
     <div class="row wrap"><h2>Avisos en el celular</h2>${pushDevices ? html`<span class="pill ok"><i></i>Activos en ${pushDevices} dispositivo${pushDevices === 1 ? "" : "s"}</span>` : html`<span class="pill warn"><i></i>Sin activar</span>`}</div>
-    <p class="muted small">Te avisamos cuando un residente sube un comprobante o entra un pago por pagoradar. Cada persona del equipo los activa en su propio teléfono. En iPhone primero instala la app: Compartir, <b>Añadir a pantalla de inicio</b>, y ábrela desde ahí.</p>
+    <p class="muted small">Te avisamos cuando un residente sube un comprobante o entra un pago por pagoradar. Cada persona del equipo los activa en su propio teléfono. En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
     <p class="small" data-push-status role="status"></p>
     <div class="actions">
       <button class="btn" type="button" data-push-toggle>Activar avisos en este dispositivo</button>
@@ -2071,9 +2091,10 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
   ${proofs.some((p) => p.status === "pending") ? html`<p class="flash info" role="status">Enviaste un comprobante y está en revisión. <a href="/r/${token}/comprobante">Ver</a></p>` : ""}
   ${proofs[0]?.status === "rejected" && owed.length ? html`<p class="flash err" role="status">El tesorero no pudo confirmar tu último comprobante. Revisa el valor o <a href="/r/${token}/comprobante">súbelo de nuevo</a>.</p>` : ""}
 
+  ${installCard()}
   <section class="card" data-push data-key="${pushKey}" data-subscribe-url="/r/${token}/avisos/suscribir" data-unsubscribe-url="/r/${token}/avisos/baja" data-resident>
     <h2>Avisos en este celular</h2>
-    <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone, primero instala la app: Compartir, <b>Añadir a pantalla de inicio</b>, y ábrela desde ahí.</p>
+    <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
     <p class="small" data-push-status role="status"></p>
     <button class="btn ghost" type="button" data-push-toggle>Activar avisos</button>
   </section>
