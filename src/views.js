@@ -1088,7 +1088,7 @@ function ajustesCards(args) {
   ${installCard()}
   <section class="card" id="avisos" data-push data-key="${pushKey}" data-csrf="${csrf}">
     <div class="row wrap"><h2>Avisos en el celular</h2>${pushDevices ? html`<span class="pill ok"><i></i>Activos en ${pushDevices} dispositivo${pushDevices === 1 ? "" : "s"}</span>` : html`<span class="pill warn"><i></i>Sin activar</span>`}</div>
-    <p class="muted small">Te avisamos cuando un residente sube un comprobante o entra un pago por pagoradar. Cada persona del equipo los activa en su propio teléfono. En iPhone, primero instala la app (la guía está arriba) y ábrela desde su ícono.</p>
+    <p class="muted small">Te avisamos cuando un residente sube un comprobante o entra un pago por pagoradar. Cada persona del equipo los activa en su propio teléfono. En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
     <p class="small" data-push-status role="status"></p>
     <div class="actions">
       <button class="btn" type="button" data-push-toggle>Activar avisos en este dispositivo</button>
@@ -2068,7 +2068,7 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
   ${installCard()}
   <section class="card" data-push data-key="${pushKey}" data-subscribe-url="/r/${token}/avisos/suscribir" data-unsubscribe-url="/r/${token}/avisos/baja" data-resident>
     <h2>Avisos en este celular</h2>
-    <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone, primero instala la app (la guía está arriba) y ábrela desde su ícono.</p>
+    <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
     <p class="small" data-push-status role="status"></p>
     <button class="btn ghost" type="button" data-push-toggle>Activar avisos</button>
   </section>
