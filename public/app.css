@@ -830,3 +830,9 @@ details.add-house[open] > form { margin-top: .25rem; }
 a.signup-note { display: block; text-decoration: none; font-weight: 700; }
 .registro-link { margin: -.25rem 0 0; }
 li.signup { flex-direction: column; align-items: stretch; gap: .5rem; }
+
+/* Push reminders */
+.debt-actions form { display: flex; }
+.push-on { color: var(--link); font-weight: 700; }
+.debt-actions { align-items: stretch; }
+.debt-actions form .btn { height: 100%; }

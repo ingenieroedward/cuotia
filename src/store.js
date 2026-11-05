@@ -369,6 +369,10 @@ const MIGRATIONS = [
   );
   CREATE INDEX signup_by_tenant ON signup_requests (tenant_id, status);
   `,
+  /* V24: when the treasurer last sent a push reminder to a house by hand, so the same neighbour is not pinged again and again. */
+  `
+  ALTER TABLE houses ADD COLUMN last_push_at TEXT;
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -386,7 +390,7 @@ const tenantRow = (r) => !r ? null : {
   payMode: r.pay_mode ?? (r.pagoradar_secret ? "auto" : "manual"),
   openingCents: Number(r.opening_cents ?? 0), showAccounts: !!r.show_accounts, publicOn: !!r.public_token_hash, signupOn: !!r.signup_token_hash,
 };
-const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active, hasLink: !!r.access_enc };
+const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active, hasLink: !!r.access_enc, lastPushAt: r.last_push_at ?? null };
 const dueRow = (r) => ({
   id: r.id, houseId: r.house_id, conceptId: r.concept_id, period: r.period, amountCents: r.amount_cents,
   status: r.status, paymentId: r.payment_id, paidAt: r.paid_at,
@@ -723,6 +727,11 @@ export function openStore(path = ":memory:") {
       setActive(houseId, active) {
         ownHouse(houseId);
         db.prepare("UPDATE houses SET active = ? WHERE id = ? AND tenant_id = ?").run(active ? 1 : 0, houseId, tenantId);
+      },
+      /** Notes that a push reminder was just sent to this house by hand. */
+      markPushed(houseId) {
+        ownHouse(houseId);
+        db.prepare("UPDATE houses SET last_push_at = ? WHERE id = ? AND tenant_id = ?").run(nowIso(), houseId, tenantId);
       },
       /** Keeps the encrypted personal link of a house (the caller encrypts: this module never sees the key). */
       setSealedLink(houseId, encrypted) {
@@ -1177,6 +1186,8 @@ export function openStore(path = ":memory:") {
       list: (houseId) => db.prepare("SELECT endpoint, p256dh, auth FROM house_push_subscriptions WHERE tenant_id = ? AND house_id = ?").all(tenantId, houseId)
         .map((r) => ({ endpoint: r.endpoint, p256dh: r.p256dh, auth: r.auth })),
       count: (houseId) => Number(db.prepare("SELECT COUNT(*) AS n FROM house_push_subscriptions WHERE tenant_id = ? AND house_id = ?").get(tenantId, houseId).n),
+      /** houseId -> how many phones have notifications on, for the active houses of this conjunto. */
+      counts: () => new Map(db.prepare("SELECT s.house_id AS id, COUNT(*) AS n FROM house_push_subscriptions s JOIN houses h ON h.id = s.house_id AND h.tenant_id = s.tenant_id WHERE s.tenant_id = ? AND h.active = 1 GROUP BY s.house_id").all(tenantId).map((r) => [r.id, Number(r.n)])),
       /** Which of this conjunto's houses have at least one phone subscribed (for the reminders). */
       houseIds: () => db.prepare("SELECT DISTINCT house_id FROM house_push_subscriptions WHERE tenant_id = ?").all(tenantId).map((r) => r.house_id),
       remove: (endpoint) => void db.prepare("DELETE FROM house_push_subscriptions WHERE tenant_id = ? AND endpoint = ?").run(tenantId, endpoint),

@@ -105,6 +105,12 @@ const FLASH = {
   gastoanul: () => ({ kind: "ok", text: "Gasto anulado: sigue visible como anulado y ya no cuenta en el saldo." }),
   cuentasok: () => ({ kind: "ok", text: "Guardado." }),
   respaldousado: (n) => ({ kind: "info", text: `Entraste con un código de respaldo. Te quedan ${n}. Si perdiste el celular, en Ajustes puedes activar uno nuevo; y genera códigos nuevos cuando se acaben.` }),
+  avisoenv: () => ({ kind: "ok", text: "Aviso enviado al celular de esa casa." }),
+  avisonodebe: () => ({ kind: "info", text: "Esa casa no debe nada ahora: no se envió el aviso." }),
+  avisonoact: () => ({ kind: "info", text: "Esa casa no ha activado los avisos en su celular. Pídele que abra su enlace y pulse \"Activar avisos\"." }),
+  avisoreciente: () => ({ kind: "info", text: "A esa casa ya le enviaste un aviso hace menos de 6 horas. Espera un poco para no molestarla." }),
+  avisofallo: () => ({ kind: "err", text: "No se pudo entregar el aviso. Puede que haya desinstalado la app o quitado los permisos; se limpió su registro." }),
+  avisostodos: (n) => ({ kind: n ? "ok" : "info", text: n ? `Aviso enviado al celular de ${n} casa${n === 1 ? "" : "s"} que deben. Las que no tienen avisos activos, o recibieron uno hace menos de 6 horas, se saltaron.` : "No se envió ningún aviso: ninguna casa que debe tiene avisos activos, o ya recibieron uno hace poco." }),
   regok: () => ({ kind: "ok", text: "El registro de vecinos está activo. Copia el enlace y compártelo en el grupo." }),
   regcambio: () => ({ kind: "ok", text: "Listo: el enlace cambió. El anterior ya no abre nada." }),
   regapagado: () => ({ kind: "ok", text: "El registro de vecinos está apagado: el enlace ya no abre nada." }),
@@ -529,7 +535,7 @@ function houseStatus(group, period) {
 }
 
 /** One house that owes: who, which months, how much, and the buttons to act (record the payment, remind). */
-function debtRow(group, { tenant, period }) {
+function debtRow(group, { tenant, period, csrf = null }) {
   const { house } = group;
   const late = group.overdueCount > 0;
   return html`<li class="debt" data-search="${house.code} ${house.residentName}">
@@ -542,6 +548,7 @@ function debtRow(group, { tenant, period }) {
     <div class="debt-actions">
       <a class="btn alt small" href="/panel/pagos/nuevo?casa=${house.id}">Registrar pago</a>
       <a class="btn ghost small" href="${waLink(house.phone, personalReminder(tenant, group))}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+      ${csrf && house.pushDevices ? html`<form method="post" action="/panel/avisos/casa/${house.id}">${csrfField(csrf)}<input type="hidden" name="volver" value="cobros"><button class="btn ghost small" type="submit" title="Enviar un aviso al celular de esta casa">Avisar</button></form>` : ""}
     </div>
   </li>`;
 }
@@ -728,7 +735,7 @@ export function panelPage(args) {
       ${groups.length
         ? html`<div class="card">
             <div class="row"><h2>Para cobrar primero</h2><a class="small" href="/panel/cobros">Ver todas →</a></div>
-            <ul class="list stack compact">${groups.slice(0, 5).map((g) => debtRow(g, { tenant, period: current }))}</ul>
+            <ul class="list stack compact">${groups.slice(0, 5).map((g) => debtRow(g, { tenant, period: current, csrf: args.csrf }))}</ul>
           </div>`
         : ""}
       <div class="card">
@@ -770,6 +777,12 @@ export function cobrosPage(args) {
       <span class="stat-number big">${peso(totals.totalCents)}</span>
       <span class="muted small">${totals.houses} casa${totals.houses === 1 ? "" : "s"} con cuotas pendientes</span>
       ${everyone ? html`<a class="btn ghost" href="${everyone}" target="_blank" rel="noopener noreferrer">Recordar a todos por WhatsApp</a>` : ""}
+      ${groups.length ? (() => {
+        const withPush = groups.filter((g) => g.house.pushDevices > 0).length;
+        return withPush
+          ? html`<form method="post" action="/panel/avisos/todas">${csrfField(args.csrf)}<input type="hidden" name="volver" value="cobros"><button class="btn ghost" type="submit">Enviar aviso al celular de ${withPush} casa${withPush === 1 ? "" : "s"}</button></form><span class="muted small">${withPush} de ${groups.length} casa${groups.length === 1 ? "" : "s"} que deben tienen avisos activos.</span>`
+          : html`<span class="muted small">Ninguna casa que debe ha activado los avisos todavía: pídeles que abran su enlace y pulsen "Activar avisos".</span>`;
+      })() : ""}
     </div>
     <div class="stat late-card grow${totals.overdueDues ? "" : " calm"}">
       <span class="eyebrow">Atrasadas</span>
@@ -790,7 +803,7 @@ export function cobrosPage(args) {
       </form>
     </div>
     ${shown.length
-      ? html`<ul class="list stack debts" id="lista-cobros">${shown.map((g) => debtRow(g, { tenant, period: current }))}</ul><p class="muted" id="sin-cobros" hidden>Ninguna casa coincide.</p>`
+      ? html`<ul class="list stack debts" id="lista-cobros">${shown.map((g) => debtRow(g, { tenant, period: current, csrf: args.csrf }))}</ul><p class="muted" id="sin-cobros" hidden>Ninguna casa coincide.</p>`
       : groups.length
         ? html`<p class="muted">Ninguna casa coincide con ese filtro.</p>`
         : html`<div class="empty"><span class="okring small">${icon("check", 28, 3)}</span><h2>¡Todo al día!</h2><p class="muted">No hay cuotas pendientes. Cuando llegue un nuevo mes, aparecerán aquí las casas que no hayan pagado.</p></div>`}
@@ -802,7 +815,7 @@ export function casasPage(args) {
   const byHouse = new Map(debts.groups.map((g) => [g.house.id, g]));
   const shown = houses.filter((h) => matchesSearch(q, `${h.code} ${h.residentName}`));
   return panelLayout("Casas", { ...args, active: "casas" }, html`
-  <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}${debts.groups.length ? ` · ${debts.groups.length} con deuda` : ""}</span></div>
+  <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}${debts.groups.length ? ` · ${debts.groups.length} con deuda` : ""}${houses.some((h) => h.pushDevices) ? ` · ${houses.filter((h) => h.pushDevices).length} con avisos` : ""}</span></div>
   ${flashBox(flash)}
   ${signupPending ? html`<a class="flash info signup-note" href="/panel/casas/registro">${signupPending} solicitud${signupPending === 1 ? "" : "es"} de registro por revisar →</a>` : ""}
 
@@ -833,7 +846,7 @@ export function casasPage(args) {
           const g = byHouse.get(h.id);
           return html`<li class="house-row" data-search="${h.code} ${h.residentName}">
             <span class="tile ${g ? (g.overdueCount ? "bad" : "warn") : "ok"}">${h.code}</span>
-            <span class="house-main"><b>${h.residentName}</b><small class="muted">${h.phone ?? "Sin celular"}</small></span>
+            <span class="house-main"><b>${h.residentName}</b><small class="muted">${h.phone ?? "Sin celular"}${h.pushDevices ? html` · <span class="push-on">Avisos activos</span>` : ""}</small></span>
             <span class="house-state">${houseStatus(g, current)}${g ? html`<small class="muted">${peso(g.totalCents)}</small>` : ""}</span>
             <span class="actions">
               ${g ? html`<a class="btn alt small" href="/panel/pagos/nuevo?casa=${h.id}">Registrar pago</a>` : ""}
@@ -1304,7 +1317,7 @@ export function pagosPage(args) {
 
 
 export function casaPage(args) {
-  const { tenant, csrf, flash, house, aliases, dues, payments } = args;
+  const { tenant, csrf, flash, house, aliases, dues, payments, pushDevices = 0 } = args;
   return panelLayout(`Casa ${house.code}`, { ...args, active: "casas" }, html`
   <div class="heading">
     <h1>Casa ${house.code}</h1>
@@ -1325,6 +1338,19 @@ export function casaPage(args) {
       <button class="btn" type="submit">Guardar cambios</button>
     </form>
   </section>
+
+  ${house.active ? (() => {
+    const owes = dues.some((d) => d.status === "pending");
+    return html`<section class="card" id="avisos-casa">
+    <div class="row wrap"><h2>Avisos en el celular</h2>${pushDevices ? html`<span class="pill ok"><i></i>Activos en ${pushDevices} dispositivo${pushDevices === 1 ? "" : "s"}</span>` : html`<span class="pill"><i></i>Sin activar</span>`}</div>
+    ${pushDevices
+      ? html`<p class="muted small">Esta casa recibe en su celular el "Pago confirmado" y los recordatorios del día de vencimiento. Puedes enviarle un recordatorio ahora${house.lastPushAt ? html` (el último fue ${shortDateTime(house.lastPushAt)})` : ""}.</p>
+        ${owes
+          ? html`<form method="post" action="/panel/avisos/casa/${house.id}">${csrfField(csrf)}<input type="hidden" name="volver" value="casa"><button class="btn" type="submit">Enviar aviso ahora</button></form>`
+          : html`<p class="muted small">No debe nada por ahora, así que no hay nada que recordarle.</p>`}`
+      : html`<p class="muted small">Todavía no los activó. Para recibirlos tiene que abrir su enlace personal en el celular y pulsar "Activar avisos". En iPhone primero debe instalar la app.</p>`}
+  </section>`;
+  })() : ""}
 
   <section class="card">
     <h2>Nombres con los que paga</h2>
