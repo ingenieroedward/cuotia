@@ -819,3 +819,8 @@ a.card.more-item .state { margin-top: .15rem; font-weight: 700; color: var(--lin
   .tab[aria-current="page"] { background: var(--ground); color: var(--text); }
 }
 :root[data-theme="dark"] .tabbar { box-shadow: 0 10px 28px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .4); }
+
+/* "Agregar casa" row: the two buttons share one baseline and the closed card has no hidden-form gap under them. */
+details.add-house { gap: 0; }
+details.add-house summary .btn + .btn { margin-top: 0; }
+details.add-house[open] > form { margin-top: .25rem; }

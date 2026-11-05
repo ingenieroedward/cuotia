@@ -2979,3 +2979,9 @@ test("cuentas: un gasto pagado en un mes puede contar en el mes anterior (el vig
   await add({ descripcion: "Bombillos", valor: "50.000", categoria: "Mantenimiento" });
   assert.doesNotMatch(await (await get("/panel/cuentas")).text(), /Bombillos[\s\S]{0,200}del mes de/);
 }));
+
+test("Casas: los dos botones de arriba comparten línea (la regla general de botones apilados no los desalinea)", () => withServer(async (s) => {
+  const css = await (await fetch(`${s.base}/static/app.css`)).text();
+  assert.match(css, /details\.add-house summary \.btn \+ \.btn \{ margin-top: 0; \}/, "sin esto el segundo botón queda 4 px más abajo");
+  assert.match(css, /details\.add-house \{ gap: 0; \}/, "sin esto la tarjeta cerrada deja un hueco debajo y los botones no quedan centrados");
+}));
