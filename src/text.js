@@ -208,3 +208,9 @@ export function paySummary(tenant, { asking = false } = {}) {
   if (parts.length === 0) return "";
   return `${asking ? "Puedes pagar" : "Pueden pagar"} ${parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join("; ")} o ${parts.at(-1)}`}.`;
 }
+
+/** House numbers compare without leading zeros ("3" is "03") and without case ("a1" is "A1"). */
+export function normalizeHouseCode(code) {
+  const c = String(code ?? "").trim().toUpperCase();
+  return /^\d+$/.test(c) ? String(Number(c)) : c;
+}

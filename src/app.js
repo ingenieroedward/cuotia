@@ -19,7 +19,7 @@ import { AUDIT_ACTIONS } from "./audit.js";
 import { MESSAGES, MESSAGE_KEYS, validateTemplate } from "./messages.js";
 import { ALLOWED_ALGS, b64u, fromB64u, verifyAssertion, verifyRegistration } from "./webauthn.js";
 import { message } from "./messages.js";
-import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, transparenciaPage, olvidePage, restablecerPage, recoveryCodesPage, resetLinkPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
+import { ajustesPage, bitacoraPage, conceptosPage, masPage, mensajesPage, privacidadPage, reiniciarPage, casaPage, casasPage, cobrosPage, cuentasPage, residentCuentasPage, transparenciaPage, registroPublicPage, registroGraciasPage, registroAdminPage, olvidePage, restablecerPage, recoveryCodesPage, resetLinkPage, estadoPage, pazYSalvoPage, verificarPage, flashOf, importPage, importResultPage, linkPage, loginPage, notFoundPage, offlinePage, pagoManualPage, pagosPage, panelPage, receiptPage, residentPage, residentPayPage, residentProofPage, inviteAcceptPage, inviteLinkPage, setupPage, twoFaPage } from "./views.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../public/", import.meta.url));
 /** The only static files served: a fixed list, never a path built from the request. */
@@ -64,6 +64,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   const verifyLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const publicLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const forgotLimiter = new AttemptLimiter({ max: 6, windowMs: 15 * 60_000 });
+  const signupLimiter = new AttemptLimiter({ max: 15, windowMs: 60 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
 
@@ -116,6 +117,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         prev: validPastPeriod(shiftPeriod(month, -1)) ? shiftPeriod(month, -1) : null, next: month < currentPeriod() ? shiftPeriod(month, 1) : null,
       }), { "X-Robots-Tag": "noindex, nofollow, noarchive" });
     }
+    // Neighbours ask to be registered through a link the treasurer switches on. It only ever creates a REQUEST.
+    const signup = (method === "GET" || method === "POST") && path.match(/^\/registro\/([A-Za-z0-9_-]{20,})$/);
+    if (signup) return neighbourSignup(req, res, signup[1], method);
     if (method === "GET" && path === "/verificar") {
       const ip = req.socket.remoteAddress;
       const code = String(url.searchParams.get("codigo") ?? "").trim().toUpperCase().slice(0, 12);
@@ -547,6 +551,39 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     return redirect(res, "/login?m=invitado");
   }
 
+  // ---------- neighbours' self-registration ----------
+
+  async function neighbourSignup(req, res, token, method) {
+    const ip = req.socket.remoteAddress;
+    if (publicLimiter.blocked(`reg|${ip}`)) return send(res, 429, "Demasiados intentos. Espera unos minutos.");
+    const tenant = store.tenants.bySignupToken(token);
+    if (!tenant) { publicLimiter.fail(`reg|${ip}`); return send(res, 404, notFoundPage()); }
+    const headers = { "X-Robots-Tag": "noindex, nofollow, noarchive" };
+    if (method === "GET") return send(res, 200, registroPublicPage({ tenant, token }), headers);
+
+    if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
+    const form = new URLSearchParams(await readBody(req, 4 * 1024));
+    const values = { code: String(form.get("codigo") ?? "").trim().slice(0, 12), name: String(form.get("nombre") ?? "").trim().slice(0, 80), phone: String(form.get("celular") ?? "").replace(/\D/g, "").slice(0, 12) };
+    const again = (error, status = 400) => send(res, status, registroPublicPage({ tenant, token, error, values }), headers);
+    if (signupLimiter.blocked(ip)) return again("Has enviado muchas solicitudes. Espera un rato e inténtalo de nuevo.", 429);
+    signupLimiter.fail(ip); // every submission counts: this is public
+    // A hidden field only a bot fills in: answer as if it worked, store nothing.
+    if (String(form.get("web") ?? "") !== "") return send(res, 200, registroGraciasPage({ tenant }), headers);
+    if (form.get("acepto") !== "1") return again("Para continuar, acepta el tratamiento de tus datos.");
+    if (!/^[A-Za-z0-9-]{1,12}$/.test(values.code)) return again("Escribe solo el número de tu casa.");
+    if (values.name.length < 3) return again("Escribe tu nombre completo.");
+    if (!/^3\d{9}$/.test(values.phone)) return again("Escribe tu celular de 10 dígitos, por ejemplo 3001234567.");
+    const ledger = store.forTenant(tenant.id);
+    try {
+      ledger.signups.create({ code: values.code, name: values.name, phone: values.phone });
+    } catch (e) {
+      return again(/demasiadas/.test(e.message) ? "El tesorero tiene muchas solicitudes por revisar. Avísale por WhatsApp." : "No pudimos guardar tu solicitud. Revisa los datos.");
+    }
+    // Same answer whether the house exists or not: this page never says who lives where.
+    void notify(tenant.id, { title: "Cuotia", body: `Nueva solicitud de registro: casa ${values.code.toUpperCase()}`, url: "/panel/casas/registro", tag: "registro" });
+    return send(res, 200, registroGraciasPage({ tenant }), headers);
+  }
+
   // ---------- access recovery ----------
 
   /** Forgot the password: email + one backup code + the new password. Always the same answer when something is wrong, so it never says which emails exist. */
@@ -746,9 +783,17 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       return send(res, 200, cobrosPage({ ...base, flash: flashOf(url.searchParams), groups, shown, totals: debts.totals, filter, q, current: period }));
     }
 
+    if (method === "GET" && path === "/panel/casas/registro") {
+      let registroLink = null;
+      try { const enc = store.tenants.signupTokenEnc(s.tenant.id); if (enc) registroLink = `${config.publicUrl}/registro/${decryptSecret(enc, config.masterKey)}`; } catch { /* unreadable: shown as off */ }
+      // For each request, who already lives under that number, so the treasurer decides with the facts.
+      const pending = ledger.signups.pending().map((r) => ({ ...r, existing: ledger.houses.byCode(r.code) }));
+      return send(res, 200, registroAdminPage({ ...base, flash: flashOf(url.searchParams), registroLink, pending, recent: ledger.signups.recent() }));
+    }
+
     if (method === "GET" && path === "/panel/casas") {
       return send(res, 200, casasPage({
-        ...base, flash: flashOf(url.searchParams), houses, inactive: ledger.houses.listInactive(), debts, current: period,
+        ...base, flash: flashOf(url.searchParams), signupPending: ledger.signups.pendingCount(), houses, inactive: ledger.houses.listInactive(), debts, current: period,
         q: String(url.searchParams.get("q") ?? "").trim().slice(0, 60),
       }));
     }
@@ -1226,6 +1271,55 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         }
         if (created.length) { ledger.dues.generate(period); audit("casas", `Importó ${created.length} casa${created.length === 1 ? "" : "s"}`); }
         return send(res, 200, importResultPage({ ...base, created, problems: [...errors, ...skipped].sort((a, b) => a.line - b.line) }));
+      }
+
+      if (path === "/panel/casas/registro/enlace") {
+        const act = form.get("accion");
+        if (act === "activar" || act === "cambiar") {
+          if (act === "activar" && store.tenants.signupTokenEnc(s.tenant.id)) return redirect(res, "/panel/casas/registro?m=regok");
+          const token = newToken(24);
+          store.tenants.setSignupToken(s.tenant.id, token, encryptSecret(token, config.masterKey));
+          audit("casas", act === "activar" ? "Activó el enlace para que los vecinos se registren" : "Cambió el enlace para que los vecinos se registren");
+          return redirect(res, `/panel/casas/registro?m=${act === "activar" ? "regok" : "regcambio"}`);
+        }
+        if (act === "apagar") {
+          store.tenants.clearSignupToken(s.tenant.id);
+          audit("casas", "Apagó el enlace para que los vecinos se registren");
+          return redirect(res, "/panel/casas/registro?m=regapagado");
+        }
+        return redirect(res, "/panel/casas/registro");
+      }
+
+      const signupAct = path.match(/^\/panel\/casas\/registro\/(sol_[a-f0-9]+)\/(aprobar|rechazar)$/);
+      if (signupAct) {
+        const request = ledger.signups.get(signupAct[1]);
+        if (!request || request.status !== "pending") return redirect(res, "/panel/casas/registro?m=regya");
+        if (signupAct[2] === "rechazar") {
+          ledger.signups.resolve(request.id, "rejected");
+          audit("casas", `Rechazó la solicitud de registro de la casa ${request.code}`);
+          return redirect(res, "/panel/casas/registro?m=regrechazada");
+        }
+        const existing = ledger.houses.byCode(request.code);
+        if (existing && !existing.active) return redirect(res, "/panel/casas/registro?m=regbaja");
+        let house, token;
+        if (existing) {
+          // The house already exists: it gets the neighbour's own name and phone, and a fresh personal link (the old one stops working).
+          ledger.houses.update(existing.id, { code: existing.code, residentName: request.name, phone: request.phone });
+          token = ledger.houses.rotateToken(existing.id);
+          house = ledger.houses.get(existing.id);
+        } else {
+          try {
+            ({ house, accessToken: token } = ledger.houses.create({ code: request.code, residentName: request.name, phone: request.phone }));
+          } catch (e) {
+            if (/UNIQUE/.test(e.message)) return redirect(res, "/panel/casas/registro?m=regya");
+            throw e;
+          }
+        }
+        keepLink(ledger, house.id, token);
+        ledger.dues.generate(period);
+        if (!ledger.signups.resolve(request.id, "approved", house.id)) return redirect(res, "/panel/casas/registro?m=regya");
+        audit("casas", `Aprobó el registro de la casa ${house.code} (${house.residentName})${existing ? ", que ya existía" : ""}`, { type: "casa", id: house.id });
+        return showLink(res, base, house, token);
       }
 
       if (path === "/panel/casas") {

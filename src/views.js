@@ -105,6 +105,12 @@ const FLASH = {
   gastoanul: () => ({ kind: "ok", text: "Gasto anulado: sigue visible como anulado y ya no cuenta en el saldo." }),
   cuentasok: () => ({ kind: "ok", text: "Guardado." }),
   respaldousado: (n) => ({ kind: "info", text: `Entraste con un código de respaldo. Te quedan ${n}. Si perdiste el celular, en Ajustes puedes activar uno nuevo; y genera códigos nuevos cuando se acaben.` }),
+  regok: () => ({ kind: "ok", text: "El registro de vecinos está activo. Copia el enlace y compártelo en el grupo." }),
+  regcambio: () => ({ kind: "ok", text: "Listo: el enlace cambió. El anterior ya no abre nada." }),
+  regapagado: () => ({ kind: "ok", text: "El registro de vecinos está apagado: el enlace ya no abre nada." }),
+  regrechazada: () => ({ kind: "ok", text: "Solicitud rechazada." }),
+  regbaja: () => ({ kind: "err", text: "Esa casa está dada de baja. Reactívala primero (en Casas, abajo) y vuelve a aprobar." }),
+  regya: () => ({ kind: "info", text: "Esa solicitud ya estaba resuelta o no existe." }),
   trok: () => ({ kind: "ok", text: "La página de transparencia está activa. Copia el enlace y compártelo." }),
   trcambio: () => ({ kind: "ok", text: "Listo: el enlace cambió. El anterior ya no abre nada." }),
   trapagado: () => ({ kind: "ok", text: "La página de transparencia está apagada: el enlace ya no abre nada." }),
@@ -790,12 +796,13 @@ export function cobrosPage(args) {
 }
 
 export function casasPage(args) {
-  const { tenant, csrf, flash, houses, inactive = [], debts, current, q = "" } = args;
+  const { tenant, csrf, flash, houses, inactive = [], debts, current, q = "", signupPending = 0 } = args;
   const byHouse = new Map(debts.groups.map((g) => [g.house.id, g]));
   const shown = houses.filter((h) => matchesSearch(q, `${h.code} ${h.residentName}`));
   return panelLayout("Casas", { ...args, active: "casas" }, html`
   <div class="heading"><h1>Casas</h1><span class="muted">${tenant.name} · ${houses.length} casa${houses.length === 1 ? "" : "s"}${debts.groups.length ? ` · ${debts.groups.length} con deuda` : ""}</span></div>
   ${flashBox(flash)}
+  ${signupPending ? html`<a class="flash info signup-note" href="/panel/casas/registro">${signupPending} solicitud${signupPending === 1 ? "" : "es"} de registro por revisar →</a>` : ""}
 
   <details class="card add-house"${houses.length === 0 || flash?.kind === "err" ? raw(" open") : ""}>
     <summary><span class="btn small">+ Agregar casa</span><a class="btn ghost small" href="/panel/casas/importar">Importar varias</a></summary>
@@ -807,6 +814,7 @@ export function casasPage(args) {
       <button class="btn" type="submit">Agregar y ver enlace</button>
     </form>
   </details>
+  <p class="registro-link small"><a href="/panel/casas/registro">Registro de vecinos por enlace →</a></p>
 
   <section class="card">
     <div class="row wrap"><h2>Listado</h2>
@@ -1572,6 +1580,90 @@ export function transparenciaPage({ tenant, token, period, current, books, summa
 </main>`, { manifest: null, noindex: true });
 }
 
+/** What a neighbour sees at the registration link: the house number, their name and phone. It only sends a request. */
+export function registroPublicPage({ tenant, token, error, values = {} }) {
+  return layout(`Registro · ${tenant.name}`, html`
+<main class="center">
+  <form class="card setup" method="post" action="/registro/${token}" autocomplete="off">
+    ${BRAND_MARK}
+    <h1>Registra tu casa</h1>
+    <p class="muted">${tenant.name}. Escribe el número de tu casa y tus datos: el tesorero revisa tu solicitud y te envía por WhatsApp tu enlace personal para ver y pagar tu cuota.</p>
+    ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
+    <label>Número de tu casa<input type="text" name="codigo" maxlength="12" required placeholder="14" inputmode="text" autocapitalize="characters" value="${values.code ?? ""}" autofocus></label>
+    <label>Tu nombre completo<input type="text" name="nombre" maxlength="80" required autocomplete="name" placeholder="Nombre y apellidos" value="${values.name ?? ""}"></label>
+    <label>Tu celular (WhatsApp)<input type="tel" name="celular" maxlength="14" required autocomplete="tel-national" inputmode="tel" placeholder="3001234567" value="${values.phone ?? ""}"></label>
+    <label class="check"><input type="checkbox" name="acepto" value="1" required><span>Autorizo que ${tenant.name} use mis datos para cobrar y confirmar la cuota. <a href="/privacidad" target="_blank" rel="noopener">Ver la política de privacidad</a>.</span></label>
+    <input class="hp" type="text" name="web" tabindex="-1" autocomplete="off" aria-hidden="true">
+    <button class="btn" type="submit" data-busy="Enviando…">Enviar mi solicitud</button>
+  </form>
+</main>`, { manifest: null, noindex: true });
+}
+
+export function registroGraciasPage({ tenant }) {
+  return layout("Solicitud enviada", html`
+<main class="center">
+  <section class="card setup">
+    ${BRAND_MARK}
+    <h1>Solicitud enviada</h1>
+    <p>Le avisamos al tesorero de ${tenant.name}. Cuando la apruebe, te escribirá por WhatsApp con tu enlace personal.</p>
+    <p class="muted small">Si no te llega en unos días, escríbele directamente.</p>
+  </section>
+</main>`, { manifest: null, noindex: true });
+}
+
+/** The treasurer's side: the link (on / change / off) and the requests waiting for an answer. */
+export function registroAdminPage(args) {
+  const { tenant, csrf, flash, registroLink, pending = [], recent = [] } = args;
+  const when = (iso) => shortDateTime(iso);
+  return panelLayout("Registro de vecinos", { ...args, active: "casas" }, html`
+  <p class="backlink"><a href="/panel/casas">← Casas</a></p>
+  <div class="heading"><h1>Registro de vecinos</h1><span class="muted">${tenant.name}</span></div>
+  ${flashBox(flash)}
+
+  <section class="card">
+    <div class="row wrap"><h2>Enlace para que se registren</h2>${registroLink ? html`<span class="pill ok"><i></i>Activo</span>` : html`<span class="pill"><i></i>Apagado</span>`}</div>
+    <p class="muted small">Compártelo en el grupo de vecinos. Cada vecino escribe el número de su casa, su nombre y su celular. <b>Nada se crea solo</b>: te llega como solicitud y tú la apruebas; ahí se crea la casa (o se actualiza si ya existe) y puedes enviarle su enlace personal por WhatsApp.</p>
+    ${registroLink ? html`
+      <div class="key url" id="enlace-registro">${registroLink}</div>
+      <div class="actions">
+        <button class="btn" type="button" data-copy="${registroLink}" data-copy-target="#enlace-registro">Copiar enlace</button>
+        <a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(`Vecinos de ${tenant.name}: registren su casa aquí para recibir su enlace de pago: ${registroLink}`)}" rel="noopener noreferrer">Enviar por WhatsApp</a>
+      </div>
+      <details class="undo"><summary>Cambiar el enlace</summary>
+        <p class="muted small">Crea un enlace nuevo y el anterior deja de funcionar. Úsalo si el enlace llegó a quien no debía.</p>
+        <form method="post" action="/panel/casas/registro/enlace">${csrfField(csrf)}<input type="hidden" name="accion" value="cambiar"><button class="btn ghost small" type="submit">Sí, cambiar el enlace</button></form>
+      </details>
+      <details class="undo"><summary>Apagar el registro</summary>
+        <p class="muted small">El enlace deja de abrir algo. Las solicitudes que ya llegaron se conservan.</p>
+        <form method="post" action="/panel/casas/registro/enlace">${csrfField(csrf)}<input type="hidden" name="accion" value="apagar"><button class="btn ghost small" type="submit">Sí, apagarlo</button></form>
+      </details>`
+    : html`<form method="post" action="/panel/casas/registro/enlace">${csrfField(csrf)}<input type="hidden" name="accion" value="activar"><button class="btn" type="submit">Activar el registro de vecinos</button></form>`}
+  </section>
+
+  <section class="card">
+    <div class="row wrap"><h2>Solicitudes por revisar</h2><span class="count">${pending.length}</span></div>
+    ${pending.length
+      ? html`<ul class="list stack">${pending.map((r) => html`<li class="signup">
+          <div class="row"><span><b>Casa ${r.code} · ${r.name}</b><small class="muted">${r.phone} · ${when(r.createdAt)}</small></span></div>
+          ${r.existing
+            ? html`<p class="note small">${r.existing.active
+                ? html`La casa ${r.existing.code} ya existe (${r.existing.residentName}). Al aprobar se actualizan su nombre y su celular y se crea un <b>enlace personal nuevo</b>: el anterior deja de servir.`
+                : html`La casa ${r.existing.code} está <b>dada de baja</b>. Reactívala antes de aprobar.`}</p>`
+            : html`<p class="muted small">La casa ${r.code} no existe todavía: al aprobar se crea y empieza a recibir cuotas.</p>`}
+          <div class="actions">
+            <form method="post" action="/panel/casas/registro/${r.id}/aprobar">${csrfField(csrf)}<button class="btn small" type="submit"${r.existing && !r.existing.active ? raw(" disabled") : ""}>Aprobar y ver su enlace</button></form>
+            <form method="post" action="/panel/casas/registro/${r.id}/rechazar">${csrfField(csrf)}<button class="btn ghost small" type="submit">Rechazar</button></form>
+          </div>
+        </li>`)}</ul>`
+      : html`<p class="muted">No hay solicitudes por revisar.</p>`}
+  </section>
+
+  ${recent.length ? html`<section class="card">
+    <h2>Últimas resueltas</h2>
+    <ul class="list">${recent.map((r) => html`<li><span><b>Casa ${r.code} · ${r.name}</b><small class="muted">${r.status === "approved" ? "Aprobada" : "Rechazada"} · ${when(r.resolvedAt)}</small></span></li>`)}</ul>
+  </section>` : ""}`);
+}
+
 /** What the conjunto charges: monthly concepts, and one-off charges (cuota extraordinaria, multa) for all houses or one. */
 export function conceptosPage(args) {
   const { tenant, csrf, flash, concepts, houses, current, months } = args;
@@ -2149,6 +2241,7 @@ export function privacidadPage({ contact = "" } = {}) {
     <h2>2. Qué datos se tratan</h2>
     <ul>
       <li><b>De los residentes:</b> nombre, número de casa, celular (opcional), el historial de sus cuotas y pagos, el nombre con el que aparece el pago en el banco, los comprobantes que el propio residente sube y, si los activa, la suscripción a los avisos de su celular.</li>
+      <li><b>Si te registras por el enlace del conjunto:</b> el número de casa, tu nombre y tu celular, que el tesorero revisa antes de crear tu acceso.</li>
       <li><b>Del equipo del conjunto (tesorería):</b> nombre, correo y un registro de lo que hace en el panel (bitácora).</li>
     </ul>
     <p>No se tratan datos sensibles, ni datos de menores de edad, ni se piden documentos de identidad, números de cuenta o claves bancarias. Los comprobantes pueden mostrar datos del banco de quien los sube: súbelos solo si estás de acuerdo.</p>

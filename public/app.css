@@ -824,3 +824,9 @@ a.card.more-item .state { margin-top: .15rem; font-weight: 700; color: var(--lin
 details.add-house { gap: 0; }
 details.add-house summary .btn + .btn { margin-top: 0; }
 details.add-house[open] > form { margin-top: .25rem; }
+
+/* Neighbours' registration */
+.hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+a.signup-note { display: block; text-decoration: none; font-weight: 700; }
+.registro-link { margin: -.25rem 0 0; }
+li.signup { flex-direction: column; align-items: stretch; gap: .5rem; }

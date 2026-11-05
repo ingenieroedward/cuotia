@@ -577,3 +577,41 @@ test("enlaces personales guardados: cada conjunto solo ve y guarda los de sus ca
   A.houses.setActive(a14.house.id, false);
   assert.equal(A.houses.sealedLinks().size, 0, "una casa dada de baja no entrega su enlace");
 });
+
+test("registro de vecinos: solicitudes y enlace son de cada conjunto, con tope y sin duplicados", () => {
+  const { store, A, B, a, b, a14 } = twoConjuntos();
+  const idA = A.signups.create({ code: "9", name: "Vecino de Ibiza", phone: "3001234567" });
+  B.signups.create({ code: "9", name: "Vecino de Robles", phone: "3109876543" });
+  assert.deepEqual(A.signups.pending().map((r) => r.name), ["Vecino de Ibiza"]);
+  assert.equal(B.signups.get(idA), null, "el otro conjunto no la ve");
+  assert.equal(B.signups.resolve(idA, "approved"), false, "ni la resuelve");
+  assert.equal(A.signups.pendingCount(), 1);
+  assert.equal(A.signups.resolve(idA, "approved", a14.house.id), true);
+  assert.equal(A.signups.resolve(idA, "approved"), false, "una sola vez");
+  assert.equal(A.signups.pendingCount(), 0);
+  assert.equal(A.signups.recent().length, 1);
+  // The same neighbour twice keeps one pending request; limits and validation.
+  A.signups.create({ code: "9", name: "Vecino Repetido", phone: "3001234567" });
+  A.signups.create({ code: "9", name: "Vecino Repetido", phone: "3001234567" });
+  assert.equal(A.signups.pendingCount(), 1);
+  assert.throws(() => A.signups.create({ code: "", name: "Vecino Repetido", phone: "3001234567" }), /número de tu casa/);
+  assert.throws(() => A.signups.create({ code: "9", name: "x", phone: "3001234567" }), /nombre/);
+  assert.throws(() => A.signups.create({ code: "9", name: "Vecino Repetido", phone: "123" }), /celular/);
+  for (let i = 0; i < 60; i++) { try { A.signups.create({ code: String(100 + i), name: "Vecino Número " + i, phone: "3001234567" }); } catch { break; } }
+  assert.throws(() => A.signups.create({ code: "999", name: "Vecino de Más", phone: "3009999999" }), /demasiadas/);
+  // The tokens: each conjunto's link opens only its own; a "3" finds the house "03".
+  store.tenants.setSignupToken(a.id, "token-de-ibiza-00000000000", "x");
+  store.tenants.setSignupToken(b.id, "token-de-robles-0000000000", "y");
+  assert.equal(store.tenants.bySignupToken("token-de-ibiza-00000000000").id, a.id);
+  assert.equal(store.tenants.bySignupToken("token-de-robles-0000000000").id, b.id);
+  store.tenants.clearSignupToken(a.id);
+  assert.equal(store.tenants.bySignupToken("token-de-ibiza-00000000000"), null);
+  assert.equal(store.tenants.bySignupToken("token-de-robles-0000000000").id, b.id, "el otro sigue");
+  assert.equal(A.houses.byCode("3")?.code, "03");
+  assert.equal(A.houses.byCode("03")?.code, "03");
+  assert.equal(B.houses.byCode("14"), null);
+  // "Empezar de cero" clears the requests of that conjunto only.
+  A.reset({ keepHouses: true });
+  assert.equal(A.signups.pendingCount(), 0);
+  assert.equal(B.signups.pendingCount(), 1);
+});
