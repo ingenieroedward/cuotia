@@ -1280,8 +1280,17 @@ export function openStore(path = ":memory:") {
 
     /** What the conjunto spends. A mistake is voided (it stays visible as "anulado"), never erased. */
     const expenses = {
-      create({ spentOn, amountCents, category, description, proof = null, userId = null }) {
+      /**
+       * `spentOn` is the day it was really paid. `period` is the month it belongs to in the books: by default the same month, but
+       * a bill paid on 1 November for the October service counts in October (never in a later month than the payment, nor more than a year before).
+       */
+      create({ spentOn, amountCents, category, description, proof = null, userId = null, period = null }) {
         if (!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(String(spentOn)) || spentOn < "2024-01-01") throw new Error("La fecha del gasto no es válida");
+        const paidMonth = spentOn.slice(0, 7);
+        const forPeriod = period || paidMonth;
+        const [py, pm] = paidMonth.split("-").map(Number);
+        const earliest = `${py - 1}-${String(pm).padStart(2, "0")}`;
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(forPeriod)) || forPeriod > paidMonth || forPeriod < earliest) throw new Error("El mes del gasto no es válido");
         if (!Number.isSafeInteger(amountCents) || amountCents <= 0 || amountCents > 100_000_000_00) throw new Error("El valor del gasto no es válido");
         if (!EXPENSE_CATEGORIES.includes(category)) throw new Error("Esa categoría no existe");
         const text = String(description ?? "").trim().slice(0, 120);
@@ -1289,7 +1298,7 @@ export function openStore(path = ":memory:") {
         if (proof && (!proof.mime || !proof.data?.length || proof.data.length > 5 * 1024 * 1024)) throw new Error("El soporte no es válido");
         const id = newId("gt");
         db.prepare("INSERT INTO expenses (id, tenant_id, spent_on, period, amount_cents, category, description, proof_mime, proof, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-          .run(id, tenantId, spentOn, spentOn.slice(0, 7), amountCents, category, text, proof?.mime ?? null, proof?.data ?? null, userId, nowIso());
+          .run(id, tenantId, spentOn, forPeriod, amountCents, category, text, proof?.mime ?? null, proof?.data ?? null, userId, nowIso());
         return { id };
       },
       /** The month's expenses (voided ones included, marked), newest first. No file bytes. */

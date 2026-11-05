@@ -441,13 +441,14 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const spentOn = String(parsed.fields.fecha ?? "");
     const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
     if (!amountCents || spentOn > today) return redirect(res, "/panel/cuentas?m=gastobad");
+    const forPeriod = String(parsed.fields.mes_gasto ?? "").trim() || spentOn.slice(0, 7);
     try {
-      ledger.expenses.create({ spentOn, amountCents, category: String(parsed.fields.categoria ?? ""), description: parsed.fields.descripcion, proof, userId: s.user.id });
+      ledger.expenses.create({ spentOn, amountCents, category: String(parsed.fields.categoria ?? ""), description: parsed.fields.descripcion, proof, userId: s.user.id, period: forPeriod });
     } catch {
       return redirect(res, "/panel/cuentas?m=gastobad");
     }
-    auditFor(ledger, s)("gastos", `Registró un gasto de ${peso(amountCents)}: ${String(parsed.fields.descripcion ?? "").trim().slice(0, 80)} (${parsed.fields.categoria})${proof ? ", con soporte" : ""}`);
-    return redirect(res, `/panel/cuentas?${spentOn.slice(0, 7) !== period ? `mes=${spentOn.slice(0, 7)}&` : ""}m=gastook`);
+    auditFor(ledger, s)("gastos", `Registró un gasto de ${peso(amountCents)}: ${String(parsed.fields.descripcion ?? "").trim().slice(0, 80)} (${parsed.fields.categoria})${forPeriod !== spentOn.slice(0, 7) ? `, del mes de ${periodLabel(forPeriod).toLowerCase()}` : ""}${proof ? ", con soporte" : ""}`);
+    return redirect(res, `/panel/cuentas?${forPeriod !== period ? `mes=${forPeriod}&` : ""}m=gastook`);
   }
 
   async function pagoradarWebhook(req, res, tenantId) {
@@ -821,8 +822,8 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       const month = validPastPeriod(asked) ? asked : period;
       const list = ledger.expenses.list({ period: month });
       if (path === "/panel/cuentas.csv") {
-        const head = ["Fecha", "Categoría", "Descripción", "Valor (COP)", "Soporte", "Estado"];
-        const lines = list.map((e) => [e.spentOn, e.category, e.description, Math.round(e.amountCents / 100), e.hasProof ? "Sí" : "No", e.voided ? "Anulado" : "Vigente"].map(csvCell).join(";"));
+        const head = ["Fecha de pago", "Mes", "Categoría", "Descripción", "Valor (COP)", "Soporte", "Estado"];
+        const lines = list.map((e) => [e.spentOn, e.period, e.category, e.description, Math.round(e.amountCents / 100), e.hasProof ? "Sí" : "No", e.voided ? "Anulado" : "Vigente"].map(csvCell).join(";"));
         return send(res, 200, `\uFEFF${[head.map(csvCell).join(";"), ...lines].join("\r\n")}\r\n`, {
           "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="gastos-${month}.csv"`,
         });
