@@ -3408,3 +3408,27 @@ test("avisos: un fallo interno del envío ya no es silencioso: se registra y el 
     console.warn = realWarn;
   }
 });
+
+test("avisos del vecino: desactivar y probar nunca se bloquean por haber activado varias veces (antes todo compartía un límite de 12 y daba 429)", () => withServer(async (s) => {
+  const { createECDH, randomBytes } = await import("node:crypto");
+  const keysFor = () => { const e = createECDH("prime256v1"); e.generateKeys(); return { p256dh: e.getPublicKey().toString("base64url"), auth: randomBytes(16).toString("base64url") }; };
+  await fetch(`${s.base}/r/${s.a14.accessToken}`);
+  const call = (action, fields = {}) => post(`${s.base}/r/${s.a14.accessToken}/avisos/${action}`, new URLSearchParams(fields), FORM);
+  const endpoint = (n) => `https://fcm.googleapis.com/fcm/send/prueba-${n}`;
+  // Switch on and off 20 times in a row (the way someone testing does): never blocked.
+  for (let n = 0; n < 20; n++) {
+    assert.equal((await call("suscribir", { endpoint: endpoint(n), ...keysFor() })).status, 200, `activar ${n}`);
+    assert.equal((await call("baja", { endpoint: endpoint(n) })).status, 200, `desactivar ${n}`);
+  }
+  assert.equal(s.A.housePush.count(s.a14.house.id), 0);
+  // Taking it off still works even after many "baja" calls, and the test has its own counter.
+  for (let n = 0; n < 40; n++) assert.equal((await call("baja", { endpoint: endpoint(99) })).status, 200);
+  assert.equal((await call("probar")).status, 200);
+  // Only subscribing is capped (30 an hour), with a plain message.
+  for (let n = 0; n < 9; n++) await call("suscribir", { endpoint: endpoint(100 + n), ...keysFor() }); // 29 so far
+  assert.equal((await call("suscribir", { endpoint: endpoint(200), ...keysFor() })).status, 200, "la 30");
+  const over = await call("suscribir", { endpoint: endpoint(201), ...keysFor() });
+  assert.equal(over.status, 429);
+  assert.match(await over.text(), /Espera un rato/);
+  assert.equal((await call("baja", { endpoint: endpoint(200) })).status, 200, "y aun así se puede desactivar");
+}));
