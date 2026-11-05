@@ -703,3 +703,14 @@ li, dd, label { text-wrap: pretty; }
 .backlink { margin: 0; }
 .backlink a { display: inline-flex; align-items: center; min-height: 44px; text-decoration: none; font-weight: 600; }
 a.card.more-item .state { margin-top: .15rem; font-weight: 700; color: var(--link); }
+
+/* Sign-in */
+.pw-wrap { position: relative; display: block; }
+.pw-wrap > input { padding-right: 4.5rem; }
+.pw-toggle { position: absolute; top: 50%; right: .35rem; transform: translateY(-50%); min-height: 40px; padding: 0 .75rem; border: 0; border-radius: 10px; background: transparent; color: var(--link); font: inherit; font-size: .85rem; font-weight: 700; cursor: pointer; }
+.forgot { margin: -.35rem 0 0; text-align: right; font-size: .875rem; }
+.who { margin: 0; text-align: center; overflow-wrap: anywhere; }
+.or { display: flex; align-items: center; gap: .75rem; margin: .25rem 0 .75rem; color: var(--muted); font-size: .85rem; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.linkbtn { background: none; border: 0; padding: .5rem; min-height: 44px; color: var(--muted); font: inherit; font-size: .875rem; text-decoration: underline; cursor: pointer; }
+.btn:disabled { opacity: .7; cursor: progress; }

@@ -599,11 +599,11 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (!s) return redirect(res, "/login");
     if (s.stage !== "pending") return redirect(res, s.stage === "full" ? "/panel" : "/2fa");
     const form = new URLSearchParams(await readBody(req, 4 * 1024));
-    if (codeLimiter.blocked(s.user.id)) return send(res, 429, twoFaPage({ stage: s.stage, backupAction: "/2fa/respaldo", error: "Demasiados intentos. Vuelve a entrar en unos minutos." }));
+    if (codeLimiter.blocked(s.user.id)) return send(res, 429, twoFaPage({ stage: s.stage, email: s.user.email, backupAction: "/2fa/respaldo", error: "Demasiados intentos. Vuelve a entrar en unos minutos." }));
     const code = normalizeRecoveryCode(form.get("codigo"));
     if (!code || !store.recoveryCodes.consume(s.user.id, recoveryHash(code, config.masterKey))) {
       codeLimiter.fail(s.user.id);
-      return send(res, 401, twoFaPage({ stage: s.stage, backupAction: "/2fa/respaldo", error: "Ese código de respaldo no sirve. Revisa que lo escribiste igual que en tu hoja, o que no lo hayas usado ya." }));
+      return send(res, 401, twoFaPage({ stage: s.stage, email: s.user.email, backupAction: "/2fa/respaldo", error: "Ese código de respaldo no sirve. Revisa que lo escribiste igual que en tu hoja, o que no lo hayas usado ya." }));
     }
     codeLimiter.clear(s.user.id);
     const ledger = store.forTenant(s.user.tenantId);
@@ -648,7 +648,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const s = sessionOf(req);
     if (!s) return redirect(res, "/login");
     if (s.stage === "full") return redirect(res, "/panel");
-    const view = { stage: s.stage, error, backupAction: s.stage === "pending" ? "/2fa/respaldo" : null };
+    const view = { stage: s.stage, error, email: s.user.email, backupAction: s.stage === "pending" ? "/2fa/respaldo" : null };
     if (s.stage === "setup") {
       const user = store.users.byId(s.user.id);
       view.secret = enrollmentSecret(user);
@@ -664,7 +664,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (!s) return redirect(res, "/login");
     if (s.stage === "full") return redirect(res, "/panel");
     const form = new URLSearchParams(await readBody(req, 4 * 1024));
-    if (codeLimiter.blocked(s.user.id)) return send(res, 429, twoFaPage({ stage: s.stage, backupAction: s.stage === "pending" ? "/2fa/respaldo" : null, error: "Demasiados intentos. Vuelve a entrar en unos minutos." }));
+    if (codeLimiter.blocked(s.user.id)) return send(res, 429, twoFaPage({ stage: s.stage, email: s.user.email, backupAction: s.stage === "pending" ? "/2fa/respaldo" : null, error: "Demasiados intentos. Vuelve a entrar en unos minutos." }));
 
     const user = store.users.byId(s.user.id);
     if (!user.totpSecret) return redirect(res, "/2fa"); // setup: the key is created when the page is first opened

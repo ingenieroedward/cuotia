@@ -2894,3 +2894,36 @@ test("Ajustes ordenado: un índice con seis secciones, cada tarjeta en su secci�
   s.store.tenants.touchPagoradar(s.a.id);
   assert.match(await text("/panel/ajustes"), /Conectado/);
 }));
+
+test("login: el enlace de olvidé está junto a la contraseña, los botones evitan el doble envío, el segundo paso dice quién entra y permite cambiar de cuenta", () => withServer(async (s) => {
+  const login = await (await fetch(`${s.base}/login`)).text();
+  assert.match(login, /name="password"[^>]*enterkeyhint="go"/);
+  assert.match(login, /autocapitalize="none"[^>]*spellcheck="false"/, "el correo no se autocorrige ni se pone en mayúscula");
+  assert.match(login, /<p class="forgot"><a href="\/olvide">/);
+  assert.match(login, /<button class="btn" type="submit" data-busy="Entrando…">/);
+  assert.equal((login.match(/href="\/olvide"/g) ?? []).length, 1);
+
+  const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const { cookie: pending } = await passwordStep(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const second = await (await fetch(`${s.base}/2fa`, { headers: { cookie: pending } })).text();
+  assert.match(second, /Entrando como <b>marta@ejemplo\.com<\/b>/);
+  assert.match(second, /data-autosubmit="6"/);
+  assert.match(second, /data-busy="Verificando…"/);
+  assert.match(second, /formaction="\/logout"/, "No soy yo: salir de esta cuenta");
+  // "No soy yo" ends the short session, so /login shows the form again instead of bouncing back to the code page.
+  const out = await form(`${s.base}/logout`, { code: "123456" }, pending);
+  assert.equal(out.headers.get("location"), "/login");
+  assert.equal((await fetch(`${s.base}/2fa`, { headers: { cookie: pending }, redirect: "manual" })).status, 303);
+  assert.equal((await fetch(`${s.base}/login`, { headers: { cookie: pending }, redirect: "manual" })).status, 200);
+
+  // The enrollment step (first time) doesn't claim an identity line or a switch button it can't back up.
+  const setupUser = s.store.users.create({ tenantId: s.a.id, email: "nuevo@ejemplo.com", passwordHash: await hashPassword("clave-de-nuevo-1") });
+  const { cookie: setup } = await passwordStep(s.base, "nuevo@ejemplo.com", "clave-de-nuevo-1");
+  const enroll = await (await fetch(`${s.base}/2fa`, { headers: { cookie: setup } })).text();
+  assert.match(enroll, /Protege tu cuenta/);
+  assert.doesNotMatch(enroll, /Entrando como/);
+  assert.ok(setupUser);
+  // The script that adds the show/hide button is part of the shared bundle.
+  const js = await (await fetch(`${s.base}/static/app.js`)).text();
+  assert.match(js, /pw-toggle/);
+}));
