@@ -2928,3 +2928,54 @@ test("login: el enlace de olvidé está junto a la contraseña, los botones evit
   const js = await (await fetch(`${s.base}/static/app.js`)).text();
   assert.match(js, /pw-toggle/);
 }));
+
+test("cuentas: un gasto pagado en un mes puede contar en el mes anterior (el vigilante de octubre pagado el 1 de noviembre)", () => withServer(async (s) => {
+  const month = currentPeriod();
+  const before = shiftPeriod(month, -1);
+  const today = bogotaDateTime(new Date().toISOString()).slice(0, 10);
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/cuentas");
+  const get = async (path) => (await fetch(`${s.base}${path}`, { headers: { cookie }, redirect: "manual" }));
+  const add = (fields) => fetch(`${s.base}/panel/gastos`, { method: "POST", body: expenseForm({ descripcion: "Pago del vigilante de octubre", valor: "1.200.000", categoria: "Vigilancia", fecha: today, ...fields }, { csrf }), redirect: "manual", headers: { cookie } });
+  assert.match(await (await get("/panel/cuentas")).text(), /name="mes_gasto"/);
+
+  // Refused: a month after the payment, more than a year back, or garbage. Nothing is saved.
+  for (const bad of [shiftPeriod(month, 1), shiftPeriod(month, -13), "octubre", "2026-13"]) {
+    assert.match((await add({ mes_gasto: bad })).headers.get("location"), /m=gastobad/, bad);
+  }
+  assert.equal(s.A.expenses.list({ period: month }).length + s.A.expenses.list({ period: before }).length, 0);
+
+  // Paid today, but it belongs to last month.
+  const ok = await add({ mes_gasto: before });
+  assert.match(ok.headers.get("location"), new RegExp(`mes=${before}&m=gastook`), "te lleva al mes al que pertenece");
+  const [gasto] = s.A.expenses.list({ period: before });
+  assert.equal(gasto.spentOn, today, "la fecha real del pago se conserva");
+  assert.equal(gasto.period, before);
+  assert.equal(s.A.expenses.list({ period: month }).length, 0, "no cuenta en el mes del pago");
+  assert.equal(s.A.books(before).spentCents, 120_000_000);
+  assert.equal(s.A.books(month).spentCents, 0);
+  assert.equal(s.A.books(month).cashCents, -120_000_000, "pero el saldo en caja acumulado ya lo descuenta");
+  assert.equal(s.A.books(before).cashCents, -120_000_000);
+
+  // Every place that lists it says it was paid for another month.
+  const list = await (await get(`/panel/cuentas?mes=${before}`)).text();
+  assert.match(list, /del mes de [a-záéíóú]+/);
+  const csv = await (await get(`/panel/cuentas.csv?mes=${before}`)).text();
+  assert.match(csv, /"Fecha de pago";"Mes";"Categoría"/);
+  assert.match(csv, new RegExp(`"${today}";"${before}";"Vigilancia"`));
+  assert.ok(s.A.audit.list({ limit: 20 }).rows.some((r) => /del mes de /.test(r.summary) && /Pago del vigilante de octubre/.test(r.summary)));
+
+  // The public page and the resident see it under the month it belongs to.
+  await form(`${s.base}/panel/transparencia`, { accion: "activar", _csrf: csrf }, cookie);
+  const enc = s.store.tenants.publicTokenEnc(s.a.id);
+  assert.ok(enc);
+  s.store.tenants.setAccounts(s.a.id, { openingCents: 0, showAccounts: true });
+  const resident = await (await fetch(`${s.base}/r/${s.a14.accessToken}/cuentas?mes=${before}`)).text();
+  assert.match(resident, /Pago del vigilante de octubre/);
+  assert.match(resident, /del mes de /);
+  assert.doesNotMatch(await (await fetch(`${s.base}/r/${s.a14.accessToken}/cuentas`)).text(), /Pago del vigilante de octubre/);
+
+  // Same month as the payment: nothing extra is shown.
+  await add({ descripcion: "Bombillos", valor: "50.000", categoria: "Mantenimiento" });
+  assert.doesNotMatch(await (await get("/panel/cuentas")).text(), /Bombillos[\s\S]{0,200}del mes de/);
+}));

@@ -1412,6 +1412,9 @@ const booksHero = (books, period) => html`<section class="hero" aria-label="Cuen
   </div>
 </section>`;
 
+/** "3 de nov · Vigilancia", plus "· del mes de octubre" when it was paid in one month for another. */
+const expenseMeta = (e) => `${shortDate(`${e.spentOn}T17:00:00.000Z`)} · ${e.category}${e.spentOn.slice(0, 7) !== e.period ? ` · del mes de ${periodLabel(e.period).split(" ")[0].toLowerCase()}` : ""}`;
+
 const categoryBars = (books) => books.byCategory.length
   ? html`<ul class="catbars">${books.byCategory.map((c) => html`<li>
       <span class="row"><span>${c.category}</span><b>${peso(c.cents)}</b></span>
@@ -1449,7 +1452,7 @@ export function cuentasPage(args) {
     ${expenses.length
       ? html`<ul class="list stack">${expenses.map((e) => html`<li class="expense${e.voided ? " voided" : ""}">
           <div class="row">
-            <span><b>${e.description}</b><small class="muted">${shortDate(`${e.spentOn}T17:00:00.000Z`)} · ${e.category}${e.voided ? " · anulado" : ""}</small></span>
+            <span><b>${e.description}</b><small class="muted">${expenseMeta(e)}${e.voided ? " · anulado" : ""}</small></span>
             <b class="amount">${peso(e.amountCents)}</b>
           </div>
           <div class="actions">
@@ -1471,8 +1474,15 @@ export function cuentasPage(args) {
         <label>¿En qué se gastó?<input type="text" name="descripcion" maxlength="120" required placeholder="Pago del vigilante de noviembre"></label>
         <label>Valor (pesos)<input type="text" name="valor" inputmode="numeric" maxlength="14" required placeholder="1.200.000"></label>
         <label>Categoría<select name="categoria">${categories.map((c) => html`<option value="${c}">${c}</option>`)}</select></label>
-        <label>Fecha<input type="date" name="fecha" value="${today}" max="${today}" required></label>
+        <label>Fecha en que pagaste<input type="date" name="fecha" value="${today}" max="${today}" required></label>
+        <label>¿De qué mes es?
+          <select name="mes_gasto">
+            <option value="">Del mes de la fecha</option>
+            ${lastPeriods(current, 6).map((m) => html`<option value="${m}">Gasto de ${periodLabel(m)}</option>`)}
+          </select>
+        </label>
       </div>
+      <p class="muted small">Si pagas el 1 de noviembre el servicio de octubre, pon la fecha real del pago y elige <b>Octubre</b> en "¿De qué mes es?": el gasto cuenta en octubre y queda anotado cuándo se pagó.</p>
       <label>Foto o PDF del soporte <span class="muted small">(opcional, máximo 5 MB)</span><input type="file" name="soporte" accept="image/jpeg,image/png,image/webp,application/pdf"></label>
       <button class="btn" type="submit">Registrar gasto</button>
     </form>
@@ -1525,7 +1535,7 @@ export function residentCuentasPage({ tenant, token, period, current, books, exp
     ${categoryBars(books)}
     ${expenses.length
       ? html`<ul class="list stack">${expenses.map((e) => html`<li class="expense">
-          <div class="row"><span><b>${e.description}</b><small class="muted">${shortDate(`${e.spentOn}T17:00:00.000Z`)} · ${e.category}</small></span><b class="amount">${peso(e.amountCents)}</b></div>
+          <div class="row"><span><b>${e.description}</b><small class="muted">${expenseMeta(e)}</small></span><b class="amount">${peso(e.amountCents)}</b></div>
           ${e.hasProof ? html`<a class="small" href="${base}/${e.id}/soporte" target="_blank" rel="noopener">Ver soporte</a>` : ""}
         </li>`)}</ul>`
       : html`<p class="muted">Aún no hay gastos registrados en ${periodLabel(period)}.</p>`}
@@ -1554,7 +1564,7 @@ export function transparenciaPage({ tenant, token, period, current, books, summa
     ${categoryBars(books)}
     ${expenses.length
       ? html`<ul class="list stack">${expenses.map((e) => html`<li class="expense">
-          <div class="row"><span><b>${e.description}</b><small class="muted">${shortDate(`${e.spentOn}T17:00:00.000Z`)} · ${e.category}</small></span><b class="amount">${peso(e.amountCents)}</b></div>
+          <div class="row"><span><b>${e.description}</b><small class="muted">${expenseMeta(e)}</small></span><b class="amount">${peso(e.amountCents)}</b></div>
         </li>`)}</ul>`
       : html`<p class="muted">Aún no hay gastos registrados en ${periodLabel(period)}.</p>`}
   </section>
