@@ -3283,3 +3283,104 @@ test("instalar la app: la guía para Android y iPhone está en la página del re
   assert.match(js, /beforeinstallprompt/);
   assert.match(js, /display-mode: standalone/);
 }));
+
+test("avisos: cuando el servicio de notificaciones rechaza, el tesorero ve por qué; y el vecino puede probar que le llegan", async () => {
+  const sent = [];
+  let reply = { ok: true, gone: false, status: 201, detail: "" };
+  const pushSend = async (sub, message) => { sent.push({ endpoint: sub.endpoint, message }); return reply; };
+  const warns = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => { warns.push(args.join(" ")); };
+  try {
+    await withServer(async (s) => {
+      const month = currentPeriod();
+      s.A.dues.generate(month);
+      const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+      const csrf = await csrfOf(s.base, cookie, "/panel/cobros");
+      const get = async (path) => (await (await fetch(`${s.base}${path}`, { headers: { cookie } })).text());
+      await fetch(`${s.base}/r/${s.a14.accessToken}`); // creates the notification keys, as a phone opening the page does
+      s.A.housePush.add({ houseId: s.a14.house.id, endpoint: "https://fcm.googleapis.com/fcm/send/a1", p256dh: "k", auth: "a" });
+      assert.match(await get("/panel/ajustes/dispositivo"), /data-push/);
+      assert.doesNotMatch(await get("/panel/ajustes/dispositivo"), /Último problema al enviar/, "sin fallos no se muestra nada");
+
+      // The push service says no (403): the treasurer is told what that means, and the log has the cause.
+      reply = { ok: false, gone: false, status: 403, detail: "BadJwtToken" };
+      const bad = await form(`${s.base}/panel/avisos/casa/${s.a14.house.id}`, { _csrf: csrf, volver: "cobros" }, cookie);
+      assert.equal(bad.headers.get("location"), "/panel/cobros?m=avisofallo&n=403");
+      const flash = await get("/panel/cobros?m=avisofallo&n=403");
+      assert.match(flash, /No se pudo entregar el aviso\. El servicio de notificaciones rechazó la llave del servidor \(respondió 403\)/);
+      assert.ok(warns.some((w) => /\[avisos\] fcm\.googleapis\.com respondió 403: BadJwtToken/.test(w)), "queda en el registro del servidor");
+      const panel = await get("/panel/ajustes/dispositivo");
+      assert.match(panel, /Último problema al enviar:/);
+      assert.match(panel, /fcm\.googleapis\.com: BadJwtToken/);
+      assert.doesNotMatch(panel, /fcm\/send\/a1/, "nunca muestra la dirección del celular");
+
+      // Each kind of answer has its own explanation.
+      for (const [n, text] of [[0, /no logró comunicarse/], [410, /ya no está registrado/], [400, /rechazó el mensaje/], [429, /pide esperar/], [502, /respondió 502/]]) {
+        assert.match(await get(`/panel/cobros?m=avisofallo&n=${n}`), text, String(n));
+      }
+
+      // The treasurer's own test button says it too.
+      s.A.team.list(); s.A.push.add({ userId: s.store.users.byEmail("marta@ejemplo.com").id, endpoint: "https://fcm.googleapis.com/fcm/send/m1", p256dh: "k", auth: "a" });
+      const probe = await form(`${s.base}/panel/push/probar`, { _csrf: csrf }, cookie);
+      assert.equal(probe.headers.get("location"), "/panel/ajustes/dispositivo?m=pushfallo&n=403");
+      assert.match(await get("/panel/ajustes/dispositivo?m=pushfallo&n=403"), /No se pudo enviar el aviso de prueba\./);
+
+      // It works again: the warning goes away on its own.
+      reply = { ok: true, gone: false, status: 201, detail: "" };
+      assert.match((await form(`${s.base}/panel/push/probar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=pushprobe$/);
+      assert.doesNotMatch(await get("/panel/ajustes/dispositivo"), /Último problema al enviar/);
+
+      // The neighbour tests their own phone.
+      const home = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
+      assert.match(home, /data-push-test data-test-url="\/r\/[^"]+\/avisos\/probar" hidden/, "el botón está, y se muestra solo al activar");
+      const probar = (token, headers = {}) => post(`${s.base}/r/${token}/avisos/probar`, "", { ...FORM, ...headers });
+      sent.length = 0;
+      const ok = await probar(s.a14.accessToken);
+      assert.deepEqual(await ok.json(), { sent: 1, status: 200 });
+      assert.deepEqual(sent.map((x) => x.endpoint), ["https://fcm.googleapis.com/fcm/send/a1"]);
+      assert.deepEqual(sent[0].message, { title: "Cuotia", body: "Los avisos funcionan en este celular.", url: "@resident", tag: "prueba" });
+      reply = { ok: false, gone: false, status: 403, detail: "x" };
+      assert.deepEqual(await (await probar(s.a14.accessToken)).json(), { sent: 0, status: 403 });
+      assert.deepEqual(await (await probar(s.a03.accessToken)).json(), { sent: 0, status: 0, error: "sin-dispositivo" }, "una casa sin celular registrado");
+      assert.equal((await probar(s.a14.accessToken, { origin: "https://malo.example" })).status, 403);
+      assert.equal((await probar("z".repeat(24))).status, 404);
+      for (let i = 0; i < 6; i++) await probar(s.a14.accessToken);
+      assert.equal((await probar(s.a14.accessToken)).status, 429, "pocas pruebas por hora");
+    }, { pushSend });
+  } finally {
+    console.warn = realWarn;
+  }
+});
+
+test("service worker: tocar la notificación lleva al vecino a SU enlace (antes lo mandaba al panel) y no sale del sitio", async () => {
+  const listeners = {};
+  const shown = [];
+  const opened = [];
+  const stored = new Map([["/resident-link", "/r/TOKEN-DE-PRUEBA"]]);
+  const caches = {
+    open: async () => ({ match: async (k) => (stored.has(k) ? { text: async () => stored.get(k) } : undefined), put: async () => {}, addAll: async () => {} }),
+    keys: async () => [], match: async () => undefined, delete: async () => true,
+  };
+  const context = {
+    self: {
+      addEventListener: (type, fn) => { listeners[type] = fn; }, location: { origin: "https://cuotia.test" },
+      registration: { showNotification: (title, opts) => { shown.push({ title, opts }); return Promise.resolve(); } },
+      clients: { matchAll: async () => [], openWindow: async (u) => { opened.push(u); }, claim: async () => {} }, skipWaiting() {},
+    },
+    caches, URL, Promise, fetch: async () => ({}),
+  };
+  vm.createContext(context);
+  vm.runInContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), context);
+  const push = async (data) => { const e = { data: { json: () => data }, waitUntil(p) { this.p = p; } }; listeners.push(e); await e.p; return shown.at(-1); };
+
+  assert.equal((await push({ title: "Pago confirmado", url: "@resident", tag: "pago" })).opts.data.url, "@resident");
+  assert.equal((await push({ title: "Recordatorio", url: "@resident/pagar" })).opts.data.url, "@resident/pagar");
+  assert.equal((await push({ title: "Nuevo comprobante", url: "/panel/ajustes/dispositivo" })).opts.data.url, "/panel/ajustes/dispositivo");
+  for (const bad of ["https://evil.example/x", "//evil.example/x", "@residente", "javascript:alert(1)", ""]) assert.equal((await push({ title: "x", url: bad })).opts.data.url, "/panel", JSON.stringify(bad));
+
+  const click = async (url) => { const e = { notification: { data: { url }, close() {} }, waitUntil(p) { this.p = p; } }; listeners.notificationclick(e); await e.p; return opened.at(-1); };
+  assert.equal(await click("@resident/pagar"), "https://cuotia.test/r/TOKEN-DE-PRUEBA/pagar");
+  assert.equal(await click("@resident"), "https://cuotia.test/r/TOKEN-DE-PRUEBA");
+  assert.equal(await click("/panel/cobros"), "https://cuotia.test/panel/cobros");
+});

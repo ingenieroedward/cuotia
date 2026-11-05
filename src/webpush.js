@@ -86,23 +86,29 @@ export function decryptPayload(body, { uaPrivate, uaPublic, auth }) {
 }
 
 /**
- * Sends one notification. Resolves `{ ok, gone }`: `gone` means the subscription no longer exists (404/410) and should
- * be forgotten. Never throws: a failed notification must not break the request that caused it.
+ * Sends one notification. Resolves `{ ok, gone, status, detail }`: `gone` means the subscription no longer exists (404/410)
+ * and should be forgotten; `status` is the push service's HTTP answer (0 = no answer) and `detail` the start of its reply,
+ * so a rejection can be explained. Never throws: a failed notification must not break the request that caused it.
  */
 export async function sendPush(sub, message, vapid, { subject, fetchFn = fetch, ttl = 24 * 3600 } = {}) {
   try {
-    if (!validEndpoint(sub.endpoint)) return { ok: false, gone: true };
+    if (!validEndpoint(sub.endpoint)) return { ok: false, gone: true, status: 0, detail: "dirección no permitida" };
     const body = encryptPayload(JSON.stringify(message), sub);
     const res = await fetchFn(sub.endpoint, {
       method: "POST", body,
       headers: {
         Authorization: vapidHeader(sub.endpoint, vapid, subject),
-        "Content-Encoding": "aes128gcm", "Content-Type": "application/octet-stream", TTL: String(ttl), Urgency: "normal",
+        // "high": these are messages a person is waiting for (a payment confirmed, a reminder). "normal" lets Android hold them
+        // back while the phone is idle, which looks like "the notification never arrived".
+        "Content-Encoding": "aes128gcm", "Content-Type": "application/octet-stream", TTL: String(ttl), Urgency: "high",
       },
       signal: AbortSignal.timeout(8000),
     });
-    return { ok: res.status >= 200 && res.status < 300, gone: res.status === 404 || res.status === 410 };
-  } catch {
-    return { ok: false, gone: false };
+    const ok = res.status >= 200 && res.status < 300;
+    let detail = "";
+    if (!ok) { try { detail = String(await res.text()).replace(/\s+/g, " ").trim().slice(0, 160); } catch { /* no body */ } }
+    return { ok, gone: res.status === 404 || res.status === 410, status: res.status, detail };
+  } catch (e) {
+    return { ok: false, gone: false, status: 0, detail: String(e?.cause?.code || e?.name || "error").slice(0, 60) };
   }
 }

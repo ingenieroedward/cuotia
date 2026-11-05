@@ -53,6 +53,17 @@ ${refresh ? raw(`<meta http-equiv="refresh" content="${Number(refresh)}">`) : ""
 </html>`;
 }
 
+/** What a push service's answer means, in words a treasurer can act on. 0 = it never answered. */
+function pushHint(status) {
+  const n = Number(status) || 0;
+  if (n === 0) return "El servidor no logró comunicarse con el servicio de notificaciones del celular (revisa que tenga salida a internet) o el celular ya no está registrado.";
+  if (n === 404 || n === 410) return "Ese celular ya no está registrado (desinstaló la app o quitó los permisos). Pídele que active los avisos de nuevo.";
+  if (n === 401 || n === 403) return `El servicio de notificaciones rechazó la llave del servidor (respondió ${n}). Pídele a ese celular que desactive y vuelva a activar los avisos.`;
+  if (n === 400 || n === 413) return `El servicio de notificaciones rechazó el mensaje (respondió ${n}).`;
+  if (n === 429) return "El servicio de notificaciones pide esperar un poco (respondió 429).";
+  return `El servicio de notificaciones respondió ${n}.`;
+}
+
 /** Fixed messages the panel can show after an action. The query string only picks a key, never the text. */
 const FLASH = {
   gen: (n) => ({ kind: "ok", text: n > 0 ? `Se crearon ${n} cuota${n === 1 ? "" : "s"} nueva${n === 1 ? "" : "s"}.` : "Las cuotas de este mes ya estaban creadas." }),
@@ -109,7 +120,8 @@ const FLASH = {
   avisonodebe: () => ({ kind: "info", text: "Esa casa no debe nada ahora: no se envió el aviso." }),
   avisonoact: () => ({ kind: "info", text: "Esa casa no ha activado los avisos en su celular. Pídele que abra su enlace y pulse \"Activar avisos\"." }),
   avisoreciente: () => ({ kind: "info", text: "A esa casa ya le enviaste un aviso hace menos de 6 horas. Espera un poco para no molestarla." }),
-  avisofallo: () => ({ kind: "err", text: "No se pudo entregar el aviso. Puede que haya desinstalado la app o quitado los permisos; se limpió su registro." }),
+  avisofallo: (n) => ({ kind: "err", text: `No se pudo entregar el aviso. ${pushHint(n)}` }),
+  pushfallo: (n) => ({ kind: "err", text: `No se pudo enviar el aviso de prueba. ${pushHint(n)}` }),
   avisostodos: (n) => ({ kind: n ? "ok" : "info", text: n ? `Aviso enviado al celular de ${n} casa${n === 1 ? "" : "s"} que deben. Las que no tienen avisos activos, o recibieron uno hace menos de 6 horas, se saltaron.` : "No se envió ningún aviso: ninguna casa que debe tiene avisos activos, o ya recibieron uno hace poco." }),
   regok: () => ({ kind: "ok", text: "El registro de vecinos está activo. Copia el enlace y compártelo en el grupo." }),
   regcambio: () => ({ kind: "ok", text: "Listo: el enlace cambió. El anterior ya no abre nada." }),
@@ -973,7 +985,7 @@ export const AJUSTES_SECCIONES = [
 
 /** Every card of Ajustes, by name. The page below groups them by section so nothing is one long scroll. */
 function ajustesCards(args) {
-  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, passkeys = [], recovery = { total: 0, remaining: 0 } } = args;
+  const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, pushProblem = null, passkeys = [], recovery = { total: 0, remaining: 0 } } = args;
   return {
   nombre: html`
   <section class="card" id="nombre">
@@ -1103,6 +1115,7 @@ function ajustesCards(args) {
     <div class="row wrap"><h2>Avisos en el celular</h2>${pushDevices ? html`<span class="pill ok"><i></i>Activos en ${pushDevices} dispositivo${pushDevices === 1 ? "" : "s"}</span>` : html`<span class="pill warn"><i></i>Sin activar</span>`}</div>
     <p class="muted small">Te avisamos cuando un residente sube un comprobante o entra un pago por pagoradar. Cada persona del equipo los activa en su propio teléfono. En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
     <p class="small" data-push-status role="status"></p>
+    ${pushProblem ? html`<p class="note small"><b>Último problema al enviar:</b> ${pushHint(pushProblem.status)} <span class="muted">(${pushProblem.host || "servicio de notificaciones"}${pushProblem.detail ? `: ${pushProblem.detail}` : ""})</span></p>` : ""}
     <div class="actions">
       <button class="btn" type="button" data-push-toggle>Activar avisos en este dispositivo</button>
       ${pushDevices ? html`<form method="post" action="/panel/push/probar">${csrfField(csrf)}<button class="btn ghost" type="submit">Enviarme un aviso de prueba</button></form>` : ""}
@@ -2097,6 +2110,7 @@ export function residentPage({ tenant, house, dues, period, token, proofs = [], 
     <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
     <p class="small" data-push-status role="status"></p>
     <button class="btn ghost" type="button" data-push-toggle>Activar avisos</button>
+    <button class="btn ghost" type="button" data-push-test data-test-url="/r/${token}/avisos/probar" hidden>Enviarme un aviso de prueba</button>
   </section>
 
   <section class="card">

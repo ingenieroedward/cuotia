@@ -55,10 +55,14 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { /* a plain-text push still shows something */ }
+  // Where a tap leads: a path of this site ("/panel…") or the resident's own page ("@resident", "@resident/pagar"). Anything else
+  // (another site, "//host") falls back to the panel. (It used to drop "@resident…", so a neighbour's tap landed on the sign-in page.)
+  const asked = String(data.url || "/panel");
+  const url = /^(\/(?!\/)|@resident(\/|$))/.test(asked) ? asked : "/panel";
   event.waitUntil(self.registration.showNotification(String(data.title || "Cuotia"), {
     body: String(data.body || ""), tag: data.tag ? String(data.tag) : undefined,
     icon: "/static/icons/icon-192.png", badge: "/static/icons/icon-192.png",
-    data: { url: String(data.url || "/panel").startsWith("/") ? String(data.url || "/panel") : "/panel" },
+    data: { url },
   }));
 });
 
