@@ -144,12 +144,12 @@ export function loginPage({ error, notice } = {}) {
     <p class="muted">Panel del tesorero</p>
     ${notice ? html`<p class="flash ok" role="status">${notice}</p>` : ""}
     ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
-    <label>Correo<input type="email" name="email" autocomplete="username" required autofocus></label>
-    <label>Contraseña<input type="password" name="password" autocomplete="current-password" required></label>
-    <button class="btn" type="submit">Continuar</button>
-    <p class="small center-text"><a href="/olvide">¿Olvidaste tu contraseña?</a></p>
+    <label>Correo<input type="email" name="email" autocomplete="username" inputmode="email" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next" required autofocus></label>
+    <label>Contraseña<input type="password" name="password" autocomplete="current-password" enterkeyhint="go" required></label>
+    <p class="forgot"><a href="/olvide">¿Olvidaste tu contraseña?</a></p>
+    <button class="btn" type="submit" data-busy="Entrando…">Continuar</button>
     <div class="passkey-box" data-passkey-login-box hidden>
-      <p class="muted small center-text">o</p>
+      <p class="or"><span>o</span></p>
       <button class="btn ghost" type="button" data-passkey-login>Entrar con passkey</button>
       <p class="small" data-passkey-status role="status"></p>
     </div>
@@ -348,8 +348,10 @@ export function twoFaPage({ stage, error, secret, uri, email, action = "/2fa", b
         <p class="muted small">Cuenta: ${email}. Después de entrar, en Ajustes genera tus códigos de respaldo: son tu salida si pierdes el celular.</p>`
       : html`<p class="muted">Escribe el código de 6 dígitos de tu app.</p>`}
     ${error ? html`<p class="alert" role="alert">${error}</p>` : ""}
-    <label>Código<input class="code" type="text" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code" required autofocus></label>
-    <button class="btn" type="submit">${stage === "setup" ? "Activar y entrar" : "Entrar"}</button>
+    ${stage === "setup" || !email ? "" : html`<p class="who small muted">Entrando como <b>${email}</b></p>`}
+    <label>Código<input class="code" type="text" name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code" required autofocus data-autosubmit="6"></label>
+    <button class="btn" type="submit" data-busy="Verificando…">${stage === "setup" ? "Activar y entrar" : "Entrar"}</button>
+    ${backupAction ? html`<button class="linkbtn" type="submit" formaction="/logout" formnovalidate>No soy yo · usar otra cuenta</button>` : ""}
   </form>
   ${backupAction ? html`<form class="card login backup-form" method="post" action="${backupAction}" autocomplete="off">
     <details class="undo"><summary>No tengo mi celular</summary>

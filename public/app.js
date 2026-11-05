@@ -268,3 +268,47 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
   });
   mark();
 })();
+
+// Sign-in comforts: show/hide a password, one press only, and the 6-digit code sends itself.
+(() => {
+  for (const input of document.querySelectorAll('input[type="password"]')) {
+    const wrap = document.createElement("span");
+    wrap.className = "pw-wrap";
+    input.replaceWith(wrap);
+    wrap.append(input);
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "pw-toggle";
+    toggle.textContent = "Ver";
+    toggle.setAttribute("aria-label", "Mostrar la contraseña");
+    toggle.setAttribute("aria-pressed", "false");
+    toggle.addEventListener("click", () => {
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      toggle.textContent = show ? "Ocultar" : "Ver";
+      toggle.setAttribute("aria-label", show ? "Ocultar la contraseña" : "Mostrar la contraseña");
+      toggle.setAttribute("aria-pressed", String(show));
+      input.focus();
+    });
+    wrap.append(toggle);
+  }
+
+  for (const form of document.querySelectorAll("form")) {
+    const button = form.querySelector("button[data-busy]");
+    if (!button) continue;
+    const label = button.textContent;
+    form.addEventListener("submit", (event) => {
+      if (event.submitter && event.submitter !== button) return;
+      setTimeout(() => { button.disabled = true; button.textContent = button.dataset.busy; }, 0);
+    });
+    // Coming back with the browser's back button must not leave the button stuck.
+    addEventListener("pageshow", () => { button.disabled = false; button.textContent = label; });
+  }
+
+  for (const code of document.querySelectorAll("input[data-autosubmit]")) {
+    const size = Number(code.dataset.autosubmit);
+    code.addEventListener("input", () => {
+      if (code.value.replace(/\D/g, "").length === size && code.form.checkValidity()) code.form.requestSubmit(code.form.querySelector("button[data-busy]"));
+    });
+  }
+})();
