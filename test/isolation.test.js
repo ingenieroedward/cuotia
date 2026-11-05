@@ -615,3 +615,16 @@ test("registro de vecinos: solicitudes y enlace son de cada conjunto, con tope y
   assert.equal(A.signups.pendingCount(), 0);
   assert.equal(B.signups.pendingCount(), 1);
 });
+
+test("renombrar: solo a personas del propio conjunto, con límites", () => {
+  const { store, A, B, a, b } = twoConjuntos();
+  const ua = store.users.create({ tenantId: a.id, email: "marta@ejemplo.com", passwordHash: "x" });
+  const ub = store.users.create({ tenantId: b.id, email: "luis@ejemplo.com", passwordHash: "x" });
+  assert.throws(() => B.team.rename(ua, "Intruso"), /no es de este conjunto/);
+  assert.equal(A.team.rename(ua, "  Marta   Rojas "), "Marta Rojas");
+  assert.equal(store.users.byId(ua).name, "Marta");
+  assert.equal(A.team.list()[0].fullName, "Marta Rojas");
+  assert.equal(store.users.byId(ub).name, "Luis", "el otro conjunto no cambió");
+  assert.throws(() => A.team.rename(ua, "x"), /entre 2 y 80/);
+  assert.throws(() => A.team.rename(ua, "z".repeat(81)), /entre 2 y 80/);
+});

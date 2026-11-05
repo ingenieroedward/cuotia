@@ -259,7 +259,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     cobros: ["cobro", "modo", "modobad", "fechas", "fechasbad", "pmok", "pmquit", "pmbad", "pmdup"],
     pagoradar: ["sec", "secbad"],
     equipo: ["eqyo", "eqbad", "eqcanc", "eqquit", "equltimo", "eqexiste"],
-    seguridad: ["clave", "clavemal", "clavebad", "clavelim", "pkquit", "pkbad"],
+    seguridad: ["nombreok", "nombrebad", "clave", "clavemal", "clavebad", "clavelim", "pkquit", "pkbad"],
     dispositivo: ["pushsin", "pushprobe"],
   };
   const ajustesUrl = (m, hash = "") => {
@@ -1166,6 +1166,14 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
         store.tenants.setPayment(s.tenant.id, { payKey: String(form.get("llave") ?? "").slice(0, 80), payHolder: String(form.get("titular") ?? "").slice(0, 80) });
         audit("ajustes", "Cambió la cuenta para cobrar (llave y titular)");
         return redirect(res, ajustesUrl("cobro"));
+      }
+
+      if (path === "/panel/ajustes/nombre") {
+        const me = ledger.team.list().find((u) => u.id === s.user.id);
+        let clean;
+        try { clean = ledger.team.rename(s.user.id, form.get("nombre")); } catch { return redirect(res, ajustesUrl("nombrebad")); }
+        audit("seguridad", `Cambió su nombre de «${me?.fullName || me?.name || s.user.name}» a «${clean}»`);
+        return redirect(res, ajustesUrl("nombreok"));
       }
 
       if (path === "/panel/ajustes/clave") {

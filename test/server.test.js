@@ -3135,3 +3135,34 @@ test("registro de vecinos: cada IP puede enviar pocas solicitudes por hora", () 
   assert.equal((await send(16)).status, 429);
   assert.equal(s.A.signups.pendingCount(), 15);
 }));
+
+test("tu nombre: cada persona cambia el suyo (saludo, firma de WhatsApp y bitácora), con validación y sin tocar a nadie más", () => withServer(async (s) => {
+  const marta = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, marta.cookie, "/panel/ajustes/seguridad");
+  const home = async (cookie = marta.cookie) => (await (await fetch(`${s.base}/panel`, { headers: { cookie } })).text());
+  const card = async () => (await (await fetch(`${s.base}/panel/ajustes/seguridad`, { headers: { cookie: marta.cookie } })).text());
+  assert.match(await home(), /Hola, Marta/, "sin nombre guardado se saca del correo");
+  assert.match(await card(), /name="nombre"[^>]*value=""/);
+
+  assert.equal((await form(`${s.base}/panel/ajustes/nombre`, { nombre: "Edward Díaz" }, marta.cookie)).status, 403, "sin token del formulario");
+  for (const bad of ["", " ", "x", "y".repeat(81)]) {
+    assert.match((await form(`${s.base}/panel/ajustes/nombre`, { _csrf: csrf, nombre: bad }, marta.cookie)).headers.get("location"), /^\/panel\/ajustes\/seguridad\?m=nombrebad$/, JSON.stringify(bad.slice(0, 5)));
+  }
+  assert.equal(s.store.users.byEmail("marta@ejemplo.com").name, "Marta");
+
+  const ok = await form(`${s.base}/panel/ajustes/nombre`, { _csrf: csrf, nombre: "  Edward   David Díaz Padilla " }, marta.cookie);
+  assert.equal(ok.headers.get("location"), "/panel/ajustes/seguridad?m=nombreok");
+  assert.match(await home(), /Hola, Edward/, "el saludo usa el primer nombre");
+  assert.match(await card(), /value="Edward David Díaz Padilla"/, "el campo muestra el nombre completo, sin espacios de más");
+  assert.equal(s.A.team.list()[0].fullName, "Edward David Díaz Padilla");
+  // It also signs the WhatsApp reminders, and the log keeps who it was before and after.
+  s.A.dues.generate(currentPeriod());
+  assert.match(decodeURIComponent(/wa\.me\/\d*\?text=([^"&]*)/.exec((await (await fetch(`${s.base}/panel/cobros`, { headers: { cookie: marta.cookie } })).text()).split("debt-actions")[1])[1]), /te escribe Edward de Jardines de Ibiza/);
+  assert.ok(s.A.audit.list({ limit: 20 }).rows.some((r) => r.summary === "Cambió su nombre de «Marta» a «Edward David Díaz Padilla»"));
+
+  // Nobody else is touched, and a conjunto can't rename another conjunto's person.
+  const luisId = s.store.users.byEmail("luis@ejemplo.com").id;
+  assert.equal(s.store.users.byEmail("luis@ejemplo.com").name, "Luis");
+  assert.throws(() => s.A.team.rename(luisId, "Intruso Total"), /no es de este conjunto/);
+  assert.equal(s.store.users.byEmail("luis@ejemplo.com").name, "Luis");
+}));
