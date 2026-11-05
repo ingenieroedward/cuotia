@@ -479,8 +479,8 @@ export function panelLayout(title, ctx, content) {
  * "Instala Cuotia en tu celular": steps for Android and iPhone. Without JavaScript both lists show; with it, only the one for
  * this phone (and an "Instalar ahora" button where the browser offers it); once the app is installed the card hides itself.
  */
-const installCard = () => html`<section class="card" data-install>
-    <h2>Instala Cuotia en tu celular</h2>
+const installCard = ({ bare = false } = {}) => {
+  const body = html`<h2>Instala Cuotia en tu celular</h2>
     <p class="muted small">Queda como una app en tu pantalla de inicio, abre más rápido y, en iPhone, es necesaria para recibir avisos.</p>
     <button class="btn" type="button" data-install-button hidden>Instalar ahora</button>
     <div class="install-steps" data-install-steps="android">
@@ -491,8 +491,9 @@ const installCard = () => html`<section class="card" data-install>
       <b>En iPhone (Safari)</b>
       <ol class="steps small"><li>Abre esta página en <b>Safari</b>.</li><li>Toca el botón <b>Compartir</b>, el cuadro con una flecha hacia arriba.</li><li>Baja y elige <b>Añadir a pantalla de inicio</b>, y toca <b>Añadir</b>.</li></ol>
     </div>
-    <p class="muted small">Después ábrela siempre desde el ícono nuevo.</p>
-  </section>`;
+    <p class="muted small">Después ábrela siempre desde el ícono nuevo.</p>`;
+  return bare ? html`<div class="block" data-install>${body}</div>` : html`<section class="card" data-install>${body}</section>`;
+};
 
 const STATUS = {
   paid: html`<span class="pill ok"><i></i>Pagado</span>`,
@@ -2076,63 +2077,96 @@ export function residentProofPage({ tenant, house, dues, token, proofs = [], err
 </main>`, { manifest: `/r/${token}/manifest.webmanifest` });
 }
 
-export function residentPage({ tenant, house, dues, period, token, proofs = [], pushKey = "", pushOn = 0, day = bogotaDay() }) {
+/** "Buenos días / Buenas tardes / Buenas noches" by the hour in Colombia. */
+const hello = (hour) => (hour >= 5 && hour < 12 ? "Buenos días" : hour >= 12 && hour < 19 ? "Buenas tardes" : "Buenas noches");
+const bogotaHour = (now = new Date()) => Number(new Intl.DateTimeFormat("en-GB", { timeZone: "America/Bogota", hour: "2-digit", hourCycle: "h23" }).format(now));
+
+/**
+ * What a neighbour sees first. One question answered at a glance (do I owe, how much, until when), the next step one tap away
+ * (pay, or "ya pagué" to upload the proof), quick doors to their documents, their history, and the one-time phone setup
+ * (install the app, turn on notifications) folded away so it doesn't push the useful things down.
+ */
+export function residentPage({ tenant, house, dues, period, token, proofs = [], pushKey = "", pushOn = 0, day = bogotaDay(), hour = bogotaHour() }) {
   const open = dues.filter((d) => d.period === period && d.status === "pending");
   const behind = dues.filter((d) => d.period < period && d.status === "pending");
   const windowText = paymentWindow(tenant, period);
   const overdue = behind.length > 0 || (tenant.dueDay != null && open.length > 0 && day > tenant.dueDay);
   const owed = [...open, ...behind];
   const total = owed.reduce((s, d) => s + d.amountCents, 0);
+  const monthWord = periodLabel(period).split(" ")[0].toLowerCase();
+  // The deadline in plain words: the window the conjunto set, and how many days are left (or that it passed).
+  const left = tenant.dueDay != null ? tenant.dueDay - day : null;
+  const countdown = left === null || left < 0 ? "" : left > 1 ? `faltan ${left} días` : left === 1 ? "mañana es el último día" : "hoy es el último día";
+  const deadline = !owed.length ? ""
+    : behind.length ? `Tienes ${behind.length} mes${behind.length === 1 ? "" : "es"} anterior${behind.length === 1 ? "" : "es"} sin pagar`
+    : left !== null && left < 0 ? `El plazo venció el ${tenant.dueDay} de ${monthWord}`
+    : [windowText, countdown].filter(Boolean).join(" · ");
+  const lastPaid = dues.filter((d) => d.status === "paid" && d.paidAt).sort((a, b) => String(b.paidAt).localeCompare(String(a.paidAt)))[0];
+  const waiting = proofs.some((p) => p.status === "pending");
+  const history = dues.slice(0, 6);
+  const quick = [
+    { href: `/r/${token}/comprobante`, icon: "asignar", title: "Subir comprobante", hint: "Si ya pagaste" },
+    { href: `/r/${token}/estado`, icon: "cuentas", title: "Estado de cuenta", hint: "Lo pagado y lo que debes" },
+    { href: `/r/${token}/paz-y-salvo`, icon: "check", title: "Paz y salvo", hint: "Tu certificado" },
+    ...(tenant.showAccounts ? [{ href: `/r/${token}/cuentas`, icon: "casas", title: "Cuentas del conjunto", hint: "Qué se recaudó y gastó" }] : []),
+  ];
   return layout("Mi cuota", html`
-<main class="narrow res">
+<main class="narrow res res-home">
   <header class="res-top">${BRAND_MARK}<span class="chip">Casa ${house.code}</span></header>
-  <div class="res-hello"><h1>Hola, ${firstName(house.residentName)}</h1><span class="muted">${tenant.name}</span></div>
+  <div class="res-hello"><h1>${hello(hour)}, ${firstName(house.residentName)}</h1><span class="muted">${tenant.name}</span></div>
 
-  <section class="hero" aria-label="Tu cuota">
+  <section class="hero" aria-label="Tu cuota" data-pay-hero>
     <div class="row">
       <span class="eyebrow">Tu cuota · ${periodLabel(period).split(" ")[0]}</span>
       ${owed.length ? (overdue ? html`<span class="pill bad"><i></i>Vencida</span>` : STATUS.pending) : STATUS.paid}
     </div>
     ${owed.length
       ? html`<span class="hero-number">${peso(total)}</span>
-        ${windowText ? html`<span class="hero-sub">${windowText}</span>` : ""}
-        <span class="hero-sub">${behind.length ? `Incluye ${behind.length} mes${behind.length === 1 ? "" : "es"} anterior${behind.length === 1 ? "" : "es"}` : [...new Set(owed.map((d) => d.conceptName))].join(" + ")}</span>
-        <a class="btn lime big" href="/r/${token}/pagar">Pagar ahora ${icon("arrow", 20, 2.5)}</a>`
-      : html`<span class="hero-number">Al día</span><span class="hero-sub">No tienes cuotas pendientes. ¡Gracias!</span>`}
+        ${deadline ? html`<span class="hero-sub${overdue ? " hero-alert" : ""}">${deadline}</span>` : ""}
+        <span class="hero-sub">${[...new Set(owed.map((d) => d.conceptName))].join(" + ")}</span>
+        <a class="btn lime big" href="/r/${token}/pagar">Pagar ahora ${icon("arrow", 20, 2.5)}</a>
+        ${waiting ? "" : html`<a class="btn alt" href="/r/${token}/comprobante">Ya pagué: subir comprobante</a>`}`
+      : html`<span class="hero-number">Al día</span>
+        <span class="hero-sub">${lastPaid ? `Tu último pago fue el ${shortDate(lastPaid.paidAt)}. ¡Gracias!` : "No tienes cuotas pendientes. ¡Gracias!"}</span>
+        ${lastPaid ? html`<a class="btn alt" href="/r/${token}/recibo/${lastPaid.id}">Ver mi último recibo</a>` : ""}`}
   </section>
 
-  ${proofs.some((p) => p.status === "pending") ? html`<p class="flash info" role="status">Enviaste un comprobante y está en revisión. <a href="/r/${token}/comprobante">Ver</a></p>` : ""}
+  ${waiting ? html`<p class="flash info" role="status">Enviaste un comprobante y está en revisión: el tesorero lo confirma en breve. <a href="/r/${token}/comprobante">Ver</a></p>` : ""}
   ${proofs[0]?.status === "rejected" && owed.length ? html`<p class="flash err" role="status">El tesorero no pudo confirmar tu último comprobante. Revisa el valor o <a href="/r/${token}/comprobante">súbelo de nuevo</a>.</p>` : ""}
 
-  ${installCard()}
-  <section class="card" data-push data-key="${pushKey}" data-subscribe-url="/r/${token}/avisos/suscribir" data-unsubscribe-url="/r/${token}/avisos/baja" data-resident>
-    <h2>Avisos en este celular</h2>
-    <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
-    <p class="small" data-push-status role="status"></p>
-    <button class="btn ghost" type="button" data-push-toggle>Activar avisos</button>
-    <button class="btn ghost" type="button" data-push-test data-test-url="/r/${token}/avisos/probar" hidden>Enviarme un aviso de prueba</button>
-  </section>
+  <nav class="quick" aria-label="Accesos rápidos">
+    ${quick.map((q) => html`<a href="${q.href}">${icon(q.icon, 22)}<b>${q.title}</b><small class="muted">${q.hint}</small></a>`)}
+  </nav>
 
   <section class="card">
-    <h2>Mis documentos</h2>
-    <ul class="list stack docs">
-      <li><a class="strong" href="/r/${token}/estado">Estado de cuenta</a><small class="muted">Todo lo que has pagado y lo que debes</small></li>
-      <li><a class="strong" href="/r/${token}/paz-y-salvo">Paz y salvo</a><small class="muted">Certificado, cuando no tienes cuotas vencidas</small></li>
-    </ul>
-  </section>
-
-  ${tenant.showAccounts ? html`<a class="card cuentas-link" href="/r/${token}/cuentas"><span><b>Cuentas del conjunto</b><small class="muted">Qué se recaudó y en qué se gastó</small></span>${icon("next", 20, 2.4)}</a>` : ""}
-
-  <section class="card">
-    <h2>Tus pagos</h2>
-    ${dues.length
-      ? html`<ul class="list">${dues.map((d) => html`<li class="due">
+    <div class="row wrap"><h2>Tus pagos</h2>${dues.length > history.length ? html`<a class="small strong" href="/r/${token}/estado">Ver todo</a>` : ""}</div>
+    ${history.length
+      ? html`<ul class="list">${history.map((d) => html`<li class="due">
           <span class="dot ${d.status === "paid" ? "ok" : "warn"}">${d.status === "paid" ? icon("check", 18, 3) : ""}</span>
           <span class="due-text"><b>${monthName(d.period)}</b><small class="muted">${d.conceptName} · ${d.paidAt ? `Pagado el ${shortDate(d.paidAt)}` : "Pendiente"}</small></span>
           ${d.status === "paid" ? html`<a class="small strong" href="/r/${token}/recibo/${d.id}">Recibo</a>` : html`<b>${peso(d.amountCents)}</b>`}
         </li>`)}</ul>`
       : html`<p class="muted small">Todavía no tienes cuotas.</p>`}
   </section>
+
+  <details class="card phone-setup" data-setup>
+    <summary>
+      <span class="phone-setup-icon">${icon("mas", 22)}</span>
+      <span class="phone-setup-text"><b>Ten Cuotia a la mano</b><small class="muted" data-setup-state>${pushOn ? "Avisos activos" : "Instala la app y activa los avisos de tu pago"}</small></span>
+      ${icon("next", 18, 2.4)}
+    </summary>
+    <div class="phone-setup-body">
+      ${installCard({ bare: true })}
+      <div class="block" data-push data-key="${pushKey}" data-subscribe-url="/r/${token}/avisos/suscribir" data-unsubscribe-url="/r/${token}/avisos/baja" data-resident>
+        <h2>Avisos en este celular</h2>
+        <p class="muted small">Te avisamos cuando se confirma tu pago${tenant.dueDay ? " y cuando se acerca el último día para pagar" : ""}.${pushOn ? " Ya están activos en un dispositivo." : ""} En iPhone los avisos solo funcionan con la app instalada y abierta desde su ícono.</p>
+        <p class="small" data-push-status role="status"></p>
+        <button class="btn ghost" type="button" data-push-toggle>Activar avisos</button>
+        <button class="btn ghost" type="button" data-push-test data-test-url="/r/${token}/avisos/probar" hidden>Enviarme un aviso de prueba</button>
+      </div>
+    </div>
+  </details>
+  ${owed.length ? html`<a class="pay-float" href="/r/${token}/pagar" data-pay-float hidden>Pagar ${peso(total)} ${icon("arrow", 20, 2.5)}</a>` : ""}
 </main>`, { manifest: `/r/${token}/manifest.webmanifest` });
 }
 

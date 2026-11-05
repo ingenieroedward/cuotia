@@ -119,6 +119,8 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     const sub = await current().catch(() => null);
     button.textContent = sub ? "Desactivar avisos en este dispositivo" : (box.dataset.resident !== undefined ? "Activar avisos" : "Activar avisos en este dispositivo");
     if (testButton) testButton.hidden = !sub;
+    const state = document.querySelector("[data-setup-state]");
+    if (state && box.dataset.resident !== undefined) state.textContent = sub ? "Avisos activos en este celular" : "Instala la app y activa los avisos de tu pago";
   };
   // A neighbour checks that a notification really reaches this phone, and is told why when it doesn't.
   if (testButton) testButton.addEventListener("click", async () => {
@@ -352,4 +354,12 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     button.hidden = true;
   });
   addEventListener("appinstalled", () => { card.hidden = true; });
+})();
+
+// Neighbour's home: the "Pagar" button follows you down the page once the big one has scrolled out of sight.
+(() => {
+  const float = document.querySelector("[data-pay-float]");
+  const hero = document.querySelector("[data-pay-hero]");
+  if (!float || !hero || typeof IntersectionObserver !== "function") return;
+  new IntersectionObserver(([entry]) => { float.hidden = entry.isIntersecting; }, { threshold: 0.1 }).observe(hero);
 })();

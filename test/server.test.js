@@ -327,7 +327,7 @@ test("login rechaza formularios de otro sitio", () => withServer(async (s) => {
 test("el residente ve su cuota con su enlace personal y nada más", () => withServer(async (s) => {
   s.A.dues.generate(currentPeriod());
   const page = await (await fetch(`${s.base}/r/${s.a14.accessToken}`)).text();
-  assert.match(page, /Hola, Sandra/);
+  assert.match(page, /(Buenos días|Buenas tardes|Buenas noches), Sandra/);
   assert.match(page, /Casa 14/);
   assert.match(page, /\$30\.000/);
   assert.ok(page.includes(`/r/${s.a14.accessToken}/pagar`), "botón para pagar");
@@ -1839,7 +1839,7 @@ test("estado de cuenta y paz y salvo: el residente y el tesorero los ven, solo s
   assert.equal((await fetch(`${s.base}/panel/casas/${s.b01.house.id}/paz-y-salvo`, hdr)).status, 404);
   assert.equal((await fetch(`${s.base}/panel/casas/${s.a14.house.id}/estado`, { redirect: "manual" })).headers.get("location"), "/login");
   assert.match(await text(`/panel/casas/${s.a14.house.id}`, hdr), /Documentos/);
-  assert.match(await text(`/r/${tok(s.a14)}`), /Mis documentos/);
+  assert.match(await text(`/r/${tok(s.a14)}`), /href="\/r\/[^"]+\/estado"[\s\S]*href="\/r\/[^"]+\/paz-y-salvo"/, "los documentos son accesos rápidos del inicio");
 
   // A house dada de baja has no documents (its link is closed).
   s.A.houses.setActive(s.a03.house.id, false);
@@ -3407,6 +3407,60 @@ test("avisos: un fallo interno del envío ya no es silencioso: se registra y el 
   } finally {
     console.warn = realWarn;
   }
+});
+
+test("página del vecino: saludo por hora, cuántos días quedan, qué hacer a continuación y la configuración del celular plegada", async () => {
+  const { residentPage } = await import("../src/views.js");
+  const tenant = { name: "Jardines de Ibiza", dueDay: 10, openDay: 1, showAccounts: true, payMethods: [] };
+  const house = { code: "14", residentName: "Sandra Duque Arias" };
+  const due = (period, status = "pending", extra = {}) => ({ id: `du_${period}${status}`, period, status, amountCents: 3_000_000, conceptName: "Vigilancia", paidAt: status === "paid" ? `${period}-04T15:00:00.000Z` : null, ...extra });
+  const view = (over = {}) => residentPage({ tenant, house, dues: [due("2026-11")], period: "2026-11", token: "T".repeat(24), day: 5, hour: 9, ...over }).toString();
+
+  const page = view();
+  assert.match(page, /Buenos días, Sandra/);
+  assert.match(view({ hour: 15 }), /Buenas tardes, Sandra/);
+  assert.match(view({ hour: 21 }), /Buenas noches, Sandra/);
+  assert.match(view({ hour: 2 }), /Buenas noches, Sandra/);
+
+  // The state in one glance: how much, until when, and the two next steps.
+  assert.match(page, /\$30\.000/);
+  assert.match(page, /Paga del 1 al 10 de noviembre · faltan 5 días/);
+  assert.match(view({ day: 9 }), /mañana es el último día/);
+  assert.match(view({ day: 10 }), /hoy es el último día/);
+  const late = view({ day: 12 });
+  assert.match(late, /El plazo venció el 10 de noviembre/);
+  assert.match(late, /pill bad/);
+  assert.match(page, /href="\/r\/T+\/pagar"[^>]*>Pagar ahora/);
+  assert.match(page, /Ya pagué: subir comprobante/);
+  assert.doesNotMatch(view({ proofs: [{ status: "pending" }] }), /Ya pagué: subir comprobante/, "si ya subió uno, no se lo pedimos otra vez");
+  assert.match(view({ proofs: [{ status: "pending" }] }), /está en revisión/);
+  assert.match(view({ dues: [due("2026-10"), due("2026-11")] }), /Tienes 1 mes anterior sin pagar/);
+
+  // Quick doors, and the history with the receipt of what was paid.
+  for (const text of ["Subir comprobante", "Estado de cuenta", "Paz y salvo", "Cuentas del conjunto"]) assert.ok(page.includes(text), text);
+  assert.doesNotMatch(view({ tenant: { ...tenant, showAccounts: false } }), /Cuentas del conjunto/);
+  const paid = view({ dues: [due("2026-11", "paid"), due("2026-10", "paid")] });
+  assert.match(paid, /Al día/);
+  assert.match(paid, /Tu último pago fue el/);
+  assert.match(paid, /Ver mi último recibo/);
+  assert.doesNotMatch(paid, /Pagar ahora|data-pay-float/, "sin deuda no hay botón de pagar");
+  const many = view({ dues: Array.from({ length: 9 }, (_, i) => due(`2026-${String(i + 1).padStart(2, "0")}`, "paid")) });
+  assert.equal((many.match(/class="due"/g) ?? []).length, 6, "el historial muestra los últimos 6");
+  assert.match(many, /Ver todo/);
+
+  // The one-time phone setup is folded away (collapsed), still holding both cards the script looks for.
+  assert.match(page, /<details class="card phone-setup" data-setup>/);
+  assert.doesNotMatch(page, /<details class="card phone-setup" data-setup open/);
+  assert.match(page, /Ten Cuotia a la mano/);
+  assert.match(page, /Instala la app y activa los avisos de tu pago/);
+  assert.match(view({ pushOn: 1 }), /data-setup-state>Avisos activos/);
+  assert.match(page, /data-install/);
+  assert.match(page, /data-push data-key=/);
+  assert.match(page, /data-pay-float hidden/, "el botón flotante empieza oculto y aparece al bajar");
+  // It also reaches the browser: the script that shows it and updates the summary.
+  const js = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  assert.match(js, /data-pay-float/);
+  assert.match(js, /data-setup-state/);
 });
 
 test("avisos del vecino: desactivar y probar nunca se bloquean por haber activado varias veces (antes todo compartía un límite de 12 y daba 429)", () => withServer(async (s) => {
