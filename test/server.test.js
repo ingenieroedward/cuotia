@@ -2871,7 +2871,8 @@ test("Ajustes ordenado: un índice con seis secciones, cada tarjeta en su secci�
     seguridad: ["Tu contraseña", "<h2>Passkeys</h2>", "Si pierdes el acceso"], dispositivo: ["Avisos en el celular", "Apariencia"], datos: ["Empezar de cero", "Bitácora", "Política de tratamiento"] };
   const everything = Object.values(has).flat();
   for (const [section, mine] of Object.entries(has)) {
-    const page = await text(`/panel/ajustes/${section}`);
+    const whole = await text(`/panel/ajustes/${section}`);
+    const page = /<main class="page">([\s\S]*?)<\/main>/.exec(whole)[1]; // the menu also names Bitácora: look only at the content
     assert.match(page, /← Ajustes/);
     for (const t of mine) assert.ok(page.includes(t), `${section} lleva «${t}»`);
     for (const t of everything.filter((x) => !mine.includes(x))) assert.ok(!page.includes(t), `${section} no debe llevar «${t}»`);
