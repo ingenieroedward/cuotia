@@ -368,18 +368,36 @@ export function twoFaPage({ stage, error, secret, uri, email, action = "/2fa", b
 // Treasurer panel. A dark sidebar on a computer, a bottom tab bar on a phone (as in the approved mockups).
 // ---------------------------------------------------------------------------------------------------------------
 
-const NAV = [
-  { key: "resumen", href: "/panel", label: "Resumen", icon: "home" },
-  { key: "cobros", href: "/panel/cobros", label: "Por cobrar", icon: "cobrar" },
-  { key: "casas", href: "/panel/casas", label: "Casas", icon: "casas" },
-  { key: "pagos", href: "/panel/pagos", label: "Pagos", icon: "pagos" },
-  { key: "cuentas", href: "/panel/cuentas", label: "Cuentas", icon: "cuentas" },
-  { key: "ajustes", href: "/panel/ajustes", label: "Ajustes", icon: "ajustes" },
+/** Every place of the panel, by key. The sidebar groups them; on a phone the four daily ones are tabs and the rest live in "Más". */
+const PLACES = {
+  resumen: { href: "/panel", label: "Resumen", icon: "home", text: "Cómo va el mes" },
+  cobros: { href: "/panel/cobros", label: "Por cobrar", icon: "cobrar", text: "Quién debe y desde cuándo" },
+  casas: { href: "/panel/casas", label: "Casas", icon: "casas", text: "Residentes y enlaces" },
+  pagos: { href: "/panel/pagos", label: "Pagos", icon: "pagos", text: "Historial y registro" },
+  asignar: { href: "/panel#por-asignar", label: "Por asignar", icon: "asignar", text: "Pagos sin casa" },
+  cuentas: { href: "/panel/cuentas", label: "Cuentas claras", icon: "cuentas", text: "Gastos, saldo y transparencia" },
+  conceptos: { href: "/panel/conceptos", label: "Qué cobras", icon: "cobrar", text: "Cuotas, extraordinarias y multas" },
+  mensajes: { href: "/panel/mensajes", label: "Mensajes", icon: "cuentas", text: "Lo que dicen los recordatorios de WhatsApp" },
+  ajustes: { href: "/panel/ajustes", label: "Ajustes", icon: "ajustes", text: "Cobros, equipo, seguridad y avisos" },
+  bitacora: { href: "/panel/bitacora", label: "Bitácora", icon: "bitacora", text: "Quién hizo qué" },
+};
+/** The sidebar, in groups (the first has no title). */
+const SIDE_GROUPS = [
+  { items: ["resumen"] },
+  { title: "Cobranza", items: ["cobros", "casas", "pagos", "asignar"] },
+  { title: "Finanzas", items: ["cuentas", "conceptos"] },
+  { title: "Comunicación", items: ["mensajes"] },
+  { title: "Administración", items: ["ajustes", "bitacora"] },
 ];
+/** What "Más" shows on a phone: everything that is not one of the four tabs, in the same groups as the sidebar. */
+const MORE_GROUPS = SIDE_GROUPS.slice(2);
 
-/** Phones get five tabs: the daily ones, and "Más" for what is used less (cuentas, ajustes, bitácora). */
-const TABS = [...NAV.slice(0, 4), { key: "mas", href: "/panel/mas", label: "Más", icon: "mas" }];
-const MORE_KEYS = ["mas", "cuentas", "conceptos", "mensajes", "ajustes", "bitacora"];
+/** Phones get five tabs: the daily ones, and "Más" for the rest. */
+const TABS = [
+  ...["resumen", "cobros", "casas", "pagos"].map((key) => ({ key, ...PLACES[key] })),
+  { key: "mas", href: "/panel/mas", label: "Más", icon: "mas" },
+];
+const MORE_KEYS = ["mas", ...MORE_GROUPS.flatMap((g) => g.items)];
 
 const BRAND_ON_DARK = html`<span class="brand on-dark"><span class="brand-mark">${icon("check", 16, 3)}</span>cuotia</span>`;
 
@@ -392,16 +410,17 @@ export function panelLayout(title, ctx, content) {
   const current = (key) => (key === active ? raw(' aria-current="page"') : "");
   const unassigned = badge ? html`<span class="badge" aria-label="${badge} por asignar">${badge}</span>` : "";
   const owes = (n) => (n.key === "cobros" && owing ? html`<span class="badge warn" aria-label="${owing} casas deben">${owing}</span>` : "");
-  const sideLink = (n) => html`<a class="nav-link" href="${n.href}"${current(n.key)}>${icon(n.icon)}<span>${n.label}</span>${owes(n)}</a>`;
+  const sideLink = (key) => {
+    const n = { key, ...PLACES[key] };
+    const badgeFor = key === "asignar" ? unassigned : owes(n);
+    return html`<a class="nav-link" href="${n.href}"${current(key)}>${icon(n.icon)}<span>${n.label}</span>${badgeFor}</a>`;
+  };
   return layout(title, html`
 <div class="app">
   <aside class="side">
     ${BRAND_ON_DARK}
     <nav class="side-nav" aria-label="Principal">
-      ${NAV.slice(0, 4).map(sideLink)}
-      <a class="nav-link" href="/panel#por-asignar">${icon("asignar")}<span>Por asignar</span>${unassigned}</a>
-      ${sideLink(NAV.find((n) => n.key === "cuentas"))}
-      ${sideLink(NAV.find((n) => n.key === "ajustes"))}
+      ${SIDE_GROUPS.map((g) => html`<div class="side-group">${g.title ? html`<span class="side-title">${g.title}</span>` : ""}${g.items.map(sideLink)}</div>`)}
     </nav>
     <div class="side-foot">
       <div class="conj">
@@ -1689,17 +1708,13 @@ export function mensajesPage(args) {
   })}`);
 }
 
-/** The "Más" tab on a phone: what is not used every day. */
+/** The "Más" tab on a phone: what is not used every day, in the same groups as the sidebar. */
 export function masPage(args) {
   const { tenant } = args;
-  const item = (href, iconName, title, text) => html`<a class="card more-item" href="${href}">${icon(iconName, 24)}<span><b>${title}</b><small class="muted">${text}</small></span>${icon("next", 20, 2.4)}</a>`;
+  const row = (key) => { const p = PLACES[key]; return html`<a class="more-row" href="${p.href}">${icon(p.icon, 22)}<span><b>${p.label}</b><small class="muted">${p.text}</small></span>${icon("next", 18, 2.4)}</a>`; };
   return panelLayout("Más", { ...args, active: "mas" }, html`
   <div class="heading"><h1>Más</h1><span class="muted">${tenant.name}</span></div>
-  ${item("/panel/cuentas", "cuentas", "Cuentas claras", "Gastos, saldo en caja y resumen para los vecinos")}
-  ${item("/panel/conceptos", "cobrar", "Qué cobras", "Vigilancia, administración, cuotas extraordinarias y multas")}
-  ${item("/panel/mensajes", "cuentas", "Mensajes de WhatsApp", "Cambia lo que dicen los recordatorios y el envío del enlace")}
-  ${item("/panel/ajustes", "ajustes", "Ajustes", "Cobros, equipo, seguridad y avisos")}
-  ${item("/panel/bitacora", "bitacora", "Bitácora", "Quién hizo qué en el panel")}`);
+  ${MORE_GROUPS.map((g) => html`<section class="more-group"><h2 class="more-title">${g.title}</h2><div class="card more-list">${g.items.map(row)}</div></section>`)}`);
 }
 
 /** Who did what: the conjunto's audit log, newest first. Read-only. */
@@ -1710,7 +1725,7 @@ export function bitacoraPage(args) {
     for (const [k, v] of Object.entries({ tipo, q, p: page, ...extra })) if (v && !(k === "p" && Number(v) <= 1)) qs.set(k, String(v));
     return `/panel/bitacora${qs.toString() ? `?${qs}` : ""}`;
   };
-  return panelLayout("Bitácora", { ...args, active: "ajustes" }, html`
+  return panelLayout("Bitácora", { ...args, active: "bitacora" }, html`
   <div class="heading"><h1>Bitácora</h1><span class="muted">${tenant.name} · ${result.total} registro${result.total === 1 ? "" : "s"}</span></div>
   <p class="backlink"><a href="/panel/ajustes/datos">← Volver a Ajustes</a></p>
   <section class="card">

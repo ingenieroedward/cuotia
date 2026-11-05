@@ -714,3 +714,80 @@ a.card.more-item .state { margin-top: .15rem; font-weight: 700; color: var(--lin
 .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .linkbtn { background: none; border: 0; padding: .5rem; min-height: 44px; color: var(--muted); font: inherit; font-size: .875rem; text-decoration: underline; cursor: pointer; }
 .btn:disabled { opacity: .7; cursor: progress; }
+
+/* ---------- Menu: sidebar groups and the phone's "Más" ---------- */
+.side-nav { gap: .85rem; }
+.side-group { display: flex; flex-direction: column; gap: .15rem; }
+.side-title { padding: 0 .9rem; margin-bottom: .1rem; font-size: .68rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--side-text); opacity: .75; }
+.nav-link { min-height: 40px; }
+.more-group { display: flex; flex-direction: column; gap: .35rem; }
+.more-title { margin: 0; padding: 0 .25rem; font-size: .72rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.more-list { padding: .15rem .85rem; gap: 0; }
+.more-row { display: flex; align-items: center; gap: .8rem; min-height: 56px; padding: .45rem 0; text-decoration: none; color: var(--text); border-top: 1px solid var(--line); }
+.more-row:first-child { border-top: 0; }
+.more-row > span { display: grid; flex: 1; min-width: 0; }
+.more-row small { font-size: .78rem; line-height: 1.3; }
+.more-row svg { flex: none; }
+
+/* ---------- Phones: everything tighter ---------- */
+@media (max-width: 899px) {
+  :root { --radius: 16px; }
+  .stage { padding-bottom: 66px; }
+  .page, .narrow { padding: 0 .85rem 1.25rem; gap: .65rem; }
+  .mobilebar { padding: .5rem .85rem; }
+  .mobilebar .brand { font-size: 1.1rem; }
+  .mobilebar .brand-mark { width: 24px; height: 24px; border-radius: 8px; }
+  .mobilebar .btn { min-height: 34px; padding: 0 .75rem; font-size: .8rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; }
+  .heading, .head { gap: .1rem .75rem; padding-top: 0; }
+  .head { align-items: flex-start; }
+  .head-text { gap: 0; }
+  .head-text .muted, .heading .muted { font-size: .85rem; }
+  .head-actions { gap: .5rem; width: 100%; }
+  .head-actions .btn { min-height: 40px; padding: 0 .9rem; flex: 1 1 auto; }
+  .card { padding: .9rem; gap: .5rem; }
+  .card p { margin-bottom: .5rem; }
+  .btn { min-height: 44px; }
+  .btn.small { min-height: 38px; padding: 0 .8rem; }
+  .btn.ghost { min-height: 40px; }
+  .btn.big { min-height: 48px; }
+  .hero { padding: 1rem; border-radius: 20px; gap: .3rem; }
+  .hero-number { font-size: clamp(2rem, 9vw, 2.5rem); }
+  .hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: .25rem; }
+  .hero-stats b { font-size: 1.15rem; }
+  .stat-number { font-size: 1.7rem; }
+  .stat-number.big { font-size: clamp(1.7rem, 7vw, 2.2rem); }
+  .late-card, .info-card { padding: .9rem; gap: .2rem; }
+  .monthnav .mn-label, .monthpill { min-height: 38px; }
+  .mn-btn { min-width: 38px; min-height: 38px; }
+  .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -.1rem; padding-bottom: .1rem; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip-filter { min-height: 34px; padding: 0 .75rem; flex: none; }
+  .list li { padding: .5rem 0; gap: .6rem; }
+  .list li.house-row, .debt { gap: .35rem .6rem; }
+  .list li.house-row .actions .btn, .debt-actions .btn { min-height: 36px; }
+  .tile { width: 34px; height: 34px; border-radius: 10px; font-size: .8rem; }
+  .filters { grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .filters label { gap: .2rem; font-size: .8rem; }
+  .filters .btn, .filters label:has(input[type="text"], input[type="search"]) { grid-column: 1 / -1; }
+  .filters .btn { min-height: 40px; }
+  label { gap: .25rem; font-size: .85rem; }
+  .tabbar { padding: .15rem .35rem calc(.15rem + env(safe-area-inset-bottom)); }
+  .tab { min-height: 48px; font-size: .68rem; }
+  .more-row { min-height: 52px; }
+  .flash, .alert { padding: .6rem .8rem; }
+  .pager { margin-top: .5rem; padding-top: .5rem; }
+  /* Resumen: the month picker and "Registrar pago" share one line. */
+  .head-actions { flex-direction: row; flex-wrap: nowrap; align-items: stretch; }
+  .head-actions > .btn { width: auto; }
+  .head-actions .monthnav { flex: 1 1 0; min-width: 0; width: auto; }
+  .head-actions .monthnav .mn-label { flex: 1; min-width: 0; justify-content: center; font-size: .85rem; padding: 0 .25rem; white-space: nowrap; }
+  .mn-label svg { display: none; }
+  .head-actions .monthnav .mn-btn { width: 36px; }
+  .head-actions .btn { flex: none; white-space: nowrap; padding: 0 .85rem; }
+  .info-card .stat-number { font-size: 1.35rem; }
+  .info-card, .late-card { padding: .7rem .9rem; }
+  .list li.house-row .actions .btn, .debt-actions .btn { min-height: 34px; font-size: .8rem; padding: 0 .55rem; }
+  .list li.house-row .actions, .debt-actions { gap: .35rem; }
+}
