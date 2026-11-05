@@ -31,6 +31,11 @@ export function createNotifier({ store, config, pushSend = sendPush }) {
   let failure = null;
   let okAt = 0;
   const hostOf = (endpoint) => { try { return new URL(endpoint).hostname; } catch { return ""; } };
+  /** Something broke on OUR side before or while sending (keys, encryption, the store): never swallow it silently. */
+  const noteError = (e) => {
+    failure = { at: Date.now(), host: "", status: 0, detail: `error interno: ${String(e?.message ?? e).replace(/\s+/g, " ").slice(0, 140)}`, gone: false };
+    console.warn(`[avisos] error interno: ${e?.stack ?? e}`);
+  };
 
   async function deliver(subs, message, forget) {
     if (!subs.length) return 0;
@@ -57,14 +62,14 @@ export function createNotifier({ store, config, pushSend = sendPush }) {
       try {
         const ledger = store.forTenant(tenantId);
         return await deliver(ledger.push.list({ userId }), message, (e) => ledger.push.remove(e));
-      } catch { return 0; }
+      } catch (e) { noteError(e); return 0; }
     },
     /** To the phones one house installed the app on. */
     async house(tenantId, houseId, message) {
       try {
         const ledger = store.forTenant(tenantId);
         return await deliver(ledger.housePush.list(houseId), message, (e) => ledger.housePush.remove(e));
-      } catch { return 0; }
+      } catch (e) { noteError(e); return 0; }
     },
   };
 }

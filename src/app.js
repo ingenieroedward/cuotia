@@ -311,7 +311,8 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       pushTestLimiter.fail(tkey);
       if (!ledger.housePush.count(found.house.id)) return sendJson(res, 200, { sent: 0, status: 0, error: "sin-dispositivo" });
       const sent = await notifier.house(found.tenant.id, found.house.id, { title: "Cuotia", body: "Los avisos funcionan en este celular.", url: "@resident", tag: "prueba" });
-      return sendJson(res, 200, { sent, status: sent ? 200 : Number(notifier.lastFailure?.()?.status ?? 0) });
+      const why = sent ? null : notifier.lastFailure?.();
+      return sendJson(res, 200, { sent, status: sent ? 200 : Number(why?.status ?? 0), ...(why?.detail ? { detail: String(why.detail).slice(0, 160) } : {}) });
     }
     const p256dh = String(form.get("p256dh") ?? "");
     const auth = String(form.get("auth") ?? "");

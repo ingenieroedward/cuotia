@@ -130,7 +130,7 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
       if (data.sent) status.textContent = "Listo: te enviamos una notificación. Debería llegar en unos segundos. Si no la ves, revisa que las notificaciones de Cuotia estén permitidas en los ajustes del teléfono.";
       else if (data.error === "limite") status.textContent = "Ya hiciste varias pruebas. Espera un rato.";
       else if (data.error === "sin-dispositivo") status.textContent = "Este celular no está registrado todavía. Pulsa \"Activar avisos\".";
-      else status.textContent = `El servicio de notificaciones no recibió el aviso${data.status ? ` (respondió ${data.status})` : ""}. Desactiva los avisos, vuelve a activarlos y prueba de nuevo.`;
+      else status.textContent = `No se pudo entregar el aviso (${data.status ? `el servicio respondió ${data.status}` : "sin respuesta del servicio"}${data.detail ? `: ${data.detail}` : ""}). Desactiva los avisos, vuelve a activarlos y prueba de nuevo; si sigue igual, avísale al tesorero con este mensaje.`;
     } catch { status.textContent = "No se pudo enviar la prueba. Revisa tu conexión."; }
     finally { testButton.disabled = false; }
   });

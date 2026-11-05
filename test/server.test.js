@@ -3341,7 +3341,7 @@ test("avisos: cuando el servicio de notificaciones rechaza, el tesorero ve por q
       assert.deepEqual(sent.map((x) => x.endpoint), ["https://fcm.googleapis.com/fcm/send/a1"]);
       assert.deepEqual(sent[0].message, { title: "Cuotia", body: "Los avisos funcionan en este celular.", url: "@resident", tag: "prueba" });
       reply = { ok: false, gone: false, status: 403, detail: "x" };
-      assert.deepEqual(await (await probar(s.a14.accessToken)).json(), { sent: 0, status: 403 });
+      assert.deepEqual(await (await probar(s.a14.accessToken)).json(), { sent: 0, status: 403, detail: "x" });
       assert.deepEqual(await (await probar(s.a03.accessToken)).json(), { sent: 0, status: 0, error: "sin-dispositivo" }, "una casa sin celular registrado");
       assert.equal((await probar(s.a14.accessToken, { origin: "https://malo.example" })).status, 403);
       assert.equal((await probar("z".repeat(24))).status, 404);
@@ -3383,4 +3383,28 @@ test("service worker: tocar la notificación lleva al vecino a SU enlace (antes 
   assert.equal(await click("@resident/pagar"), "https://cuotia.test/r/TOKEN-DE-PRUEBA/pagar");
   assert.equal(await click("@resident"), "https://cuotia.test/r/TOKEN-DE-PRUEBA");
   assert.equal(await click("/panel/cobros"), "https://cuotia.test/panel/cobros");
+});
+
+test("avisos: un fallo interno del envío ya no es silencioso: se registra y el vecino y el tesorero ven el detalle", async () => {
+  const pushSend = async () => { throw new Error("boom de prueba"); };
+  const warns = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => { warns.push(args.join(" ")); };
+  try {
+    await withServer(async (s) => {
+      await fetch(`${s.base}/r/${s.a14.accessToken}`); // creates the notification keys
+      s.A.housePush.add({ houseId: s.a14.house.id, endpoint: "https://fcm.googleapis.com/fcm/send/a1", p256dh: "k", auth: "a" });
+      const r = await post(`${s.base}/r/${s.a14.accessToken}/avisos/probar`, "", FORM);
+      assert.deepEqual(await r.json(), { sent: 0, status: 0, detail: "error interno: boom de prueba" });
+      assert.ok(warns.some((w) => /\[avisos\] error interno: Error: boom de prueba/.test(w)), "queda en el registro del servidor con su traza");
+      const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+      const panel = await (await fetch(`${s.base}/panel/ajustes/dispositivo`, { headers: { cookie } })).text();
+      assert.match(panel, /Último problema al enviar:/);
+      assert.match(panel, /error interno: boom de prueba/);
+      const js = await (await fetch(`${s.base}/static/app.js`)).text();
+      assert.match(js, /sin respuesta del servicio/);
+    }, { pushSend });
+  } finally {
+    console.warn = realWarn;
+  }
 });
