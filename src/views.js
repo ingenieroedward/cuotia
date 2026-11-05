@@ -128,6 +128,8 @@ const FLASH = {
   cobro: () => ({ kind: "ok", text: "Cuenta para cobrar guardada. Los residentes ya ven la llave nueva." }),
   clave: () => ({ kind: "ok", text: "Contraseña cambiada. En los demás dispositivos tendrás que entrar de nuevo." }),
   clavemal: () => ({ kind: "err", text: "La contraseña actual no es correcta." }),
+  nombreok: () => ({ kind: "ok", text: "Listo: ahora te llamamos así." }),
+  nombrebad: () => ({ kind: "err", text: "Escribe tu nombre, de 2 a 80 letras." }),
   clavebad: () => ({ kind: "err", text: "La contraseña nueva debe tener al menos 10 caracteres y las dos deben coincidir." }),
   clavelim: () => ({ kind: "err", text: "Demasiados intentos. Espera unos minutos." }),
   err: () => ({ kind: "err", text: "No se pudo completar la acción. Revisa los datos e inténtalo de nuevo." }),
@@ -932,7 +934,7 @@ export const AJUSTES_SECCIONES = [
   { key: "cobros", icon: "cobrar", title: "Cobros y pagos", text: "Cómo confirmas los pagos, cuenta para cobrar, otros medios y fechas", cards: ["confirmar", "cuenta", "medios", "fechas"] },
   { key: "pagoradar", icon: "pagos", title: "Conexión con pagoradar", text: "El enlace y el secreto para que los pagos del banco lleguen solos", cards: ["pagoradar"] },
   { key: "equipo", icon: "casas", title: "Equipo", text: "Quién entra al panel, invitaciones y accesos", cards: ["equipo"] },
-  { key: "seguridad", icon: "ajustes", title: "Mi acceso y seguridad", text: "Contraseña, passkeys y códigos de respaldo", cards: ["clave", "passkeys", "recuperacion"] },
+  { key: "seguridad", icon: "ajustes", title: "Mi acceso y seguridad", text: "Contraseña, passkeys y códigos de respaldo", cards: ["nombre", "clave", "passkeys", "recuperacion"] },
   { key: "dispositivo", icon: "home", title: "Este dispositivo", text: "Avisos en el celular y apariencia (claro u oscuro)", cards: ["avisos", "apariencia"] },
   { key: "datos", icon: "bitacora", title: "Datos y privacidad", text: "Bitácora, política de datos y empezar de cero", cards: ["datos", "reiniciar"] },
 ];
@@ -941,6 +943,17 @@ export const AJUSTES_SECCIONES = [
 function ajustesCards(args) {
   const { tenant, csrf, flash, webhookUrl, team = [], invites = [], meId, pushKey = "", pushDevices = 0, passkeys = [], recovery = { total: 0, remaining: 0 } } = args;
   return {
+  nombre: html`
+  <section class="card" id="nombre">
+    <h2>Tu nombre</h2>
+    <form class="stack-form" method="post" action="/panel/ajustes/nombre" autocomplete="name">
+      ${csrfField(csrf)}
+      <label>Cómo te llamamos<input type="text" name="nombre" maxlength="80" required placeholder="Edward Díaz" value="${(team.find((u) => u.id === meId)?.fullName) ?? ""}"></label>
+      <button class="btn small" type="submit">Guardar nombre</button>
+    </form>
+    <p class="muted small">Se usa en el saludo ("Hola, ${(team.find((u) => u.id === meId)?.name) ?? ""}", con tu primer nombre), como firma de los mensajes de WhatsApp que envías y en la bitácora. Tu correo de entrada no cambia: ${(team.find((u) => u.id === meId)?.email) ?? ""}.</p>
+  </section>
+`,
   confirmar: html`
   <section class="card">
     <h2>¿Cómo confirmas los pagos?</h2>

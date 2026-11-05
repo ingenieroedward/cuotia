@@ -1098,7 +1098,7 @@ export function openStore(path = ":memory:") {
     /** The people who can sign in to this conjunto, and the invitations still open. */
     const team = {
       list: () => db.prepare("SELECT * FROM users WHERE tenant_id = ? ORDER BY created_at").all(tenantId).map((r) => ({
-        id: r.id, email: r.email, name: greetingName(r.display_name, r.email), totpEnabled: !!r.totp_enabled, createdAt: r.created_at,
+        id: r.id, email: r.email, name: greetingName(r.display_name, r.email), fullName: r.display_name ?? "", totpEnabled: !!r.totp_enabled, createdAt: r.created_at,
       })),
       invitations: () => db.prepare("SELECT * FROM invitations WHERE tenant_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at").all(tenantId, nowIso())
         .map((r) => ({ id: r.id, email: r.email, name: r.display_name, expiresAt: r.expires_at, createdAt: r.created_at })),
@@ -1118,6 +1118,14 @@ export function openStore(path = ":memory:") {
       cancelInvitation(id) {
         const r = db.prepare("DELETE FROM invitations WHERE id = ? AND tenant_id = ? AND used_at IS NULL").run(id, tenantId);
         if (Number(r.changes) !== 1) throw new Error("Esa invitación no existe en este conjunto");
+      },
+      /** Changes how a person of this conjunto is called (greeting, the signature of their WhatsApp messages, the log). 2-80 characters. */
+      rename(userId, name) {
+        const clean = String(name ?? "").trim().replace(/\s+/g, " ");
+        if (clean.length < 2 || clean.length > 80) throw new Error("Escribe tu nombre (entre 2 y 80 letras)");
+        const r = db.prepare("UPDATE users SET display_name = ? WHERE id = ? AND tenant_id = ?").run(clean, userId, tenantId);
+        if (Number(r.changes) !== 1) throw new Error("Esa persona no es de este conjunto");
+        return clean;
       },
       /** A link for a colleague of this conjunto who lost their phone or password (shown once, valid 24 h). One open link per person. */
       resetAccess(userId, createdBy = null) {
