@@ -2985,3 +2985,153 @@ test("Casas: los dos botones de arriba comparten línea (la regla general de bot
   assert.match(css, /details\.add-house summary \.btn \+ \.btn \{ margin-top: 0; \}/, "sin esto el segundo botón queda 4 px más abajo");
   assert.match(css, /details\.add-house \{ gap: 0; \}/, "sin esto la tarjeta cerrada deja un hueco debajo y los botones no quedan centrados");
 }));
+
+test("registro de vecinos: el enlace solo crea SOLICITUDES; el tesorero aprueba, y no hay filtraciones ni cruces entre conjuntos", () => withServer(async (s) => {
+  const { cookie } = await signIn(s.base, "marta@ejemplo.com", "clave-de-marta");
+  const csrf = await csrfOf(s.base, cookie, "/panel/casas/registro");
+  const get = async (path, c = cookie) => (await fetch(`${s.base}${path}`, { headers: { cookie: c }, redirect: "manual" }));
+  const admin = async () => (await get("/panel/casas/registro")).text();
+  const linkOf = (html) => /id="enlace-registro">([^<]+)</.exec(html)?.[1];
+  const houses = () => s.A.houses.list().length;
+  const housesBefore = houses();
+
+  assert.equal((await fetch(`${s.base}/registro/${"a".repeat(24)}`)).status, 404, "un enlace inventado no abre nada");
+  assert.match(await admin(), /Activar el registro de vecinos/);
+  assert.match(await (await get("/panel/casas")).text(), /href="\/panel\/casas\/registro"/, "se llega desde Casas");
+
+  // Switch it on (form token needed, once) and look at what is stored.
+  assert.equal((await form(`${s.base}/panel/casas/registro/enlace`, { accion: "activar" }, cookie)).status, 403);
+  assert.match((await form(`${s.base}/panel/casas/registro/enlace`, { accion: "activar", _csrf: csrf }, cookie)).headers.get("location"), /m=regok/);
+  const first = linkOf(await admin());
+  assert.match(first, /^http:\/\/localhost:3000\/registro\/[A-Za-z0-9_-]{20,}$/);
+  const token = first.split("/registro/")[1];
+  const row = s.store.db.prepare("SELECT signup_token_hash AS h, signup_token_enc AS e FROM tenants WHERE id = ?").get(s.a.id);
+  assert.ok(row.h && row.e && !row.h.includes(token) && !row.e.includes(token), "el enlace no se guarda en claro");
+
+  // What a neighbour sees.
+  const res = await fetch(`${s.base}/registro/${token}`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("x-robots-tag"), /noindex/);
+  const page = await res.text();
+  assert.match(page, /Jardines de Ibiza/);
+  assert.match(page, /name="codigo"/);
+  assert.match(page, /name="web"/, "campo trampa para bots");
+  assert.doesNotMatch(page, /rel="manifest"/);
+  assert.doesNotMatch(page, /Sandra|Duque|Diana/, "la página nunca dice quién vive dónde");
+
+  const send = (fields, headers = {}) => post(`${s.base}/registro/${token}`, new URLSearchParams({ acepto: "1", ...fields }), { ...FORM, ...headers });
+  const good = { codigo: "77", nombre: "Vecino Nuevo Pérez", celular: "300 123 4567" };
+  // Everything wrong is refused with a message and saves nothing.
+  const bads = [[{ ...good, acepto: "" }, /acepta el tratamiento/], [{ ...good, codigo: "casa nº 5 ¡" }, /número de tu casa/], [{ ...good, nombre: "Ab" }, /nombre completo/], [{ ...good, celular: "12345" }, /10 dígitos/], [{ ...good, celular: "2001234567" }, /10 dígitos/]];
+  for (const [fields, msg] of bads) {
+    const r = await send(fields);
+    assert.equal(r.status, 400);
+    assert.match(await r.text(), msg);
+  }
+  assert.equal(s.A.signups.pendingCount(), 0);
+  assert.equal((await send(good, { origin: "https://malo.example" })).status, 403);
+  const bot = await send({ ...good, web: "http://spam" });
+  assert.equal(bot.status, 200, "al bot le decimos que funcionó");
+  assert.equal(s.A.signups.pendingCount(), 0, "pero no se guarda nada");
+
+  // A real one: it is only a request. No house appears and no link is revealed.
+  const sent = await send(good);
+  assert.equal(sent.status, 200);
+  const thanks = await sent.text();
+  assert.match(thanks, /Solicitud enviada/);
+  assert.doesNotMatch(thanks, /\/r\/[A-Za-z0-9_-]{20,}/, "la gracias no entrega ningún enlace personal");
+  assert.equal(houses(), housesBefore, "no se creó ninguna casa");
+  assert.equal(s.A.signups.pendingCount(), 1);
+  await send(good); // the same person again replaces, not piles up
+  assert.equal(s.A.signups.pendingCount(), 1);
+  // The same answer for a house that exists: it never says who lives where.
+  const existing = await send({ codigo: "14", nombre: "Otra Persona Distinta", celular: "3109876543" });
+  assert.equal(existing.status, 200);
+  assert.match(await existing.text(), /Solicitud enviada/);
+  await send({ codigo: "3", nombre: "Diana Pérez Gil", celular: "3201112233" }); // "3" is the house "03"
+  await send({ codigo: "90", nombre: "Rechazado Rodríguez", celular: "3004445566" });
+  assert.equal(s.A.signups.pendingCount(), 4);
+
+  const list = await admin();
+  assert.match(list, /Casa 77 · Vecino Nuevo Pérez/);
+  assert.match(list, /3001234567/);
+  assert.match(list, /La casa 77 no existe todavía/);
+  assert.match(list, /La casa 14 ya existe \(Sandra Duque Arias\)/);
+  assert.match(list, /La casa 03 ya existe/, "3 y 03 son la misma casa");
+  assert.match(await (await get("/panel/casas")).text(), /4 solicitudes de registro por revisar/);
+  const ids = Object.fromEntries(s.A.signups.pending().map((r) => [r.code, r.id]));
+
+  // Another conjunto's treasurer can't see or answer them.
+  const luis = await signIn(s.base, "luis@ejemplo.com", "clave-de-luis");
+  const csrfL = await csrfOf(s.base, luis.cookie, "/panel/casas/registro");
+  assert.doesNotMatch(await (await get("/panel/casas/registro", luis.cookie)).text(), /Vecino Nuevo/);
+  assert.match((await form(`${s.base}/panel/casas/registro/${ids["77"]}/aprobar`, { _csrf: csrfL }, luis.cookie)).headers.get("location"), /m=regya/);
+  assert.equal(s.A.signups.pendingCount(), 4, "sigue pendiente");
+  assert.equal(s.B.houses.byCode("77"), null);
+
+  // Approve a new house: it is created, gets this month's dues and its link is ready to send.
+  const ok = await form(`${s.base}/panel/casas/registro/${ids["77"]}/aprobar`, { _csrf: csrf }, cookie);
+  assert.equal(ok.status, 200);
+  const okHtml = await ok.text();
+  const link77 = /\/r\/([A-Za-z0-9_-]{20,})/.exec(okHtml)[1];
+  const h77 = s.A.houses.byCode("77");
+  assert.equal(h77.residentName, "Vecino Nuevo Pérez");
+  assert.equal(h77.phone, "3001234567");
+  assert.equal(s.A.dues.listForHouse(h77.id).length, 1);
+  assert.equal((await fetch(`${s.base}/r/${link77}`)).status, 200);
+  assert.match(okHtml, /wa\.me\/573001234567/, "se envía directo a su celular");
+  assert.equal(s.A.houses.get(h77.id).hasLink, true, "queda guardado para los recordatorios");
+  assert.equal(s.A.signups.pendingCount(), 3);
+  assert.equal((await form(`${s.base}/panel/casas/registro/${ids["77"]}/aprobar`, { _csrf: csrf }, cookie)).headers.get("location"), "/panel/casas/registro?m=regya", "no se aprueba dos veces");
+
+  // Approve an existing house: name and phone updated, a new link, and the old one stops working.
+  const oldLink = s.a14.accessToken;
+  const upd = await form(`${s.base}/panel/casas/registro/${ids["14"]}/aprobar`, { _csrf: csrf }, cookie);
+  assert.equal(upd.status, 200);
+  const link14 = /\/r\/([A-Za-z0-9_-]{20,})/.exec(await upd.text())[1];
+  assert.notEqual(link14, oldLink);
+  assert.equal((await fetch(`${s.base}/r/${oldLink}`)).status, 404);
+  assert.equal((await fetch(`${s.base}/r/${link14}`)).status, 200);
+  assert.equal(s.A.houses.byCode("14").residentName, "Otra Persona Distinta");
+  assert.equal(s.A.houses.list().filter((h) => h.code === "14").length, 1, "no duplica la casa");
+  // "3" matched the house 03 and did not create a "3".
+  await form(`${s.base}/panel/casas/registro/${ids["3"]}/aprobar`, { _csrf: csrf }, cookie);
+  assert.equal(s.A.houses.list().filter((h) => /^0?3$/.test(h.code)).length, 1);
+  assert.equal(s.A.houses.byCode("03").phone, "3201112233");
+
+  // Reject, and a house that was given up (dada de baja) can't be approved over.
+  assert.match((await form(`${s.base}/panel/casas/registro/${ids["90"]}/rechazar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=regrechazada/);
+  assert.equal(s.A.houses.byCode("90"), null);
+  await send({ codigo: "77", nombre: "Otro Intento Más", celular: "3007778899" });
+  s.A.houses.setActive(h77.id, false);
+  const baja = s.A.signups.pending()[0];
+  assert.match((await form(`${s.base}/panel/casas/registro/${baja.id}/aprobar`, { _csrf: csrf }, cookie)).headers.get("location"), /m=regbaja/);
+  assert.equal(s.A.houses.byCode("77").residentName, "Vecino Nuevo Pérez", "no se tocó");
+
+  // The log tells what happened, without phones or links.
+  const log = s.A.audit.list({ limit: 50 }).rows.map((r) => r.summary).join("\n");
+  assert.match(log, /Activó el enlace para que los vecinos se registren/);
+  assert.match(log, /Aprobó el registro de la casa 77 \(Vecino Nuevo Pérez\)/);
+  assert.match(log, /Aprobó el registro de la casa 14 .*que ya existía/);
+  assert.match(log, /Rechazó la solicitud de registro de la casa 90/);
+  assert.doesNotMatch(log, /3001234567|3201112233|\/registro\/|\/r\//);
+
+  // Change the link: the old one dies. Switch it off: nothing opens.
+  await form(`${s.base}/panel/casas/registro/enlace`, { accion: "cambiar", _csrf: csrf }, cookie);
+  assert.equal((await fetch(`${s.base}/registro/${token}`)).status, 404);
+  const second = linkOf(await admin()).split("/registro/")[1];
+  assert.notEqual(second, token);
+  assert.equal((await fetch(`${s.base}/registro/${second}`)).status, 200);
+  await form(`${s.base}/panel/casas/registro/enlace`, { accion: "apagar", _csrf: csrf }, cookie);
+  assert.equal((await fetch(`${s.base}/registro/${second}`)).status, 404);
+  assert.match(await admin(), /Activar el registro de vecinos/);
+}));
+
+test("registro de vecinos: cada IP puede enviar pocas solicitudes por hora", () => withServer(async (s) => {
+  const token = "t".repeat(24);
+  s.store.tenants.setSignupToken(s.a.id, token, "cifrado");
+  const send = (n) => post(`${s.base}/registro/${token}`, new URLSearchParams({ acepto: "1", codigo: String(n), nombre: "Vecino Número " + n, celular: "3001234567" }), FORM);
+  for (let n = 1; n <= 15; n++) assert.equal((await send(n)).status, 200);
+  assert.equal((await send(16)).status, 429);
+  assert.equal(s.A.signups.pendingCount(), 15);
+}));

@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { MESSAGE_KEYS, validateTemplate } from "./messages.js";
-import { MANUAL_LABELS, PAY_KINDS, namesMatch, normalizeName, periodRange } from "./text.js";
+import { MANUAL_LABELS, PAY_KINDS, namesMatch, normalizeHouseCode, normalizeName, periodRange } from "./text.js";
 import { newToken, sha256 } from "./security.js";
 
 /**
@@ -350,6 +350,25 @@ const MIGRATIONS = [
   `
   ALTER TABLE houses ADD COLUMN access_enc TEXT;
   `,
+  /* V23: neighbours register themselves through a link the treasurer switches on (token only hashed + an encrypted copy, like the
+     transparency page). What they send is only a REQUEST (house number, name, phone): nothing becomes a house until the treasurer approves. */
+  `
+  ALTER TABLE tenants ADD COLUMN signup_token_hash TEXT;
+  ALTER TABLE tenants ADD COLUMN signup_token_enc TEXT;
+  CREATE UNIQUE INDEX tenants_signup_token ON tenants (signup_token_hash) WHERE signup_token_hash IS NOT NULL;
+  CREATE TABLE signup_requests (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    code TEXT NOT NULL,
+    resident_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    house_id TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+  CREATE INDEX signup_by_tenant ON signup_requests (tenant_id, status);
+  `,
 ];
 
 export const EXPENSE_CATEGORIES = ["Vigilancia", "Servicios públicos", "Mantenimiento", "Aseo y jardinería", "Papelería y administración", "Imprevistos", "Otros"];
@@ -365,7 +384,7 @@ const tenantRow = (r) => !r ? null : {
   openDay: r.open_day ?? null, dueDay: r.due_day ?? null,
   // What residents are told: payments confirmed by the bank, or registered by the treasurer.
   payMode: r.pay_mode ?? (r.pagoradar_secret ? "auto" : "manual"),
-  openingCents: Number(r.opening_cents ?? 0), showAccounts: !!r.show_accounts, publicOn: !!r.public_token_hash,
+  openingCents: Number(r.opening_cents ?? 0), showAccounts: !!r.show_accounts, publicOn: !!r.public_token_hash, signupOn: !!r.signup_token_hash,
 };
 const houseRow = (r) => !r ? null : { id: r.id, tenantId: r.tenant_id, code: r.code, residentName: r.resident_name, phone: r.phone, active: !!r.active, hasLink: !!r.access_enc };
 const dueRow = (r) => ({
@@ -440,6 +459,11 @@ export function openStore(path = ":memory:") {
     publicTokenEnc: (id) => db.prepare("SELECT public_token_enc FROM tenants WHERE id = ? AND public_token_hash IS NOT NULL").get(id)?.public_token_enc ?? null,
     setPublicToken: (id, token, encrypted) => void db.prepare("UPDATE tenants SET public_token_hash = ?, public_token_enc = ? WHERE id = ?").run(sha256(String(token)), encrypted, id),
     clearPublicToken: (id) => void db.prepare("UPDATE tenants SET public_token_hash = NULL, public_token_enc = NULL WHERE id = ?").run(id),
+    /** Global lookup for the neighbours' registration page: the unguessable token is the credential. */
+    bySignupToken: (token) => tenantRow(db.prepare("SELECT * FROM tenants WHERE signup_token_hash = ?").get(sha256(String(token)))),
+    signupTokenEnc: (id) => db.prepare("SELECT signup_token_enc FROM tenants WHERE id = ? AND signup_token_hash IS NOT NULL").get(id)?.signup_token_enc ?? null,
+    setSignupToken: (id, token, encrypted) => void db.prepare("UPDATE tenants SET signup_token_hash = ?, signup_token_enc = ? WHERE id = ?").run(sha256(String(token)), encrypted, id),
+    clearSignupToken: (id) => void db.prepare("UPDATE tenants SET signup_token_hash = NULL, signup_token_enc = NULL WHERE id = ?").run(id),
     /** The Bre-B key and holder residents see. Empty means "not set". */
     setAccounts: (id, { openingCents, showAccounts }) => void db.prepare("UPDATE tenants SET opening_cents = ?, show_accounts = ? WHERE id = ?").run(openingCents, showAccounts ? 1 : 0, id),
     setPayMode: (id, mode) => void db.prepare("UPDATE tenants SET pay_mode = ? WHERE id = ?").run(mode === "auto" || mode === "manual" ? mode : null, id),
@@ -667,6 +691,8 @@ export function openStore(path = ":memory:") {
         return { house: houseRow(houseOf(id)), accessToken: token };
       },
       get: (id) => houseRow(houseOf(id)),
+      /** A house of this conjunto by its number, active or not ("3" finds "03"). */
+      byCode: (code) => houseRow(db.prepare("SELECT * FROM houses WHERE tenant_id = ?").all(tenantId).find((h) => normalizeHouseCode(h.code) === normalizeHouseCode(code))),
       list: () => db.prepare("SELECT * FROM houses WHERE tenant_id = ? AND active = 1 ORDER BY code").all(tenantId).map(houseRow),
       listInactive: () => db.prepare("SELECT * FROM houses WHERE tenant_id = ? AND active = 0 ORDER BY code").all(tenantId).map(houseRow),
       /** Edits the data of a house. A code already used by another house throws a UNIQUE error. */
@@ -1041,6 +1067,34 @@ export function openStore(path = ":memory:") {
     }
 
 
+    /** Neighbours' registration requests. They are only requests: the treasurer approves or rejects each one. */
+    const MAX_PENDING_SIGNUPS = 60;
+    const signupRow = (r) => ({ id: r.id, code: r.code, name: r.resident_name, phone: r.phone, status: r.status, houseId: r.house_id, createdAt: r.created_at, resolvedAt: r.resolved_at });
+    const signups = {
+      create({ code, name, phone }) {
+        const c = String(code ?? "").trim().toUpperCase();
+        const n = String(name ?? "").trim();
+        const ph = String(phone ?? "").replace(/\D/g, "");
+        if (!/^[A-Z0-9-]{1,12}$/.test(c)) throw new Error("Escribe el número de tu casa");
+        if (n.length < 3 || n.length > 80) throw new Error("Escribe tu nombre completo");
+        if (!/^3\d{9}$/.test(ph)) throw new Error("Escribe tu celular de 10 dígitos");
+        return tx(() => {
+          // The same person asking twice replaces their earlier request instead of piling up.
+          db.prepare("DELETE FROM signup_requests WHERE tenant_id = ? AND status = 'pending' AND phone = ? AND code = ?").run(tenantId, ph, c);
+          if (Number(db.prepare("SELECT COUNT(*) AS n FROM signup_requests WHERE tenant_id = ? AND status = 'pending'").get(tenantId).n) >= MAX_PENDING_SIGNUPS) throw new Error("Hay demasiadas solicitudes por revisar");
+          const id = newId("sol");
+          db.prepare("INSERT INTO signup_requests (id, tenant_id, code, resident_name, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, tenantId, c, n, ph, nowIso());
+          return id;
+        });
+      },
+      pending: () => db.prepare("SELECT * FROM signup_requests WHERE tenant_id = ? AND status = 'pending' ORDER BY created_at").all(tenantId).map(signupRow),
+      pendingCount: () => Number(db.prepare("SELECT COUNT(*) AS n FROM signup_requests WHERE tenant_id = ? AND status = 'pending'").get(tenantId).n),
+      recent: (limit = 8) => db.prepare("SELECT * FROM signup_requests WHERE tenant_id = ? AND status != 'pending' ORDER BY resolved_at DESC LIMIT ?").all(tenantId, limit).map(signupRow),
+      get: (id) => { const r = db.prepare("SELECT * FROM signup_requests WHERE id = ? AND tenant_id = ?").get(id, tenantId); return r ? signupRow(r) : null; },
+      /** Closes a pending request. False when it was already closed (two people tapping at once). */
+      resolve: (id, status, houseId = null) => Number(db.prepare("UPDATE signup_requests SET status = ?, house_id = ?, resolved_at = ? WHERE id = ? AND tenant_id = ? AND status = 'pending'").run(status === "approved" ? "approved" : "rejected", houseId, nowIso(), id, tenantId).changes) === 1,
+    };
+
     /** The people who can sign in to this conjunto, and the invitations still open. */
     const team = {
       list: () => db.prepare("SELECT * FROM users WHERE tenant_id = ? ORDER BY created_at").all(tenantId).map((r) => ({
@@ -1152,6 +1206,7 @@ export function openStore(path = ":memory:") {
         const gone = resetPreview();
         const del = (table, extra = "") => db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?${extra}`).run(tenantId);
         del("reminders_sent");
+        del("signup_requests");
         del("certificates");
         del("proofs");
         del("expenses");
@@ -1393,7 +1448,7 @@ export function openStore(path = ":memory:") {
       },
     };
 
-    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, recovery, push, housePush, reminders, certificates, audit, payMethods, templates, passkeys: passkeysOf, expenses, books, reset, resetPreview, matchHouse, summary };
+    return { tenantId, houses, aliases, concepts, dues, payments, proofs, team, recovery, signups, push, housePush, reminders, certificates, audit, payMethods, templates, passkeys: passkeysOf, expenses, books, reset, resetPreview, matchHouse, summary };
   }
 
   return { db, tenants, users, recoveryCodes, accessResets, invitations, certificates, passkeys, webauthnChallenges, operators, operatorSessions, settings, sessions, residentByToken, forTenant, close: () => db.close() };
