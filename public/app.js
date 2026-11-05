@@ -312,3 +312,25 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     });
   }
 })();
+
+// "Instala Cuotia": show the steps for this phone, an install button where the browser has one, and hide it once installed.
+(() => {
+  const card = document.querySelector("[data-install]");
+  if (!card) return;
+  const standalone = (typeof matchMedia === "function" && matchMedia("(display-mode: standalone)").matches) || (typeof navigator !== "undefined" && navigator.standalone === true);
+  if (standalone) { card.hidden = true; return; }
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+  const ios = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && typeof navigator !== "undefined" && navigator.maxTouchPoints > 1);
+  for (const steps of card.querySelectorAll("[data-install-steps]")) steps.hidden = steps.dataset.installSteps !== (ios ? "ios" : "android");
+  const button = card.querySelector("[data-install-button]");
+  let offered = null;
+  addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); offered = event; button.hidden = false; });
+  button.addEventListener("click", async () => {
+    if (!offered) return;
+    offered.prompt();
+    await offered.userChoice.catch(() => null);
+    offered = null;
+    button.hidden = true;
+  });
+  addEventListener("appinstalled", () => { card.hidden = true; });
+})();
