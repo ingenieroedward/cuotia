@@ -476,7 +476,18 @@ details.add-house[open] summary { margin-bottom: .5rem; }
 .proof { display: grid; gap: .75rem; }
 .proof-img { display: block; max-width: 100%; max-height: 22rem; border-radius: 14px; border: 1px solid var(--line); background: var(--ground); object-fit: contain; }
 .proof-box { display: grid; gap: .5rem; padding: .9rem; border: 1px solid var(--line); border-radius: 14px; background: var(--ground); }
-input[type="file"] { width: 100%; padding: .6rem; border: 1px dashed var(--line); border-radius: 12px; background: var(--ground); font: inherit; }
+/* The file picker: a dashed drop area with our own button instead of the browser's grey one. */
+input[type="file"] {
+  width: 100%; min-height: 60px; padding: .55rem .6rem; display: flex; align-items: center;
+  border: 1.5px dashed var(--line); border-radius: 14px; background: var(--ground);
+  font: inherit; font-size: .875rem; font-weight: 500; color: var(--muted); cursor: pointer;
+}
+input[type="file"]:hover { border-color: var(--ink); }
+input[type="file"]::file-selector-button, input[type="file"]::-webkit-file-upload-button {
+  margin-right: .8rem; min-height: 40px; padding: 0 1rem; border: 0; border-radius: 10px;
+  background: var(--ink); color: #fff; font: inherit; font-size: .875rem; font-weight: 700; cursor: pointer;
+}
+input[type="file"]:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
 
 li.member { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
 li.member > span { display: grid; min-width: 0; }
