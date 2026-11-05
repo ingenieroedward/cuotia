@@ -128,7 +128,7 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     status.textContent = "Enviando…";
     try {
       const res = await fetch(testButton.dataset.testUrl, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "" });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({ error: res.status === 429 ? "limite" : "otro" }));
       if (data.sent) status.textContent = "Listo: te enviamos una notificación. Debería llegar en unos segundos. Si no la ves, revisa que las notificaciones de Cuotia estén permitidas en los ajustes del teléfono.";
       else if (data.error === "limite") status.textContent = "Ya hiciste varias pruebas. Espera un rato.";
       else if (data.error === "sin-dispositivo") status.textContent = "Este celular no está registrado todavía. Pulsa \"Activar avisos\".";
@@ -143,8 +143,9 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
-        await post(unsubscribeUrl, { endpoint: sub.endpoint });
+        // The phone's own subscription goes first: even if the server can't be reached it must stop. The server only tidies its list.
         await sub.unsubscribe();
+        await post(unsubscribeUrl, { endpoint: sub.endpoint }).catch(() => {});
         status.textContent = "Avisos desactivados en este dispositivo.";
       } else {
         if ((await Notification.requestPermission()) !== "granted") {

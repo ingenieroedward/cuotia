@@ -65,6 +65,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   const publicLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const forgotLimiter = new AttemptLimiter({ max: 6, windowMs: 15 * 60_000 });
   const pushTestLimiter = new AttemptLimiter({ max: 6, windowMs: 60 * 60_000 });
+  const pushSubscribeLimiter = new AttemptLimiter({ max: 30, windowMs: 60 * 60_000 });
   const signupLimiter = new AttemptLimiter({ max: 15, windowMs: 60 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
@@ -293,9 +294,8 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     const found = store.residentByToken(token);
     if (!found) return send(res, 404, notFoundPage());
     if (!sameOrigin(req, config.publicUrl)) return send(res, 403, "Origen no permitido");
-    const key = `push:${found.house.id}`;
-    if (proofLimiter.blocked(key)) return send(res, 429, "Demasiados intentos", { "Content-Type": "text/plain; charset=utf-8" });
-    proofLimiter.fail(key);
+    // Only SUBSCRIBING is limited (it writes rows): turning notifications off and the test have their own, so a few tries in a row
+    // never lock a neighbour out of switching them off (this used to share one 12-per-hour counter and answered 429 to everything).
     const form = new URLSearchParams(await readBody(req, 4 * 1024));
     const ledger = store.forTenant(found.tenant.id);
     const endpoint = String(form.get("endpoint") ?? "");
@@ -316,6 +316,9 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     }
     const p256dh = String(form.get("p256dh") ?? "");
     const auth = String(form.get("auth") ?? "");
+    const key = `push:${found.house.id}`;
+    if (pushSubscribeLimiter.blocked(key)) return send(res, 429, "Demasiados intentos. Espera un rato e inténtalo de nuevo.", text);
+    pushSubscribeLimiter.fail(key);
     if (!validEndpoint(endpoint) || !validKeys(p256dh, auth)) return send(res, 400, "Suscripción inválida", text);
     ledger.housePush.add({ houseId: found.house.id, endpoint, p256dh, auth });
     return send(res, 200, "ok", text);
