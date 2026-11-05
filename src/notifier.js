@@ -27,13 +27,22 @@ export function createNotifier({ store, config, pushSend = sendPush }) {
     return keys;
   }
 
+  /** The last thing that went wrong (and when something last worked), so the panel can say WHY a notification didn't go. */
+  let failure = null;
+  let okAt = 0;
+  const hostOf = (endpoint) => { try { return new URL(endpoint).hostname; } catch { return ""; } };
+
   async function deliver(subs, message, forget) {
     if (!subs.length) return 0;
     const k = vapid();
     let sent = 0;
     await Promise.all(subs.map(async (sub) => {
       const r = await pushSend(sub, message, k, { subject: config.publicUrl });
-      if (r?.ok) sent += 1;
+      if (r?.ok) { sent += 1; okAt = Date.now(); }
+      else {
+        failure = { at: Date.now(), host: hostOf(sub.endpoint), status: Number(r?.status ?? 0), detail: String(r?.detail ?? ""), gone: !!r?.gone };
+        console.warn(`[avisos] ${failure.host} respondió ${failure.status || "sin respuesta"}${failure.detail ? `: ${failure.detail}` : ""}`);
+      }
       if (r?.gone) forget(sub.endpoint);
     }));
     return sent;
@@ -41,6 +50,8 @@ export function createNotifier({ store, config, pushSend = sendPush }) {
 
   return {
     publicKey: () => vapid().publicKey,
+    /** The latest failed delivery, unless something has been delivered since. For the treasurer's screen. */
+    lastFailure: () => (failure && failure.at > okAt ? failure : null),
     /** To a conjunto's people (or just one of them). */
     async team(tenantId, message, { userId = null } = {}) {
       try {

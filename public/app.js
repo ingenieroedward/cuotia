@@ -114,10 +114,26 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
     if (box.dataset.resident !== undefined && mine && "caches" in self) caches.open("resident-link").then((c) => c.put("/resident-link", new Response(mine[0]))).catch(() => {});
   };
   const current = () => navigator.serviceWorker.ready.then((reg) => reg.pushManager.getSubscription());
+  const testButton = box.querySelector("[data-push-test]");
   const render = async () => {
     const sub = await current().catch(() => null);
     button.textContent = sub ? "Desactivar avisos en este dispositivo" : (box.dataset.resident !== undefined ? "Activar avisos" : "Activar avisos en este dispositivo");
+    if (testButton) testButton.hidden = !sub;
   };
+  // A neighbour checks that a notification really reaches this phone, and is told why when it doesn't.
+  if (testButton) testButton.addEventListener("click", async () => {
+    testButton.disabled = true;
+    status.textContent = "Enviando…";
+    try {
+      const res = await fetch(testButton.dataset.testUrl, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "" });
+      const data = await res.json().catch(() => ({}));
+      if (data.sent) status.textContent = "Listo: te enviamos una notificación. Debería llegar en unos segundos. Si no la ves, revisa que las notificaciones de Cuotia estén permitidas en los ajustes del teléfono.";
+      else if (data.error === "limite") status.textContent = "Ya hiciste varias pruebas. Espera un rato.";
+      else if (data.error === "sin-dispositivo") status.textContent = "Este celular no está registrado todavía. Pulsa \"Activar avisos\".";
+      else status.textContent = `El servicio de notificaciones no recibió el aviso${data.status ? ` (respondió ${data.status})` : ""}. Desactiva los avisos, vuelve a activarlos y prueba de nuevo.`;
+    } catch { status.textContent = "No se pudo enviar la prueba. Revisa tu conexión."; }
+    finally { testButton.disabled = false; }
+  });
   button.addEventListener("click", async () => {
     button.disabled = true;
     status.textContent = "";
@@ -139,8 +155,10 @@ for (const input of document.querySelectorAll("[data-select-filter]")) {
         rememberLink();
         status.textContent = box.dataset.resident !== undefined ? "Listo: los avisos están activos en este celular." : "Listo: los avisos están activos. Recarga esta página para probarlos.";
       }
-    } catch {
-      status.textContent = "No se pudo completar. Inténtalo de nuevo en unos segundos.";
+    } catch (e) {
+      // Say what the browser said (e.g. NotAllowedError, AbortError: push service error): it is what tells the cause.
+      const why = e && e.name ? ` (${e.name}${e.message ? `: ${String(e.message).slice(0, 90)}` : ""})` : "";
+      status.textContent = `No se pudo completar${why}. Inténtalo de nuevo en unos segundos.`;
     } finally {
       button.disabled = false;
       render();

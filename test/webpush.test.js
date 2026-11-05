@@ -52,13 +52,27 @@ test("sendPush: éxito, suscripción vencida (410) y errores de red sin lanzar",
   const keys = newVapidKeys();
   const calls = [];
   const reply = (status) => async (url, init) => { calls.push({ url, init }); return { status }; };
-  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: reply(201) }), { ok: true, gone: false });
+  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: reply(201) }), { ok: true, gone: false, status: 201, detail: "" });
   assert.equal(calls[0].init.headers["Content-Encoding"], "aes128gcm");
   assert.match(calls[0].init.headers.Authorization, /^vapid t=.+, k=.+$/);
-  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: reply(410) }), { ok: false, gone: true });
-  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: reply(500) }), { ok: false, gone: false });
-  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: async () => { throw new Error("sin red"); } }), { ok: false, gone: false });
+  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: reply(410) }), { ok: false, gone: true, status: 410, detail: "" });
+  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: reply(500) }), { ok: false, gone: false, status: 500, detail: "" });
+  assert.deepEqual(await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: async () => { throw new Error("sin red"); } }), { ok: false, gone: false, status: 0, detail: "Error" });
   const before = calls.length;
-  assert.deepEqual(await sendPush({ ...sub, endpoint: "https://127.0.0.1/x" }, {}, keys, { fetchFn: reply(201) }), { ok: false, gone: true });
+  assert.deepEqual(await sendPush({ ...sub, endpoint: "https://127.0.0.1/x" }, {}, keys, { fetchFn: reply(201) }), { ok: false, gone: true, status: 0, detail: "dirección no permitida" });
   assert.equal(calls.length, before, "a una dirección no permitida no se envía nada");
+});
+
+test("sendPush: prioridad alta (que no se retrase con el teléfono en reposo) y explica por qué rechazó el servicio", async () => {
+  const ua = createECDH("prime256v1"); ua.generateKeys();
+  const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/x", p256dh: b64u(ua.getPublicKey()), auth: b64u(randomBytes(16)) };
+  const keys = newVapidKeys();
+  let seen;
+  const rejects = (status, body) => async (url, init) => { seen = init; return { status, text: async () => body }; };
+  const r = await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: rejects(403, '{"error":  "BadJwtToken"}\n') });
+  assert.equal(seen.headers.Urgency, "high");
+  assert.equal(seen.headers.TTL, String(24 * 3600));
+  assert.deepEqual(r, { ok: false, gone: false, status: 403, detail: '{"error": "BadJwtToken"}' });
+  const long = await sendPush(sub, { title: "x" }, keys, { subject: "https://c.ejemplo.com", fetchFn: rejects(400, "x".repeat(900)) });
+  assert.equal(long.detail.length, 160, "el detalle se recorta");
 });

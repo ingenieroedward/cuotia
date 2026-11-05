@@ -64,6 +64,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
   const verifyLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const publicLimiter = new AttemptLimiter({ max: 30, windowMs: 15 * 60_000 });
   const forgotLimiter = new AttemptLimiter({ max: 6, windowMs: 15 * 60_000 });
+  const pushTestLimiter = new AttemptLimiter({ max: 6, windowMs: 60 * 60_000 });
   const signupLimiter = new AttemptLimiter({ max: 15, windowMs: 60 * 60_000 });
   const cookieFlags = `HttpOnly; SameSite=Strict; Path=/${config.secureCookies ? "; Secure" : ""}`;
   const setCookie = (token, maxAgeS) => ({ "Set-Cookie": `${COOKIE}=${token}; Max-Age=${maxAgeS}; ${cookieFlags}` });
@@ -165,7 +166,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     }
 
     // A resident uploads a proof of payment (photo or PDF). Same personal-link credential, same-origin only.
-    const avisos = method === "POST" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})\/avisos\/(suscribir|baja)$/);
+    const avisos = method === "POST" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})\/avisos\/(suscribir|baja|probar)$/);
     if (avisos) return residentPush(req, res, avisos[1], avisos[2]);
     const upload = method === "POST" && path.match(/^\/r\/([A-Za-z0-9_-]{20,})\/comprobante$/);
     if (upload) return residentUpload(req, res, upload[1]);
@@ -260,7 +261,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     pagoradar: ["sec", "secbad"],
     equipo: ["eqyo", "eqbad", "eqcanc", "eqquit", "equltimo", "eqexiste"],
     seguridad: ["nombreok", "nombrebad", "clave", "clavemal", "clavebad", "clavelim", "pkquit", "pkbad"],
-    dispositivo: ["pushsin", "pushprobe"],
+    dispositivo: ["pushsin", "pushprobe", "pushfallo"],
   };
   const ajustesUrl = (m, hash = "") => {
     const section = Object.entries(AJUSTES_FLASH).find(([, keys]) => keys.includes(m))?.[0];
@@ -302,6 +303,15 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
     if (action === "baja") {
       ledger.housePush.remove(endpoint);
       return send(res, 200, "ok", text);
+    }
+    if (action === "probar") {
+      // The neighbour checks that notifications reach THEIR phone. A few a day: it is a test, not a way to ping.
+      const tkey = `ptest:${found.house.id}`;
+      if (pushTestLimiter.blocked(tkey)) return sendJson(res, 429, { sent: 0, status: 0, error: "limite" });
+      pushTestLimiter.fail(tkey);
+      if (!ledger.housePush.count(found.house.id)) return sendJson(res, 200, { sent: 0, status: 0, error: "sin-dispositivo" });
+      const sent = await notifier.house(found.tenant.id, found.house.id, { title: "Cuotia", body: "Los avisos funcionan en este celular.", url: "@resident", tag: "prueba" });
+      return sendJson(res, 200, { sent, status: sent ? 200 : Number(notifier.lastFailure?.()?.status ?? 0) });
     }
     const p256dh = String(form.get("p256dh") ?? "");
     const auth = String(form.get("auth") ?? "");
@@ -861,7 +871,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
 
     const ajustesAt = method === "GET" && path.match(/^\/panel\/ajustes(?:\/(cobros|pagoradar|equipo|seguridad|dispositivo|datos))?$/);
     if (ajustesAt) {
-      return send(res, 200, ajustesPage({ ...base, section: ajustesAt[1] ?? null, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, recovery: ledger.recovery.status(s.user.id), pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), passkeys: ledger.passkeys.list(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
+      return send(res, 200, ajustesPage({ ...base, section: ajustesAt[1] ?? null, flash: flashOf(url.searchParams), team: ledger.team.list(), invites: ledger.team.invitations(), meId: s.user.id, recovery: ledger.recovery.status(s.user.id), pushKey: vapid().publicKey, pushDevices: ledger.push.countForUser(s.user.id), pushProblem: notifier.lastFailure?.() ?? null, passkeys: ledger.passkeys.list(s.user.id), webhookUrl: `${config.publicUrl}/webhooks/pagoradar/${s.tenant.id}` }));
     }
 
     if (method === "GET" && (path === "/panel/cuentas" || path === "/panel/cuentas.csv")) {
@@ -959,7 +969,8 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
       }
       if (path === "/panel/push/probar") {
         if (ledger.push.countForUser(s.user.id) === 0) return redirect(res, ajustesUrl("pushsin"));
-        await notify(s.tenant.id, { title: "Cuotia", body: "Los avisos funcionan en este dispositivo.", url: "/panel/ajustes/dispositivo", tag: "prueba" }, { userId: s.user.id });
+        const delivered = await notify(s.tenant.id, { title: "Cuotia", body: "Los avisos funcionan en este dispositivo.", url: "/panel/ajustes/dispositivo", tag: "prueba" }, { userId: s.user.id });
+        if (!delivered) return redirect(res, `${ajustesUrl("pushfallo")}&n=${Number(notifier.lastFailure?.()?.status ?? 0)}`);
         return redirect(res, ajustesUrl("pushprobe"));
       }
 
@@ -1309,7 +1320,7 @@ export function createApp({ config, store, pushSend = sendPush, notifier = creat
           if (!house) return at("err");
           const result = await remind(house);
           if (result === "sent") audit("avisos", `Envió un aviso al celular de la casa ${house.code}`, { type: "casa", id: house.id });
-          return at({ sent: "avisoenv", nodebt: "avisonodebe", off: "avisonoact", recent: "avisoreciente", failed: "avisofallo" }[result]);
+          return at({ sent: "avisoenv", nodebt: "avisonodebe", off: "avisonoact", recent: "avisoreciente", failed: "avisofallo" }[result], result === "failed" ? Number(notifier.lastFailure?.()?.status ?? 0) : undefined);
         }
         let sent = 0;
         for (const group of debts.groups) if (await remind(houses.find((h) => h.id === group.house.id)) === "sent") sent += 1;
